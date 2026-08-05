@@ -34,7 +34,12 @@ func CleanOldExecutables() {
 
 // RunSilentUpdateCheck verifica atualizações de forma silenciosa
 func RunSilentUpdateCheck(commitHash string) (bool, string, string) {
-	if commitHash == "development" {
+	if commitHash == "development" || commitHash == "local" {
+		return false, "", ""
+	}
+
+	// Se a variável de ambiente GOKIT_NO_UPDATE for igual a true, desativa o update remoto
+	if os.Getenv("GOKIT_NO_UPDATE") == "true" {
 		return false, "", ""
 	}
 

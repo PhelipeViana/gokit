@@ -135,9 +135,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				case 0:
 					m.state = stateConfigScreen
 					m.configData = config.RunConfigChecks()
+					return m, tea.ClearScreen
 				case 1:
 					m.state = stateMigrationsMenu
 					m.cursor = 0
+					return m, tea.ClearScreen
 				case 2:
 					return m, tea.Quit
 				}
@@ -145,19 +147,24 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				switch m.cursor {
 				case 0:
 					m.state = stateMigrationCreating
+					return m, tea.ClearScreen
 				case 1:
 					m.state = stateMigrationRunning
+					return m, tea.ClearScreen
 				case 2:
 					m.state = stateMigrationRollingBack
+					return m, tea.ClearScreen
 				case 3:
 					m.state = stateMainMenu
 					m.cursor = 0
+					m.configData = config.RunConfigChecks()
+					return m, tea.ClearScreen
 				}
 			default:
 				m.state = stateMainMenu
 				m.cursor = 0
-				// Sincroniza o status das conexões ao voltar ao menu principal
 				m.configData = config.RunConfigChecks()
+				return m, tea.ClearScreen
 			}
 		}
 	}
@@ -168,9 +175,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m model) View() string {
 	var s strings.Builder
 
-	// Cabeçalho da aplicação
-	s.WriteString(titleStyle.Render("GO KIT CLI") + "\n")
-	s.WriteString(versionStyle.Render("Última Atualização: "+Version) + "\n\n")
+	// Cabeçalho da aplicação - Apenas impresso no menu principal e submenus de navegação
+	if m.state == stateMainMenu || m.state == stateMigrationsMenu {
+		s.WriteString(titleStyle.Render("GO KIT CLI") + "\n")
+		s.WriteString(versionStyle.Render("Última Atualização: "+Version) + "\n\n")
+	}
 
 	switch m.state {
 	case stateMainMenu:
@@ -218,25 +227,34 @@ func (m model) View() string {
 
 	case stateMigrationCreating:
 		content := fmt.Sprintf(
-			"\033[1m\033[36m[Ação]\033[0m Criando nova estrutura de migration...\n\n"+
-				"\033[32m✔ Migration criada com sucesso! (gokit_migration_placeholder.go)\033[0m\n\n"+
-				"Pressione \033[1m[Enter]\033[0m para voltar.",
+			"%s Criando nova estrutura de migration...\n\n"+
+				"%s\n\n"+
+				"Pressione %s para voltar.",
+			lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#00F0FF")).Render("[Ação]"),
+			lipgloss.NewStyle().Foreground(lipgloss.Color("#50FA7B")).Render("✔ Migration criada com sucesso! (gokit_migration_placeholder.go)"),
+			lipgloss.NewStyle().Bold(true).Render("[Enter]"),
 		)
 		s.WriteString(actionBoxStyle.Render(content) + "\n")
 
 	case stateMigrationRunning:
 		content := fmt.Sprintf(
-			"\033[1m\033[36m[Ação]\033[0m Executando migrações pendentes...\n\n"+
-				"\033[32m✔ Banco de dados atualizado! Todas as migrações foram aplicadas.\033[0m\n\n"+
-				"Pressione \033[1m[Enter]\033[0m para voltar.",
+			"%s Executando migrações pendentes...\n\n"+
+				"%s\n\n"+
+				"Pressione %s para voltar.",
+			lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#00F0FF")).Render("[Ação]"),
+			lipgloss.NewStyle().Foreground(lipgloss.Color("#50FA7B")).Render("✔ Banco de dados atualizado! Todas as migrações foram aplicadas."),
+			lipgloss.NewStyle().Bold(true).Render("[Enter]"),
 		)
 		s.WriteString(actionBoxStyle.Render(content) + "\n")
 
 	case stateMigrationRollingBack:
 		content := fmt.Sprintf(
-			"\033[1m\033[36m[Ação]\033[0m Revertendo última migration (Rollback)...\n\n"+
-				"\033[32m✔ Rollback executado com sucesso!\033[0m\n\n"+
-				"Pressione \033[1m[Enter]\033[0m para voltar.",
+			"%s Revertendo última migration (Rollback)...\n\n"+
+				"%s\n\n"+
+				"Pressione %s para voltar.",
+			lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#00F0FF")).Render("[Ação]"),
+			lipgloss.NewStyle().Foreground(lipgloss.Color("#50FA7B")).Render("✔ Rollback executado com sucesso!"),
+			lipgloss.NewStyle().Bold(true).Render("[Enter]"),
 		)
 		s.WriteString(actionBoxStyle.Render(content) + "\n")
 
@@ -244,54 +262,88 @@ func (m model) View() string {
 		var cfgStr strings.Builder
 		cState := m.configData
 
-		cfgStr.WriteString("\033[1m\033[36m[Configuração - Checklist de Validação]\033[0m\n\n")
+		cfgStr.WriteString(lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#00F0FF")).Render("[Configuração - Checklist de Validação]") + "\n\n")
 
-		// 1. Validar existência do gokit.yaml
-		if cState.ScaffoldCreated {
-			cfgStr.WriteString("  \033[32m[✔] gokit.yaml: Criado com sucesso em " + cState.ConfigPath + "\033[0m\n")
-		} else if cState.ConfigFileError != nil && strings.Contains(cState.ConfigFileError.Error(), "não foi possível ler") {
-			cfgStr.WriteString("  \033[31m[✖] gokit.yaml: Não foi possível ler o arquivo\033[0m\n")
-		} else {
-			cfgStr.WriteString("  \033[32m[✔] gokit.yaml: Carregado com sucesso\033[0m\n")
-		}
-
-		// 2. Validar estrutura YAML
-		if cState.ConfigFileError != nil && strings.Contains(cState.ConfigFileError.Error(), "sintaxe YAML") {
-			cfgStr.WriteString(fmt.Sprintf("  \033[31m[✖] Estrutura YAML: %v\033[0m\n", cState.ConfigFileError))
+		// 1. Validar Conectividade do banco de dados (Sempre no topo e simplificado, apenas diz qual cliente e dialeto)
+		if cState.ConfigFileError != nil && !strings.Contains(cState.ConfigFileError.Error(), "sintaxe YAML") {
+			cfgStr.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("#FF5555")).Render(
+				fmt.Sprintf("  [✖] Conectividade: Erro ao ler conexões (%v)", cState.ConfigFileError),
+			) + "\n")
 		} else if cState.Config != nil {
-			cfgStr.WriteString("  \033[32m[✔] Estrutura YAML: Válida\033[0m\n")
+			if cState.ConnSuccess {
+				cfgStr.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("#50FA7B")).Render(
+					fmt.Sprintf("  [✔] Conectividade: Conectado (%s • %s)", cState.ActiveClient, cState.ActiveDialect),
+				) + "\n")
+			} else {
+				cfgStr.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("#FF5555")).Render(
+					fmt.Sprintf("  [✖] Conectividade: Desconectado (%s • %s) - Erro: %v", cState.ActiveClient, cState.ActiveDialect, cState.ConnError),
+				) + "\n")
+			}
 		}
 
-		// 3. Validar .env
+		// 2. Validar existência do gokit.yaml
+		if cState.ScaffoldCreated {
+			cfgStr.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("#50FA7B")).Render(
+				"  [✔] gokit.yaml: Criado com sucesso em "+cState.ConfigPath,
+			) + "\n")
+		} else if cState.ConfigFileError != nil && strings.Contains(cState.ConfigFileError.Error(), "não foi possível ler") {
+			cfgStr.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("#FF5555")).Render(
+				"  [✖] gokit.yaml: Não foi possível ler o arquivo",
+			) + "\n")
+		} else {
+			cfgStr.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("#50FA7B")).Render(
+				"  [✔] gokit.yaml: Carregado com sucesso",
+			) + "\n")
+		}
+
+		// 3. Validar estrutura YAML
+		if cState.ConfigFileError != nil && strings.Contains(cState.ConfigFileError.Error(), "sintaxe YAML") {
+			cfgStr.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("#FF5555")).Render(
+				fmt.Sprintf("  [✖] Estrutura YAML: %v", cState.ConfigFileError),
+			) + "\n")
+		} else if cState.Config != nil {
+			cfgStr.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("#50FA7B")).Render(
+				"  [✔] Estrutura YAML: Válida",
+			) + "\n")
+		}
+
+		// 4. Validar .env
 		if cState.Config != nil {
 			envPath := cState.Config.Environment.MapperEnv
 			if _, err := os.Stat(envPath); err == nil {
-				cfgStr.WriteString(fmt.Sprintf("  \033[32m[✔] Ambiente (.env): Carregado de \"%s\"\033[0m\n", envPath))
+				cfgStr.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("#50FA7B")).Render(
+					fmt.Sprintf("  [✔] Ambiente (.env): Carregado de \"%s\"", envPath),
+				) + "\n")
 			} else {
-				cfgStr.WriteString(fmt.Sprintf("  \033[33m[!] Ambiente (.env): Arquivo \"%s\" não encontrado\033[0m\n", envPath))
+				cfgStr.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("#FFB86C")).Render(
+					fmt.Sprintf("  [!] Ambiente (.env): Arquivo \"%s\" não encontrado", envPath),
+				) + "\n")
 			}
 		}
 
-		// 4. Validar Conectividade do banco de dados (Apenas o banco atual configurado)
-		if cState.ConfigFileError != nil && !strings.Contains(cState.ConfigFileError.Error(), "sintaxe YAML") {
-			cfgStr.WriteString(fmt.Sprintf("  \033[31m[✖] Conectividade: %v\033[0m\n", cState.ConfigFileError))
-		} else if cState.Config != nil {
-			cfgStr.WriteString(fmt.Sprintf("  \033[32m[✔] Cliente Ativo: %s (dialeto: %s)\033[0m\n", cState.ActiveClient, cState.ActiveDialect))
-
-			maskedURL := config.MaskPassword(cState.ActiveDialect, cState.ActiveURL)
-			if cState.ConnSuccess {
-				cfgStr.WriteString("  \033[32m[✔] Conectividade: CONECTADO COM SUCESSO!\033[0m\n")
-				cfgStr.WriteString(fmt.Sprintf("      URL: %s\n", maskedURL))
-			} else {
-				cfgStr.WriteString("  \033[31m[✖] Conectividade: FALHA DE CONEXÃO\033[0m\n")
-				cfgStr.WriteString(fmt.Sprintf("      Erro: %v\n", cState.ConnError))
-				cfgStr.WriteString(fmt.Sprintf("      URL: %s\n", maskedURL))
-			}
-		}
-
-		// 5. Mostrar Mapeamento de Diretórios (Output)
+		// 5. Validar Notificações via Slack
 		if cState.Config != nil {
-			cfgStr.WriteString("\n  \033[1mDiretórios de Destino (Output):\033[0m\n")
+			slackConf := cState.Config.Notifications.Slack
+			if slackConf.Enabled {
+				if slackConf.WebhookURL != "" && slackConf.WebhookURL != "${SLACK_WEBHOOK_URL}" {
+					cfgStr.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("#50FA7B")).Render(
+						"  [✔] Notificações Slack: Ativas (Webhook configurado)",
+					) + "\n")
+				} else {
+					cfgStr.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("#FF5555")).Render(
+						"  [✖] Notificações Slack: Habilitadas, mas sem webhook_url válido",
+					) + "\n")
+				}
+			} else {
+				cfgStr.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("#6272A4")).Render(
+					"  [✔] Notificações Slack: Desativadas",
+				) + "\n")
+			}
+		}
+
+		// 6. Mostrar Mapeamento de Diretórios (Output)
+		if cState.Config != nil {
+			cfgStr.WriteString("\n  " + lipgloss.NewStyle().Bold(true).Render("Diretórios de Destino (Output):") + "\n")
 			cfgStr.WriteString(fmt.Sprintf("    Settings:  %s\n", cState.Config.Output.Settings))
 			cfgStr.WriteString(fmt.Sprintf("    ORM:       %s\n", cState.Config.Output.ORM))
 			cfgStr.WriteString(fmt.Sprintf("    Migrate:   %s\n", cState.Config.Output.Migrate))
@@ -300,7 +352,7 @@ func (m model) View() string {
 			cfgStr.WriteString(fmt.Sprintf("    Docs:      %s\n", cState.Config.Output.Docs))
 		}
 
-		cfgStr.WriteString("\nPressione \033[1m[Enter]\033[0m para voltar ao menu principal.")
+		cfgStr.WriteString("\n" + lipgloss.NewStyle().Faint(true).Render("Pressione [Enter] para voltar ao menu principal."))
 		s.WriteString(actionBoxStyle.Render(cfgStr.String()) + "\n")
 	}
 

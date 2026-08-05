@@ -53,7 +53,7 @@ Build-Target "darwin" "arm64" "gokit-darwin-arm64"
 Write-Host "Gerando executável de desenvolvimento na raiz do repositório..." -ForegroundColor Cyan
 $env:GOOS = "windows"
 $env:GOARCH = "amd64"
-go build -ldflags "-X main.CommitHash=$commitHash -X 'main.Version=$commitDate'" -o "gokit.exe" main.go
+go build -ldflags "-X main.CommitHash=development -X 'main.Version=Local Development ($commitDate)'" -o "gokit.exe" main.go
 if ($LASTEXITCODE -eq 0) {
     Write-Host "Sucesso: gokit.exe gerado na raiz" -ForegroundColor Green
 }

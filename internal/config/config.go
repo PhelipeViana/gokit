@@ -256,6 +256,7 @@ func EnsureConfigExistsAndLoad() (*Config, string, error) {
 			Schema:  ExpandEnvWithDefaults(conn.Schema),
 		}
 	}
+	interpolatedConfig.Notifications.Slack.WebhookURL = ExpandEnvWithDefaults(rawConfig.Notifications.Slack.WebhookURL)
 
 	return &interpolatedConfig, configPath, nil
 }
@@ -328,24 +329,75 @@ func RunConfigChecks() ConfigState {
 	}
 	state.Config = cfg
 
-	// Lê DB_CLIENT do ambiente mapeado
+	// Determina o cliente ativo
 	clientKey := cfg.Environment.Client
 	if clientKey == "" {
 		clientKey = "DB_CLIENT"
 	}
 	activeClient := os.Getenv(clientKey)
 	if activeClient == "" {
-		activeClient = "client_postgres" // Padrão
+		// Tenta buscar por outras variáveis comuns no .env caso a chave definida esteja vazia
+		for _, altKey := range []string{"DB_DIALECT", "DB_CONNECTION", "DB_CLIENT"} {
+			if val := os.Getenv(altKey); val != "" {
+				activeClient = val
+				break
+			}
+		}
+		if activeClient == "" {
+			activeClient = "postgres" // Padrão
+		}
 	}
 	state.ActiveClient = activeClient
 
-	// Busca detalhes da conexão
-	conn, ok := cfg.Connections[activeClient]
-	if !ok {
-		state.ConfigFileError = fmt.Errorf("cliente ativo '%s' não configurado no gokit.yaml", activeClient)
+	// Busca a conexão com busca inteligente e tolerante a falhas
+	var conn ConnConfig
+	var found bool
+	var matchedKey string
+
+	// 1. Tenta correspondência exata
+	if c, ok := cfg.Connections[activeClient]; ok {
+		conn = c
+		found = true
+		matchedKey = activeClient
+	}
+
+	// 2. Tenta correspondência tolerante a maiúsculas/minúsculas e sem prefixo "client_"
+	if !found {
+		normActive := strings.ToLower(strings.TrimPrefix(activeClient, "client_"))
+		for name, c := range cfg.Connections {
+			normName := strings.ToLower(strings.TrimPrefix(name, "client_"))
+			if normName == normActive {
+				conn = c
+				found = true
+				matchedKey = name
+				break
+			}
+		}
+	}
+
+	// 3. Tenta correspondência pelo campo "dialect"
+	if !found {
+		for name, c := range cfg.Connections {
+			if strings.ToLower(c.Dialect) == strings.ToLower(activeClient) {
+				conn = c
+				found = true
+				matchedKey = name
+				break
+			}
+		}
+	}
+
+	if !found {
+		var avail []string
+		for name := range cfg.Connections {
+			avail = append(avail, fmt.Sprintf("'%s'", name))
+		}
+		state.ConfigFileError = fmt.Errorf("cliente ativo '%s' não encontrado. Suas conexões configuradas no gokit.yaml são: %s", activeClient, strings.Join(avail, ", "))
 		return state
 	}
 
+	// Atualiza com os valores reais encontrados
+	state.ActiveClient = matchedKey
 	state.ActiveDialect = conn.Dialect
 	state.ActiveURL = conn.URL
 
