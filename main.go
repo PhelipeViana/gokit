@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"runtime"
 	"strings"
 	"time"
 
@@ -62,12 +63,11 @@ var (
 			MarginLeft(2).
 			MarginTop(1)
 
-	updateBoxStyle = lipgloss.NewStyle().
-			Border(lipgloss.DoubleBorder()).
-			BorderForeground(lipgloss.Color("#FF5555")). // Vermelho
-			Padding(1, 2).
-			MarginLeft(2).
-			MarginBottom(1)
+	outdatedBoxStyle = lipgloss.NewStyle().
+				Border(lipgloss.DoubleBorder()).
+				BorderForeground(lipgloss.Color("#FF5555")). // Vermelho
+				Padding(1, 4).
+				Margin(1, 2)
 )
 
 type Commit struct {
@@ -89,23 +89,23 @@ type model struct {
 	cursor            int
 	choices           []string
 	migrationsChoices []string
-	updateAvailable   bool
-	localSHA          string
-	remoteSHA         string
 }
 
 func main() {
 	// Checagem rápida de versão silenciosa
 	updateAvailable, localSHA, remoteSHA := runSilentUpdateCheck()
 
+	// Se estiver desatualizado, bloqueia o menu e exige download
+	if updateAvailable {
+		printOutdatedAndExit(localSHA, remoteSHA)
+		return
+	}
+
 	m := model{
 		state:             stateMainMenu,
 		cursor:            0,
-		choices:           []string{"Migration Options2", "Sair (Exit)"},
+		choices:           []string{"Migration Options", "Sair (Exit)"},
 		migrationsChoices: []string{"Criar nova Migration", "Executar Migrations pendentes", "Reverter última Migration (Rollback)", "Voltar ao menu principal"},
-		updateAvailable:   updateAvailable,
-		localSHA:          localSHA,
-		remoteSHA:         remoteSHA,
 	}
 
 	p := tea.NewProgram(m)
@@ -113,6 +113,73 @@ func main() {
 		fmt.Printf("Ocorreu um erro no aplicativo: %v\n", err)
 		os.Exit(1)
 	}
+}
+
+// getDownloadURL retorna o link direto de download de acordo com o OS e ARCH do usuário
+func getDownloadURL() string {
+	baseURL := "https://github.com/PhelipeViana/gokit/releases/latest/download"
+	
+	goos := runtime.GOOS
+	goarch := runtime.GOARCH
+
+	var filename string
+	switch goos {
+	case "windows":
+		filename = "gokit-windows-amd64.exe"
+	case "linux":
+		filename = "gokit-linux-amd64"
+	case "darwin":
+		if goarch == "arm64" {
+			filename = "gokit-darwin-arm64"
+		} else {
+			filename = "gokit-darwin-amd64"
+		}
+	default:
+		return RepoURL // Fallback para a página principal do repositório
+	}
+
+	return fmt.Sprintf("%s/%s", baseURL, filename)
+}
+
+// getOSText formata o nome do sistema operacional amigavelmente
+func getOSText() string {
+	goos := runtime.GOOS
+	goarch := runtime.GOARCH
+
+	switch goos {
+	case "windows":
+		return "Windows (x86_64)"
+	case "linux":
+		return "Linux (x86_64)"
+	case "darwin":
+		if goarch == "arm64" {
+			return "macOS (Apple Silicon M1/M2/M3)"
+		}
+		return "macOS (Intel)"
+	default:
+		return fmt.Sprintf("%s (%s)", goos, goarch)
+	}
+}
+
+// printOutdatedAndExit renderiza o card de bloqueio por desatualização e encerra o app
+func printOutdatedAndExit(localSHA, remoteSHA string) {
+	downloadURL := getDownloadURL()
+	osText := getOSText()
+
+	content := fmt.Sprintf(
+		"\033[1m\033[31m⚠️  EXECUTÁVEL DESATUALIZADO DETECTADO! ⚠️\033[0m\n\n"+
+			"Uma nova versão do gokit está disponível no GitHub.\n"+
+			"O menu foi bloqueado e é necessário atualizar o binário para continuar.\n\n"+
+			"Sua versão local (commit):   \033[33m%s\033[0m\n"+
+			"Versão mais recente:         \033[32m%s\033[0m\n"+
+			"Sistema Detectado:           \033[36m%s\033[0m\n\n"+
+			"Clique abaixo para baixar a versão correta:\n"+
+			"\033[1m\033[36m%s\033[0m",
+		localSHA, remoteSHA, osText, terminalLink(downloadURL, "Download Direto para "+osText),
+	)
+
+	fmt.Println(outdatedBoxStyle.Render(content))
+	os.Exit(1)
 }
 
 // runSilentUpdateCheck verifica atualizações de forma silenciosa
@@ -173,6 +240,11 @@ func fetchLatestRemoteCommit() (string, error) {
 	}
 
 	return commits[0].SHA, nil
+}
+
+// terminalLink cria o hyperlink OSC 8 interativo no terminal
+func terminalLink(url, text string) string {
+	return fmt.Sprintf("\033]8;;%s\033\\%s\033]8;;\033\\ (%s)", url, text, url)
 }
 
 // Init inicializa o modelo do Bubble Tea
@@ -251,18 +323,6 @@ func (m model) View() string {
 	s.WriteString(titleStyle.Render("GO KIT CLI") + "\n")
 	s.WriteString(versionStyle.Render("Última Atualização: "+Version) + "\n\n")
 
-	// Alerta de Nova Versão Disponível
-	if m.updateAvailable {
-		updateContent := fmt.Sprintf(
-			"⚠️  NOVA VERSÃO DISPONÍVEL!\n\n"+
-				"Sua versão: \033[33m%s\033[0m\n"+
-				"Versão nova: \033[32m%s\033[0m\n\n"+
-				"Baixe manualmente em:\n\033[36m%s\033[0m",
-			m.localSHA, m.remoteSHA, RepoURL,
-		)
-		s.WriteString(updateBoxStyle.Render(updateContent) + "\n")
-	}
-
 	switch m.state {
 	case stateMainMenu:
 		s.WriteString("  " + lipgloss.NewStyle().Bold(true).Render("Menu Principal:") + "\n\n")
@@ -286,24 +346,24 @@ func (m model) View() string {
 
 	case stateMigrationCreating:
 		content := fmt.Sprintf(
-			"\033[1m\033[36m[Ação]\033[0m Criando nova estrutura de migration...\n\n" +
-				"\033[32m✔ Migration criada com sucesso! (gokit_migration_placeholder.go)\033[0m\n\n" +
+			"\033[1m\033[36m[Ação]\033[0m Criando nova estrutura de migration...\n\n"+
+				"\033[32m✔ Migration criada com sucesso! (gokit_migration_placeholder.go)\033[0m\n\n"+
 				"Pressione \033[1m[Enter]\033[0m para voltar.",
 		)
 		s.WriteString(actionBoxStyle.Render(content) + "\n")
 
 	case stateMigrationRunning:
 		content := fmt.Sprintf(
-			"\033[1m\033[36m[Ação]\033[0m Executando migrações pendentes...\n\n" +
-				"\033[32m✔ Banco de dados atualizado! Todas as migrações foram aplicadas.\033[0m\n\n" +
+			"\033[1m\033[36m[Ação]\033[0m Executando migrações pendentes...\n\n"+
+				"\033[32m✔ Banco de dados atualizado! Todas as migrações foram aplicadas.\033[0m\n\n"+
 				"Pressione \033[1m[Enter]\033[0m para voltar.",
 		)
 		s.WriteString(actionBoxStyle.Render(content) + "\n")
 
 	case stateMigrationRollingBack:
 		content := fmt.Sprintf(
-			"\033[1m\033[36m[Ação]\033[0m Revertendo última migration (Rollback)...\n\n" +
-				"\033[32m✔ Rollback executado com sucesso!\033[0m\n\n" +
+			"\033[1m\033[36m[Ação]\033[0m Revertendo última migration (Rollback)...\n\n"+
+				"\033[32m✔ Rollback executado com sucesso!\033[0m\n\n"+
 				"Pressione \033[1m[Enter]\033[0m para voltar.",
 		)
 		s.WriteString(actionBoxStyle.Render(content) + "\n")
