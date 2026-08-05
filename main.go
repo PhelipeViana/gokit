@@ -111,10 +111,8 @@ func main() {
 // printOutdatedAndExit informa que o executável está desatualizado e encerra o app
 func printOutdatedAndExit(localSHA, remoteSHA string) {
 	fmt.Println()
-	fmt.Printf("\033[1m\033[31m⚠️  EXECUTÁVEL DESATUALIZADO DETECTADO! ⚠️\033[0m\n")
-	fmt.Printf("Sua versão (commit):  \033[33m%s\033[0m\n", localSHA)
-	fmt.Printf("Versão mais recente:  \033[32m%s\033[0m\n\n", remoteSHA)
-	fmt.Printf("Por favor, atualize em: \033[36mhttps://github.com/PhelipeViana/gokit/releases\033[0m\n\n")
+	fmt.Printf("\033[1m\033[31m⚠️  O GOKIT ESTÁ DESATUALIZADO! ⚠️\033[0m\n\n")
+	fmt.Printf("Por favor, baixe a nova versão em:\n\033[36mhttps://github.com/PhelipeViana/gokit/tree/main/dist\033[0m\n\n")
 	os.Exit(1)
 }
 
