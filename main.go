@@ -2,12 +2,11 @@ package main
 
 import (
 	"context"
-	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
+	"os/exec"
 	"runtime"
 	"strings"
 	"time"
@@ -22,11 +21,8 @@ var (
 	Version    = "development"
 )
 
-// URL oficial do repositório e endpoint de commits do GitHub
-const (
-	RepoURL    = "https://github.com/PhelipeViana/gokit"
-	CommitsAPI = "https://api.github.com/repos/PhelipeViana/gokit/commits"
-)
+// URL oficial do repositório
+const RepoURL = "https://github.com/PhelipeViana/gokit"
 
 // Estilos Lip Gloss inspirados na estética Charm Bracelet
 var (
@@ -65,10 +61,6 @@ var (
 			MarginTop(1)
 )
 
-type Commit struct {
-	SHA string `json:"sha"`
-}
-
 type menuState int
 
 const (
@@ -87,19 +79,37 @@ type model struct {
 }
 
 func main() {
-	// Checagem rápida de versão silenciosa
-	updateAvailable, localSHA, remoteSHA := runSilentUpdateCheck()
+	// Remove binários antigos remanescentes de atualizações anteriores (.old)
+	cleanOldExecutables()
 
-	// Se estiver desatualizado, bloqueia o menu e exige download
+	// Checagem rápida e silenciosa de versão no GitHub
+	updateAvailable, _, remoteSHA := runSilentUpdateCheck()
+
+	// Se houver nova versão disponível, atualiza e reinicia automaticamente em background
 	if updateAvailable {
-		printOutdatedAndExit(localSHA, remoteSHA)
-		return
+		fmt.Printf("\n\033[1m\033[36m⚡ Nova versão detectada (%s). Atualizando gokit automaticamente...\033[0m\n", remoteSHA[:7])
+		err := runSelfUpdate()
+		if err != nil {
+			fmt.Printf("\033[31m✖ Erro ao atualizar automaticamente: %v. Continuando com a versão atual...\033[0m\n", err)
+			time.Sleep(2 * time.Second)
+		} else {
+			fmt.Println("\033[32m✔ Atualizado com sucesso! Reiniciando...\033[0m")
+			time.Sleep(500 * time.Millisecond)
+
+			// Reinicia o processo atual
+			err = restartProcess()
+			if err != nil {
+				fmt.Printf("\033[31m✖ Falha ao reiniciar: %v. Por favor, execute novamente.\033[0m\n", err)
+				os.Exit(1)
+			}
+			os.Exit(0)
+		}
 	}
 
 	m := model{
 		state:             stateMainMenu,
 		cursor:            0,
-		choices:           []string{"Migration Options", "Sair (Exit)"},
+		choices:           []string{"Migration Options2", "Sair (Exit)"},
 		migrationsChoices: []string{"Criar nova Migration", "Executar Migrations pendentes", "Reverter última Migration (Rollback)", "Voltar ao menu principal"},
 	}
 
@@ -110,35 +120,39 @@ func main() {
 	}
 }
 
-// printOutdatedAndExit informa que o executável está desatualizado e encerra o app
-func printOutdatedAndExit(localSHA, remoteSHA string) {
-	downloadURL := getDirectDownloadURL()
-	fmt.Println()
-	fmt.Printf("\033[1m\033[31m⚠️  O GOKIT ESTÁ DESATUALIZADO! ⚠️\033[0m\n\n")
-	fmt.Printf("Por favor, baixe a nova versão em:\n\033[36m%s\033[0m\n\n", downloadURL)
-	os.Exit(1)
+// cleanOldExecutables deleta arquivos temporários .old gerados no auto-update.
+// Executado em goroutine com retentativas para dar tempo do processo pai fechar.
+func cleanOldExecutables() {
+	execPath, err := os.Executable()
+	if err == nil {
+		oldPath := execPath + ".old"
+		if _, err := os.Stat(oldPath); err == nil {
+			go func() {
+				for i := 0; i < 5; i++ {
+					time.Sleep(500 * time.Millisecond)
+					err := os.Remove(oldPath)
+					if err == nil {
+						break
+					}
+				}
+			}()
+		}
+	}
 }
 
-// getDirectDownloadURL gera o link de download direto do arquivo binário bruto no repositório GitHub
-func getDirectDownloadURL() string {
-	baseURL := "https://github.com/PhelipeViana/gokit/raw/main/dist"
-	
-	goos := runtime.GOOS
-	goarch := runtime.GOARCH
-
-	switch goos {
-	case "windows":
-		return baseURL + "/gokit-windows-amd64.exe"
-	case "linux":
-		return baseURL + "/gokit-linux-amd64"
-	case "darwin":
-		if goarch == "arm64" {
-			return baseURL + "/gokit-darwin-arm64"
-		}
-		return baseURL + "/gokit-darwin-amd64"
-	default:
-		return "https://github.com/PhelipeViana/gokit/tree/main/dist"
+// restartProcess inicia uma nova instância do executável atual com os mesmos argumentos
+func restartProcess() error {
+	execPath, err := os.Executable()
+	if err != nil {
+		return err
 	}
+
+	cmd := exec.Command(execPath, os.Args[1:]...)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	cmd.Stdin = os.Stdin
+
+	return cmd.Start()
 }
 
 // runSilentUpdateCheck verifica atualizações de forma silenciosa
@@ -197,9 +211,81 @@ func fetchLatestRemoteCommit() (string, error) {
 	return strings.TrimSpace(string(bodyBytes)), nil
 }
 
-// terminalLink cria o hyperlink OSC 8 interativo no terminal
-func terminalLink(url, text string) string {
-	return fmt.Sprintf("\033]8;;%s\033\\%s\033]8;;\033\\ (%s)", url, text, url)
+// getDirectDownloadURL gera o link de download direto do arquivo binário bruto no repositório GitHub
+func getDirectDownloadURL() string {
+	baseURL := "https://github.com/PhelipeViana/gokit/raw/main/dist"
+
+	goos := runtime.GOOS
+	goarch := runtime.GOARCH
+
+	switch goos {
+	case "windows":
+		return baseURL + "/gokit-windows-amd64.exe"
+	case "linux":
+		return baseURL + "/gokit-linux-amd64"
+	case "darwin":
+		if goarch == "arm64" {
+			return baseURL + "/gokit-darwin-arm64"
+		}
+		return baseURL + "/gokit-darwin-amd64"
+	default:
+		return "https://github.com/PhelipeViana/gokit/tree/main/dist"
+	}
+}
+
+// runSelfUpdate executa a substituição do binário atual em tempo de execução
+func runSelfUpdate() error {
+	downloadURL := getDirectDownloadURL()
+
+	currentExec, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("não foi possível identificar o executável: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, "GET", downloadURL, nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("User-Agent", "gokit-cli-updater")
+
+	client := &http.Client{}
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("falha na conexão de rede: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("servidor retornou erro (status %d)", resp.StatusCode)
+	}
+
+	oldExec := currentExec + ".old"
+	_ = os.Remove(oldExec)
+
+	// Renomeia o executável em execução (funciona no Windows)
+	err = os.Rename(currentExec, oldExec)
+	if err != nil {
+		return fmt.Errorf("falha ao preparar arquivos: %v", err)
+	}
+
+	// Cria o novo executável no mesmo local original
+	out, err := os.OpenFile(currentExec, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o755)
+	if err != nil {
+		_ = os.Rename(oldExec, currentExec) // Desfaz em caso de erro
+		return fmt.Errorf("falha ao abrir novo arquivo: %v", err)
+	}
+	defer out.Close()
+
+	_, err = io.Copy(out, resp.Body)
+	if err != nil {
+		_ = os.Rename(oldExec, currentExec)
+		return fmt.Errorf("falha ao gravar atualização: %v", err)
+	}
+
+	return nil
 }
 
 // Init inicializa o modelo do Bubble Tea
@@ -242,7 +328,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 
 		case "enter":
-			if m.state == stateMainMenu {
+			switch m.state {
+			case stateMainMenu:
 				switch m.cursor {
 				case 0:
 					m.state = stateMigrationsMenu
@@ -250,7 +337,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				case 1:
 					return m, tea.Quit
 				}
-			} else if m.state == stateMigrationsMenu {
+			case stateMigrationsMenu:
 				switch m.cursor {
 				case 0:
 					m.state = stateMigrationCreating
@@ -262,7 +349,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.state = stateMainMenu
 					m.cursor = 0
 				}
-			} else {
+			default:
 				m.state = stateMigrationsMenu
 			}
 		}
@@ -301,24 +388,24 @@ func (m model) View() string {
 
 	case stateMigrationCreating:
 		content := fmt.Sprintf(
-			"\033[1m\033[36m[Ação]\033[0m Criando nova estrutura de migration...\n\n"+
-				"\033[32m✔ Migration criada com sucesso! (gokit_migration_placeholder.go)\033[0m\n\n"+
+			"\033[1m\033[36m[Ação]\033[0m Criando nova estrutura de migration...\n\n" +
+				"\033[32m✔ Migration criada com sucesso! (gokit_migration_placeholder.go)\033[0m\n\n" +
 				"Pressione \033[1m[Enter]\033[0m para voltar.",
 		)
 		s.WriteString(actionBoxStyle.Render(content) + "\n")
 
 	case stateMigrationRunning:
 		content := fmt.Sprintf(
-			"\033[1m\033[36m[Ação]\033[0m Executando migrações pendentes...\n\n"+
-				"\033[32m✔ Banco de dados atualizado! Todas as migrações foram aplicadas.\033[0m\n\n"+
+			"\033[1m\033[36m[Ação]\033[0m Executando migrações pendentes...\n\n" +
+				"\033[32m✔ Banco de dados atualizado! Todas as migrações foram aplicadas.\033[0m\n\n" +
 				"Pressione \033[1m[Enter]\033[0m para voltar.",
 		)
 		s.WriteString(actionBoxStyle.Render(content) + "\n")
 
 	case stateMigrationRollingBack:
 		content := fmt.Sprintf(
-			"\033[1m\033[36m[Ação]\033[0m Revertendo última migration (Rollback)...\n\n"+
-				"\033[32m✔ Rollback executado com sucesso!\033[0m\n\n"+
+			"\033[1m\033[36m[Ação]\033[0m Revertendo última migration (Rollback)...\n\n" +
+				"\033[32m✔ Rollback executado com sucesso!\033[0m\n\n" +
 				"Pressione \033[1m[Enter]\033[0m para voltar.",
 		)
 		s.WriteString(actionBoxStyle.Render(content) + "\n")
