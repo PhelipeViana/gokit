@@ -109,7 +109,7 @@ func main() {
 	m := model{
 		state:             stateMainMenu,
 		cursor:            0,
-		choices:           []string{"Migration Options2", "Sair (Exit)"},
+		choices:           []string{"Nao Importa ess..", "Sair (Exit)"},
 		migrationsChoices: []string{"Criar nova Migration", "Executar Migrations pendentes", "Reverter última Migration (Rollback)", "Voltar ao menu principal"},
 	}
 
