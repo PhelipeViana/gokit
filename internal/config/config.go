@@ -194,7 +194,9 @@ func LoadEnvFile(path string) ([]string, error) {
 			}
 		}
 
-		_ = os.Setenv(key, val)
+		if _, exists := os.LookupEnv(key); !exists {
+			_ = os.Setenv(key, val)
+		}
 	}
 	return duplicates, scanner.Err()
 }
@@ -282,8 +284,8 @@ func EnsureConfigExistsAndLoad() (*Config, string, []string, error) {
 
 // TestDatabaseConnection abre conexão e faz ping
 func TestDatabaseConnection(dialect, connURL string) error {
-	driverName := dialect
-	if dialect == "postgres" {
+	driverName := strings.ToLower(strings.TrimSpace(dialect))
+	if driverName == "postgres" || driverName == "postgresql" {
 		driverName = "pgx"
 	}
 
