@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"net/http"
 	"os"
-	"runtime"
 	"strings"
 	"time"
 
@@ -62,12 +61,6 @@ var (
 			Padding(1, 3).
 			MarginLeft(2).
 			MarginTop(1)
-
-	outdatedBoxStyle = lipgloss.NewStyle().
-				Border(lipgloss.DoubleBorder()).
-				BorderForeground(lipgloss.Color("#FF5555")). // Vermelho
-				Padding(1, 4).
-				Margin(1, 2)
 )
 
 type Commit struct {
@@ -115,70 +108,13 @@ func main() {
 	}
 }
 
-// getDownloadURL retorna o link direto de download de acordo com o OS e ARCH do usuário
-func getDownloadURL() string {
-	baseURL := "https://github.com/PhelipeViana/gokit/releases/latest/download"
-	
-	goos := runtime.GOOS
-	goarch := runtime.GOARCH
-
-	var filename string
-	switch goos {
-	case "windows":
-		filename = "gokit-windows-amd64.exe"
-	case "linux":
-		filename = "gokit-linux-amd64"
-	case "darwin":
-		if goarch == "arm64" {
-			filename = "gokit-darwin-arm64"
-		} else {
-			filename = "gokit-darwin-amd64"
-		}
-	default:
-		return RepoURL // Fallback para a página principal do repositório
-	}
-
-	return fmt.Sprintf("%s/%s", baseURL, filename)
-}
-
-// getOSText formata o nome do sistema operacional amigavelmente
-func getOSText() string {
-	goos := runtime.GOOS
-	goarch := runtime.GOARCH
-
-	switch goos {
-	case "windows":
-		return "Windows (x86_64)"
-	case "linux":
-		return "Linux (x86_64)"
-	case "darwin":
-		if goarch == "arm64" {
-			return "macOS (Apple Silicon M1/M2/M3)"
-		}
-		return "macOS (Intel)"
-	default:
-		return fmt.Sprintf("%s (%s)", goos, goarch)
-	}
-}
-
-// printOutdatedAndExit renderiza o card de bloqueio por desatualização e encerra o app
+// printOutdatedAndExit informa que o executável está desatualizado e encerra o app
 func printOutdatedAndExit(localSHA, remoteSHA string) {
-	downloadURL := getDownloadURL()
-	osText := getOSText()
-
-	content := fmt.Sprintf(
-		"\033[1m\033[31m⚠️  EXECUTÁVEL DESATUALIZADO DETECTADO! ⚠️\033[0m\n\n"+
-			"Uma nova versão do gokit está disponível no GitHub.\n"+
-			"O menu foi bloqueado e é necessário atualizar o binário para continuar.\n\n"+
-			"Sua versão local (commit):   \033[33m%s\033[0m\n"+
-			"Versão mais recente:         \033[32m%s\033[0m\n"+
-			"Sistema Detectado:           \033[36m%s\033[0m\n\n"+
-			"Clique abaixo para baixar a versão correta:\n"+
-			"\033[1m\033[36m%s\033[0m",
-		localSHA, remoteSHA, osText, terminalLink(downloadURL, "Download Direto para "+osText),
-	)
-
-	fmt.Println(outdatedBoxStyle.Render(content))
+	fmt.Println()
+	fmt.Printf("\033[1m\033[31m⚠️  EXECUTÁVEL DESATUALIZADO DETECTADO! ⚠️\033[0m\n")
+	fmt.Printf("Sua versão (commit):  \033[33m%s\033[0m\n", localSHA)
+	fmt.Printf("Versão mais recente:  \033[32m%s\033[0m\n\n", remoteSHA)
+	fmt.Printf("Por favor, atualize em: \033[36mhttps://github.com/PhelipeViana/gokit/releases\033[0m\n\n")
 	os.Exit(1)
 }
 
