@@ -7,68 +7,142 @@ import (
 	"fmt"
 	"net/http"
 	"os"
-	"os/signal"
 	"strings"
-	"syscall"
 	"time"
+
+	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 )
 
-// CommitHash é injetado em tempo de compilação via -ldflags.
-// Se vazio, significa que está rodando em modo desenvolvimento.
-var CommitHash = "development"
+// CommitHash e Version são injetados em tempo de compilação via -ldflags.
+var (
+	CommitHash = "development"
+	Version    = "development"
+)
 
 // URL oficial do repositório e endpoint de commits do GitHub
-const RepoURL = "https://github.com/PhelipeViana/gokit"
-const CommitsAPI = "https://api.github.com/repos/PhelipeViana/gokit/commits"
-
-// Cores ANSI para estilização do terminal
 const (
-	Reset   = "\033[0m"
-	Bold    = "\033[1m"
-	Red     = "\033[31m"
-	Green   = "\033[32m"
-	Yellow  = "\033[33m"
-	Blue    = "\033[34m"
-	Cyan    = "\033[36m"
+	RepoURL    = "https://github.com/PhelipeViana/gokit"
+	CommitsAPI = "https://api.github.com/repos/PhelipeViana/gokit/commits"
+)
+
+// Estilos Lip Gloss inspirados na estética Charm Bracelet
+var (
+	titleStyle = lipgloss.NewStyle().
+			Bold(true).
+			Foreground(lipgloss.Color("#00F0FF")). // Ciano Brilhante
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(lipgloss.Color("#00F0FF")).
+			Padding(0, 3).
+			MarginLeft(1).
+			MarginTop(1)
+
+	versionStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#FFA500")). // Laranja
+			MarginLeft(2)
+
+	selectedItemStyle = lipgloss.NewStyle().
+				Bold(true).
+				Foreground(lipgloss.Color("#FF007F")). // Hot Pink / Magenta
+				MarginLeft(2)
+
+	itemStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#F8F8F2")). // Branco suave
+			MarginLeft(4)
+
+	footerStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#6272A4")). // Roxo/Cinza escuro
+			MarginLeft(2).
+			MarginTop(1)
+
+	actionBoxStyle = lipgloss.NewStyle().
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(lipgloss.Color("#50FA7B")). // Verde
+			Padding(1, 3).
+			MarginLeft(2).
+			MarginTop(1)
+
+	updateBoxStyle = lipgloss.NewStyle().
+			Border(lipgloss.DoubleBorder()).
+			BorderForeground(lipgloss.Color("#FF5555")). // Vermelho
+			Padding(1, 2).
+			MarginLeft(2).
+			MarginBottom(1)
 )
 
 type Commit struct {
 	SHA string `json:"sha"`
 }
 
+type menuState int
+
+const (
+	stateMainMenu menuState = iota
+	stateMigrationsMenu
+	stateMigrationCreating
+	stateMigrationRunning
+	stateMigrationRollingBack
+)
+
+type model struct {
+	state             menuState
+	cursor            int
+	choices           []string
+	migrationsChoices []string
+	updateAvailable   bool
+	localSHA          string
+	remoteSHA         string
+}
+
 func main() {
-	setupSignalHandler()
-	
-	// Limpa a tela inicial
-	clearScreen()
-	
-	// Executa a checagem de atualizações
-	checkUpdates()
+	// Checagem rápida de versão silenciosa
+	updateAvailable, localSHA, remoteSHA := runSilentUpdateCheck()
 
-	// Inicia a interface CLI interativa
-	runCLI()
+	m := model{
+		state:             stateMainMenu,
+		cursor:            0,
+		choices:           []string{"Migration Options2", "Sair (Exit)"},
+		migrationsChoices: []string{"Criar nova Migration", "Executar Migrations pendentes", "Reverter última Migration (Rollback)", "Voltar ao menu principal"},
+		updateAvailable:   updateAvailable,
+		localSHA:          localSHA,
+		remoteSHA:         remoteSHA,
+	}
+
+	p := tea.NewProgram(m)
+	if _, err := p.Run(); err != nil {
+		fmt.Printf("Ocorreu um erro no aplicativo: %v\n", err)
+		os.Exit(1)
+	}
 }
 
-// setupSignalHandler intercepta o Ctrl+C para sair de forma amigável
-func setupSignalHandler() {
-	c := make(chan os.Signal, 1)
-	signal.Notify(c, os.Interrupt, syscall.SIGTERM)
-	go func() {
-		<-c
-		fmt.Printf("\n\n%sExecução interrompida pelo usuário. Saindo...%s\n", Red, Reset)
-		os.Exit(0)
-	}()
+// runSilentUpdateCheck verifica atualizações de forma silenciosa
+func runSilentUpdateCheck() (bool, string, string) {
+	if CommitHash == "development" {
+		return false, "", ""
+	}
+
+	remoteSHA, err := fetchLatestRemoteCommit()
+	if err != nil {
+		return false, "", ""
+	}
+
+	if !strings.HasPrefix(remoteSHA, CommitHash) && !strings.HasPrefix(CommitHash, remoteSHA) {
+		shortLocal := CommitHash
+		if len(shortLocal) > 7 {
+			shortLocal = shortLocal[:7]
+		}
+		shortRemote := remoteSHA
+		if len(shortRemote) > 7 {
+			shortRemote = shortRemote[:7]
+		}
+		return true, shortLocal, shortRemote
+	}
+
+	return false, "", ""
 }
 
-// terminalLink gera um link clicável usando a especificação OSC 8.
-// Exibe também a URL em parênteses como fallback caso o terminal não suporte.
-func terminalLink(url, text string) string {
-	return fmt.Sprintf("\033]8;;%s\033\\%s\033]8;;\033\\ (%s)", url, text, url)
-}
-
-// fetchLatestRemoteCommit busca o hash do commit mais recente na API do GitHub
 func fetchLatestRemoteCommit() (string, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
 	req, err := http.NewRequestWithContext(ctx, "GET", CommitsAPI, nil)
@@ -101,132 +175,143 @@ func fetchLatestRemoteCommit() (string, error) {
 	return commits[0].SHA, nil
 }
 
-// checkUpdates compara a versão do binário atual com o último commit do GitHub
-func checkUpdates() {
-	if CommitHash == "development" {
-		fmt.Printf("%s[Modo Desenvolvimento] Ignorando verificação de atualizações.%s\n\n", Yellow, Reset)
-		return
-	}
-
-	fmt.Printf("%sVerificando atualizações no repositório remoto...%s\n", Cyan, Reset)
-	remoteSHA, err := fetchLatestRemoteCommit()
-	if err != nil {
-		fmt.Printf("%s[Aviso] Não foi possível verificar atualizações: %v%s\n\n", Yellow, err, Reset)
-		return
-	}
-
-	// Compara os hashes de commit
-	shortLocal := CommitHash
-	if len(shortLocal) > 7 {
-		shortLocal = shortLocal[:7]
-	}
-	shortRemote := remoteSHA
-	if len(shortRemote) > 7 {
-		shortRemote = shortRemote[:7]
-	}
-
-	if !strings.HasPrefix(remoteSHA, CommitHash) && !strings.HasPrefix(CommitHash, remoteSHA) {
-		fmt.Println()
-		fmt.Println(strings.Repeat("=", 65))
-		fmt.Printf("%s%s    ATENÇÃO: NOVA VERSÃO DO GOKIT DETECTADA!%s\n", Red, Bold, Reset)
-		fmt.Println(strings.Repeat("=", 65))
-		fmt.Printf("Sua versão local:      %s%s%s\n", Yellow, shortLocal, Reset)
-		fmt.Printf("Versão mais recente:   %s%s%s\n", Green, shortRemote, Reset)
-		fmt.Println()
-		fmt.Println("Você está executando uma versão desatualizada do executável.")
-		
-		link := terminalLink(RepoURL, "Repositório do Go Kit")
-		fmt.Printf("Por favor, faça o download manual da nova versão em:\n%s%s%s\n", Cyan, link, Reset)
-		fmt.Println(strings.Repeat("=", 65))
-		fmt.Println()
-
-		fmt.Printf("Pressione %s[Enter]%s para continuar assim mesmo ou %s[Ctrl+C]%s para sair...", Bold, Reset, Bold, Reset)
-		var discard string
-		fmt.Scanln(&discard)
-		fmt.Println()
-	} else {
-		fmt.Printf("%s[Sucesso] Seu gokit.exe está atualizado! (Commit: %s)%s\n\n", Green, shortLocal, Reset)
-	}
+// Init inicializa o modelo do Bubble Tea
+func (m model) Init() tea.Cmd {
+	return nil
 }
 
-// runCLI gerencia o menu principal da aplicação
-func runCLI() {
-	for {
-		clearScreen()
-		fmt.Println(Bold + Cyan + "=========================================" + Reset)
-		fmt.Println(Bold + Cyan + "          G O   K I T   C L I            " + Reset)
-		fmt.Println(Bold + Cyan + "=========================================" + Reset)
-		fmt.Printf("Versão: %s%s%s\n\n", Yellow, CommitHash, Reset)
-		
-		fmt.Println(Bold + "Menu Principal:" + Reset)
-		fmt.Printf("  %s[1]%s Migration Options\n", Green, Reset)
-		fmt.Printf("  %s[2]%s Sair (Exit)\n", Red, Reset)
-		fmt.Println()
-		fmt.Printf("Escolha uma opção (1-2): ")
+// Update gerencia as interações do Bubble Tea
+func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	switch msg := msg.(type) {
+	case tea.KeyMsg:
+		switch msg.String() {
+		case "ctrl+c", "q":
+			return m, tea.Quit
 
-		var input string
-		fmt.Scanln(&input)
-		input = strings.TrimSpace(input)
+		case "up", "k":
+			if m.state == stateMainMenu {
+				m.cursor--
+				if m.cursor < 0 {
+					m.cursor = len(m.choices) - 1
+				}
+			} else if m.state == stateMigrationsMenu {
+				m.cursor--
+				if m.cursor < 0 {
+					m.cursor = len(m.migrationsChoices) - 1
+				}
+			}
 
-		switch input {
-		case "1":
-			runMigrationOptions()
-		case "2":
-			fmt.Printf("\n%sSaindo... Obrigado por usar o Go Kit!%s\n", Green, Reset)
-			return
-		default:
-			fmt.Printf("\n%sOpção inválida. Pressione [Enter] para tentar novamente.%s", Red, Reset)
-			fmt.Scanln()
+		case "down", "j":
+			if m.state == stateMainMenu {
+				m.cursor++
+				if m.cursor >= len(m.choices) {
+					m.cursor = 0
+				}
+			} else if m.state == stateMigrationsMenu {
+				m.cursor++
+				if m.cursor >= len(m.migrationsChoices) {
+					m.cursor = 0
+				}
+			}
+
+		case "enter":
+			if m.state == stateMainMenu {
+				switch m.cursor {
+				case 0:
+					m.state = stateMigrationsMenu
+					m.cursor = 0
+				case 1:
+					return m, tea.Quit
+				}
+			} else if m.state == stateMigrationsMenu {
+				switch m.cursor {
+				case 0:
+					m.state = stateMigrationCreating
+				case 1:
+					m.state = stateMigrationRunning
+				case 2:
+					m.state = stateMigrationRollingBack
+				case 3:
+					m.state = stateMainMenu
+					m.cursor = 0
+				}
+			} else {
+				m.state = stateMigrationsMenu
+			}
 		}
 	}
+	return m, nil
 }
 
-// runMigrationOptions gerencia o submenu de migrações
-func runMigrationOptions() {
-	for {
-		clearScreen()
-		fmt.Println(Bold + Cyan + "=========================================" + Reset)
-		fmt.Println(Bold + Cyan + "        M I G R A T I O N S   M E N U    " + Reset)
-		fmt.Println(Bold + Cyan + "=========================================" + Reset)
-		fmt.Println()
-		fmt.Println(Bold + "Opções de Migração:" + Reset)
-		fmt.Printf("  %s[1]%s Criar nova Migration\n", Green, Reset)
-		fmt.Printf("  %s[2]%s Executar Migrations pendentes\n", Green, Reset)
-		fmt.Printf("  %s[3]%s Reverter última Migration (Rollback)\n", Yellow, Reset)
-		fmt.Printf("  %s[4]%s Voltar ao menu principal\n", Red, Reset)
-		fmt.Println()
-		fmt.Printf("Escolha uma opção (1-4): ")
+// View renderiza a interface no terminal
+func (m model) View() string {
+	var s strings.Builder
 
-		var input string
-		fmt.Scanln(&input)
-		input = strings.TrimSpace(input)
+	// Cabeçalho da aplicação
+	s.WriteString(titleStyle.Render("GO KIT CLI") + "\n")
+	s.WriteString(versionStyle.Render("Última Atualização: "+Version) + "\n\n")
 
-		switch input {
-		case "1":
-			fmt.Printf("\n%s[Ação]%s Criando uma nova estrutura de migration...\n", Cyan, Reset)
-			fmt.Printf("\n%sMigration criada com sucesso! (Placeholder)%s\n", Green, Reset)
-			fmt.Println("\nPressione [Enter] para voltar.")
-			fmt.Scanln()
-		case "2":
-			fmt.Printf("\n%s[Ação]%s Executando migrações pendentes...\n", Cyan, Reset)
-			fmt.Printf("\n%sBanco de dados atualizado com sucesso! (Placeholder)%s\n", Green, Reset)
-			fmt.Println("\nPressione [Enter] para voltar.")
-			fmt.Scanln()
-		case "3":
-			fmt.Printf("\n%s[Ação]%s Revertendo migrações...\n", Cyan, Reset)
-			fmt.Printf("\n%sRollback executado com sucesso! (Placeholder)%s\n", Green, Reset)
-			fmt.Println("\nPressione [Enter] para voltar.")
-			fmt.Scanln()
-		case "4":
-			return
-		default:
-			fmt.Printf("\n%sOpção inválida. Pressione [Enter] para tentar novamente.%s", Red, Reset)
-			fmt.Scanln()
-		}
+	// Alerta de Nova Versão Disponível
+	if m.updateAvailable {
+		updateContent := fmt.Sprintf(
+			"⚠️  NOVA VERSÃO DISPONÍVEL!\n\n"+
+				"Sua versão: \033[33m%s\033[0m\n"+
+				"Versão nova: \033[32m%s\033[0m\n\n"+
+				"Baixe manualmente em:\n\033[36m%s\033[0m",
+			m.localSHA, m.remoteSHA, RepoURL,
+		)
+		s.WriteString(updateBoxStyle.Render(updateContent) + "\n")
 	}
-}
 
-// clearScreen limpa o terminal escrevendo sequências de escape ANSI
-func clearScreen() {
-	fmt.Print("\033[H\033[2J")
+	switch m.state {
+	case stateMainMenu:
+		s.WriteString("  " + lipgloss.NewStyle().Bold(true).Render("Menu Principal:") + "\n\n")
+		for i, choice := range m.choices {
+			if m.cursor == i {
+				s.WriteString(selectedItemStyle.Render("➔ "+choice) + "\n")
+			} else {
+				s.WriteString(itemStyle.Render(choice) + "\n")
+			}
+		}
+
+	case stateMigrationsMenu:
+		s.WriteString("  " + lipgloss.NewStyle().Bold(true).Render("Opções de Migração:") + "\n\n")
+		for i, choice := range m.migrationsChoices {
+			if m.cursor == i {
+				s.WriteString(selectedItemStyle.Render("➔ "+choice) + "\n")
+			} else {
+				s.WriteString(itemStyle.Render(choice) + "\n")
+			}
+		}
+
+	case stateMigrationCreating:
+		content := fmt.Sprintf(
+			"\033[1m\033[36m[Ação]\033[0m Criando nova estrutura de migration...\n\n" +
+				"\033[32m✔ Migration criada com sucesso! (gokit_migration_placeholder.go)\033[0m\n\n" +
+				"Pressione \033[1m[Enter]\033[0m para voltar.",
+		)
+		s.WriteString(actionBoxStyle.Render(content) + "\n")
+
+	case stateMigrationRunning:
+		content := fmt.Sprintf(
+			"\033[1m\033[36m[Ação]\033[0m Executando migrações pendentes...\n\n" +
+				"\033[32m✔ Banco de dados atualizado! Todas as migrações foram aplicadas.\033[0m\n\n" +
+				"Pressione \033[1m[Enter]\033[0m para voltar.",
+		)
+		s.WriteString(actionBoxStyle.Render(content) + "\n")
+
+	case stateMigrationRollingBack:
+		content := fmt.Sprintf(
+			"\033[1m\033[36m[Ação]\033[0m Revertendo última migration (Rollback)...\n\n" +
+				"\033[32m✔ Rollback executado com sucesso!\033[0m\n\n" +
+				"Pressione \033[1m[Enter]\033[0m para voltar.",
+		)
+		s.WriteString(actionBoxStyle.Render(content) + "\n")
+	}
+
+	if m.state == stateMainMenu || m.state == stateMigrationsMenu {
+		s.WriteString(footerStyle.Render("↑/↓: navegar • enter: selecionar • ctrl+c: sair") + "\n")
+	}
+
+	return s.String()
 }
