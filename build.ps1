@@ -25,6 +25,9 @@ if (-not (Test-Path $distDir)) {
     New-Item -ItemType Directory -Path $distDir | Out-Null
 }
 
+# Salva o commit atual no commit.txt
+[System.IO.File]::WriteAllText("$distDir/commit.txt", $commitHash)
+
 # Função de compilação
 function Build-Target($goos, $goarch, $filename) {
     $env:GOOS = $goos

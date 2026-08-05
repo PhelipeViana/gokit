@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"runtime"
@@ -170,12 +171,12 @@ func fetchLatestRemoteCommit() (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
-	req, err := http.NewRequestWithContext(ctx, "GET", CommitsAPI, nil)
+	url := "https://github.com/PhelipeViana/gokit/raw/main/dist/commit.txt"
+	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
 		return "", err
 	}
 	req.Header.Set("User-Agent", "gokit-cli")
-	req.Header.Set("Accept", "application/vnd.github.v3+json")
 
 	client := &http.Client{}
 	resp, err := client.Do(req)
@@ -185,19 +186,15 @@ func fetchLatestRemoteCommit() (string, error) {
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("status HTTP inválido: %s", resp.Status)
+		return "", fmt.Errorf("não foi possível obter a versão remota (status %d)", resp.StatusCode)
 	}
 
-	var commits []Commit
-	if err := json.NewDecoder(resp.Body).Decode(&commits); err != nil {
+	bodyBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
 		return "", err
 	}
 
-	if len(commits) == 0 {
-		return "", errors.New("nenhum commit encontrado no repositório remoto")
-	}
-
-	return commits[0].SHA, nil
+	return strings.TrimSpace(string(bodyBytes)), nil
 }
 
 // terminalLink cria o hyperlink OSC 8 interativo no terminal
