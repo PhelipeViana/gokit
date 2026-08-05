@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"runtime"
 	"strings"
 	"time"
 
@@ -110,10 +111,33 @@ func main() {
 
 // printOutdatedAndExit informa que o executável está desatualizado e encerra o app
 func printOutdatedAndExit(localSHA, remoteSHA string) {
+	downloadURL := getDirectDownloadURL()
 	fmt.Println()
 	fmt.Printf("\033[1m\033[31m⚠️  O GOKIT ESTÁ DESATUALIZADO! ⚠️\033[0m\n\n")
-	fmt.Printf("Por favor, baixe a nova versão em:\n\033[36mhttps://github.com/PhelipeViana/gokit/tree/main/dist\033[0m\n\n")
+	fmt.Printf("Por favor, baixe a nova versão em:\n\033[36m%s\033[0m\n\n", downloadURL)
 	os.Exit(1)
+}
+
+// getDirectDownloadURL gera o link de download direto do arquivo binário bruto no repositório GitHub
+func getDirectDownloadURL() string {
+	baseURL := "https://github.com/PhelipeViana/gokit/raw/main/dist"
+	
+	goos := runtime.GOOS
+	goarch := runtime.GOARCH
+
+	switch goos {
+	case "windows":
+		return baseURL + "/gokit-windows-amd64.exe"
+	case "linux":
+		return baseURL + "/gokit-linux-amd64"
+	case "darwin":
+		if goarch == "arm64" {
+			return baseURL + "/gokit-darwin-arm64"
+		}
+		return baseURL + "/gokit-darwin-amd64"
+	default:
+		return "https://github.com/PhelipeViana/gokit/tree/main/dist"
+	}
 }
 
 // runSilentUpdateCheck verifica atualizações de forma silenciosa
