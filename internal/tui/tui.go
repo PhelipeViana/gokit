@@ -73,11 +73,15 @@ var (
 func Start(version string) error {
 	Version = version
 
+	// Carrega dados iniciais de configuração para expor o status no menu
+	initialConfig := config.RunConfigChecks()
+
 	m := model{
 		state:             stateMainMenu,
 		cursor:            0,
 		choices:           []string{"Configuração", "Migration Options", "Sair (Exit)"},
 		migrationsChoices: []string{"Criar nova Migration", "Executar Migrations pendentes", "Reverter última Migration (Rollback)", "Voltar ao menu principal"},
+		configData:        initialConfig,
 	}
 
 	p := tea.NewProgram(m)
@@ -152,6 +156,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			default:
 				m.state = stateMainMenu
 				m.cursor = 0
+				// Sincroniza o status das conexões ao voltar ao menu principal
+				m.configData = config.RunConfigChecks()
 			}
 		}
 	}
@@ -175,6 +181,29 @@ func (m model) View() string {
 			} else {
 				s.WriteString(itemStyle.Render(choice) + "\n")
 			}
+		}
+
+		// Exibe o status da conexão atual de forma clara no Menu Principal
+		s.WriteString("\n")
+		statusStyle := lipgloss.NewStyle().MarginLeft(2)
+		if m.configData.ConfigFileError != nil {
+			s.WriteString(statusStyle.Foreground(lipgloss.Color("#FF5555")).Render(
+				fmt.Sprintf("Banco de Dados: ✖ Erro (%v)", m.configData.ConfigFileError),
+			) + "\n")
+		} else if m.configData.Config != nil {
+			if m.configData.ConnSuccess {
+				s.WriteString(statusStyle.Foreground(lipgloss.Color("#50FA7B")).Render(
+					fmt.Sprintf("Banco de Dados: ✔ Conectado (%s • %s)", m.configData.ActiveClient, m.configData.ActiveDialect),
+				) + "\n")
+			} else {
+				s.WriteString(statusStyle.Foreground(lipgloss.Color("#FF5555")).Render(
+					fmt.Sprintf("Banco de Dados: ✖ Desconectado (%s • %s)", m.configData.ActiveClient, m.configData.ActiveDialect),
+				) + "\n")
+			}
+		} else {
+			s.WriteString(statusStyle.Foreground(lipgloss.Color("#FFB86C")).Render(
+				"Banco de Dados: ✖ gokit.yaml não inicializado (Acesse 'Configuração' para criar)",
+			) + "\n")
 		}
 
 	case stateMigrationsMenu:
@@ -215,58 +244,60 @@ func (m model) View() string {
 		var cfgStr strings.Builder
 		cState := m.configData
 
-		cfgStr.WriteString("\033[1m\033[36m[Configuração - Status do Projeto]\033[0m\n\n")
+		cfgStr.WriteString("\033[1m\033[36m[Configuração - Checklist de Validação]\033[0m\n\n")
 
+		// 1. Validar existência do gokit.yaml
 		if cState.ScaffoldCreated {
-			cfgStr.WriteString("\033[32m✔ Scaffold criado com sucesso em: " + cState.ConfigPath + "\033[0m\n\n")
+			cfgStr.WriteString("  \033[32m[✔] gokit.yaml: Criado com sucesso em " + cState.ConfigPath + "\033[0m\n")
+		} else if cState.ConfigFileError != nil && strings.Contains(cState.ConfigFileError.Error(), "não foi possível ler") {
+			cfgStr.WriteString("  \033[31m[✖] gokit.yaml: Não foi possível ler o arquivo\033[0m\n")
 		} else {
-			cfgStr.WriteString("Arquivo carregado: \033[36m" + cState.ConfigPath + "\033[0m\n\n")
+			cfgStr.WriteString("  \033[32m[✔] gokit.yaml: Carregado com sucesso\033[0m\n")
 		}
 
-		if cState.ConfigFileError != nil {
-			cfgStr.WriteString(fmt.Sprintf("\033[31m✖ Erro de Configuração:\033[0m %v\n\n", cState.ConfigFileError))
+		// 2. Validar estrutura YAML
+		if cState.ConfigFileError != nil && strings.Contains(cState.ConfigFileError.Error(), "sintaxe YAML") {
+			cfgStr.WriteString(fmt.Sprintf("  \033[31m[✖] Estrutura YAML: %v\033[0m\n", cState.ConfigFileError))
 		} else if cState.Config != nil {
-			// Detalhes da Conexão Ativa
-			cfgStr.WriteString(fmt.Sprintf("Ambiente Atual:             \033[35m%s\033[0m (valor: %s)\n",
-				cState.Config.Environment.Ambient,
-				os.Getenv(cState.Config.Environment.Ambient),
-			))
-			cfgStr.WriteString(fmt.Sprintf("Cliente Ativo (Conexão):    \033[35m%s\033[0m\n", cState.ActiveClient))
-			cfgStr.WriteString(fmt.Sprintf("Dialeto de Banco:           \033[36m%s\033[0m\n", cState.ActiveDialect))
+			cfgStr.WriteString("  \033[32m[✔] Estrutura YAML: Válida\033[0m\n")
+		}
+
+		// 3. Validar .env
+		if cState.Config != nil {
+			envPath := cState.Config.Environment.MapperEnv
+			if _, err := os.Stat(envPath); err == nil {
+				cfgStr.WriteString(fmt.Sprintf("  \033[32m[✔] Ambiente (.env): Carregado de \"%s\"\033[0m\n", envPath))
+			} else {
+				cfgStr.WriteString(fmt.Sprintf("  \033[33m[!] Ambiente (.env): Arquivo \"%s\" não encontrado\033[0m\n", envPath))
+			}
+		}
+
+		// 4. Validar Conectividade do banco de dados (Apenas o banco atual configurado)
+		if cState.ConfigFileError != nil && !strings.Contains(cState.ConfigFileError.Error(), "sintaxe YAML") {
+			cfgStr.WriteString(fmt.Sprintf("  \033[31m[✖] Conectividade: %v\033[0m\n", cState.ConfigFileError))
+		} else if cState.Config != nil {
+			cfgStr.WriteString(fmt.Sprintf("  \033[32m[✔] Cliente Ativo: %s (dialeto: %s)\033[0m\n", cState.ActiveClient, cState.ActiveDialect))
 
 			maskedURL := config.MaskPassword(cState.ActiveDialect, cState.ActiveURL)
-			cfgStr.WriteString(fmt.Sprintf("URL de Conexão:             \033[37m%s\033[0m\n\n", maskedURL))
-
-			// Status da Conexão
-			cfgStr.WriteString("\033[1mStatus de Conectividade:\033[0m\n")
 			if cState.ConnSuccess {
-				cfgStr.WriteString("  \033[32m✔ CONECTADO COM SUCESSO!\033[0m\n\n")
+				cfgStr.WriteString("  \033[32m[✔] Conectividade: CONECTADO COM SUCESSO!\033[0m\n")
+				cfgStr.WriteString(fmt.Sprintf("      URL: %s\n", maskedURL))
 			} else {
-				cfgStr.WriteString(fmt.Sprintf("  \033[31m✖ FALHA DE CONEXÃO:\033[0m %v\n\n", cState.ConnError))
+				cfgStr.WriteString("  \033[31m[✖] Conectividade: FALHA DE CONEXÃO\033[0m\n")
+				cfgStr.WriteString(fmt.Sprintf("      Erro: %v\n", cState.ConnError))
+				cfgStr.WriteString(fmt.Sprintf("      URL: %s\n", maskedURL))
 			}
+		}
 
-			// Outras Conexões
-			cfgStr.WriteString("\033[1mOutras conexões mapeadas:\033[0m\n")
-			hasOthers := false
-			for name, conn := range cState.Config.Connections {
-				if name != cState.ActiveClient {
-					cfgStr.WriteString(fmt.Sprintf("  - %s (%s)\n", name, conn.Dialect))
-					hasOthers = true
-				}
-			}
-			if !hasOthers {
-				cfgStr.WriteString("  (Nenhuma outra conexão cadastrada)\n")
-			}
-			cfgStr.WriteString("\n")
-
-			// Destinos das Pastas
-			cfgStr.WriteString("\033[1mDiretórios de Saída (Output):\033[0m\n")
-			cfgStr.WriteString(fmt.Sprintf("  - Settings:  %s\n", cState.Config.Output.Settings))
-			cfgStr.WriteString(fmt.Sprintf("  - ORM:       %s\n", cState.Config.Output.ORM))
-			cfgStr.WriteString(fmt.Sprintf("  - Migrate:   %s\n", cState.Config.Output.Migrate))
-			cfgStr.WriteString(fmt.Sprintf("  - Factory:   %s\n", cState.Config.Output.Factory))
-			cfgStr.WriteString(fmt.Sprintf("  - Seed:      %s\n", cState.Config.Output.Seed))
-			cfgStr.WriteString(fmt.Sprintf("  - Docs:      %s\n", cState.Config.Output.Docs))
+		// 5. Mostrar Mapeamento de Diretórios (Output)
+		if cState.Config != nil {
+			cfgStr.WriteString("\n  \033[1mDiretórios de Destino (Output):\033[0m\n")
+			cfgStr.WriteString(fmt.Sprintf("    Settings:  %s\n", cState.Config.Output.Settings))
+			cfgStr.WriteString(fmt.Sprintf("    ORM:       %s\n", cState.Config.Output.ORM))
+			cfgStr.WriteString(fmt.Sprintf("    Migrate:   %s\n", cState.Config.Output.Migrate))
+			cfgStr.WriteString(fmt.Sprintf("    Factory:   %s\n", cState.Config.Output.Factory))
+			cfgStr.WriteString(fmt.Sprintf("    Seed:      %s\n", cState.Config.Output.Seed))
+			cfgStr.WriteString(fmt.Sprintf("    Docs:      %s\n", cState.Config.Output.Docs))
 		}
 
 		cfgStr.WriteString("\nPressione \033[1m[Enter]\033[0m para voltar ao menu principal.")
