@@ -311,9 +311,15 @@ func (m model) View() string {
 		if cState.Config != nil {
 			envPath := cState.Config.Environment.MapperEnv
 			if _, err := os.Stat(envPath); err == nil {
-				cfgStr.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("#50FA7B")).Render(
-					fmt.Sprintf("  [✔] Ambiente (.env): Carregado de \"%s\"", envPath),
-				) + "\n")
+				if len(cState.EnvWarnings) > 0 {
+					cfgStr.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("#FFB86C")).Render(
+						fmt.Sprintf("  [!] Ambiente (.env): Carregado, mas contém variáveis duplicadas (sobrescritas): %s", strings.Join(cState.EnvWarnings, ", ")),
+					) + "\n")
+				} else {
+					cfgStr.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("#50FA7B")).Render(
+						fmt.Sprintf("  [✔] Ambiente (.env): Carregado de \"%s\"", envPath),
+					) + "\n")
+				}
 			} else {
 				cfgStr.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("#FFB86C")).Render(
 					fmt.Sprintf("  [!] Ambiente (.env): Arquivo \"%s\" não encontrado", envPath),

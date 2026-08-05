@@ -139,6 +139,7 @@ type ConfigState struct {
 	ConfigPath      string
 	ConfigFileError error
 	Config          *Config
+	EnvWarnings     []string
 	ActiveClient    string
 	ActiveDialect   string
 	ActiveURL       string
@@ -146,13 +147,16 @@ type ConfigState struct {
 	ConnSuccess     bool
 }
 
-// LoadEnvFile lê o arquivo .env e joga os valores no ambiente do sistema
-func LoadEnvFile(path string) error {
+// LoadEnvFile lê o arquivo .env, injeta as variáveis no sistema e retorna chaves duplicadas
+func LoadEnvFile(path string) ([]string, error) {
 	file, err := os.Open(path)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer file.Close()
+
+	seenKeys := make(map[string]bool)
+	var duplicates []string
 
 	scanner := bufio.NewScanner(file)
 	for scanner.Scan() {
@@ -169,6 +173,20 @@ func LoadEnvFile(path string) error {
 		key := strings.TrimSpace(parts[0])
 		val := strings.TrimSpace(parts[1])
 
+		if seenKeys[key] {
+			alreadyWarned := false
+			for _, d := range duplicates {
+				if d == key {
+					alreadyWarned = true
+					break
+				}
+			}
+			if !alreadyWarned {
+				duplicates = append(duplicates, key)
+			}
+		}
+		seenKeys[key] = true
+
 		// Remove aspas
 		if len(val) >= 2 {
 			if (val[0] == '"' && val[len(val)-1] == '"') || (val[0] == '\'' && val[len(val)-1] == '\'') {
@@ -178,7 +196,7 @@ func LoadEnvFile(path string) error {
 
 		_ = os.Setenv(key, val)
 	}
-	return scanner.Err()
+	return duplicates, scanner.Err()
 }
 
 // ExpandEnvWithDefaults preenche ${VAR} ou ${VAR:-default}
@@ -215,35 +233,36 @@ func ExpandEnvWithDefaults(str string) string {
 }
 
 // EnsureConfigExistsAndLoad lê o gokit.yaml, criando a pasta/arquivo se não existirem
-func EnsureConfigExistsAndLoad() (*Config, string, error) {
+func EnsureConfigExistsAndLoad() (*Config, string, []string, error) {
 	configPath := filepath.Join("internal", "gokit.yaml")
 
 	if _, err := os.Stat(configPath); os.IsNotExist(err) {
 		err = os.MkdirAll("internal", 0o755)
 		if err != nil {
-			return nil, configPath, fmt.Errorf("falha ao criar pasta internal: %v", err)
+			return nil, configPath, nil, fmt.Errorf("falha ao criar pasta internal: %v", err)
 		}
 		err = os.WriteFile(configPath, []byte(DefaultScaffoldYAML), 0o644)
 		if err != nil {
-			return nil, configPath, fmt.Errorf("falha ao gerar gokit.yaml: %v", err)
+			return nil, configPath, nil, fmt.Errorf("falha ao gerar gokit.yaml: %v", err)
 		}
 	}
 
 	data, err := os.ReadFile(configPath)
 	if err != nil {
-		return nil, configPath, fmt.Errorf("não foi possível ler o arquivo: %v", err)
+		return nil, configPath, nil, fmt.Errorf("não foi possível ler o arquivo: %v", err)
 	}
 
 	var rawConfig Config
 	err = yaml.Unmarshal(data, &rawConfig)
 	if err != nil {
-		return nil, configPath, fmt.Errorf("sintaxe YAML inválida: %v", err)
+		return nil, configPath, nil, fmt.Errorf("sintaxe YAML inválida: %v", err)
 	}
 
 	// Carrega arquivo .env se mapeado
 	envPath := rawConfig.Environment.MapperEnv
+	var envWarnings []string
 	if envPath != "" {
-		_ = LoadEnvFile(envPath)
+		envWarnings, _ = LoadEnvFile(envPath)
 	}
 
 	// Substitui variáveis de ambiente nas conexões
@@ -258,7 +277,7 @@ func EnsureConfigExistsAndLoad() (*Config, string, error) {
 	}
 	interpolatedConfig.Notifications.Slack.WebhookURL = ExpandEnvWithDefaults(rawConfig.Notifications.Slack.WebhookURL)
 
-	return &interpolatedConfig, configPath, nil
+	return &interpolatedConfig, configPath, envWarnings, nil
 }
 
 // TestDatabaseConnection abre conexão e faz ping
@@ -321,8 +340,9 @@ func RunConfigChecks() ConfigState {
 	_, statErr := os.Stat(configPath)
 	state.ScaffoldCreated = os.IsNotExist(statErr)
 
-	cfg, path, err := EnsureConfigExistsAndLoad()
+	cfg, path, warnings, err := EnsureConfigExistsAndLoad()
 	state.ConfigPath = path
+	state.EnvWarnings = warnings
 	if err != nil {
 		state.ConfigFileError = err
 		return state
