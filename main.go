@@ -82,6 +82,12 @@ func main() {
 	// Remove binários antigos remanescentes de atualizações anteriores (.old)
 	cleanOldExecutables()
 
+	// Evita loop infinito se este processo já for o executável atualizado reiniciado
+	if os.Getenv("GOKIT_AUTO_UPDATED") == "true" {
+		runCLIProgram()
+		return
+	}
+
 	// Checagem rápida e silenciosa de versão no GitHub
 	updateAvailable, _, remoteSHA := runSilentUpdateCheck()
 
@@ -106,6 +112,10 @@ func main() {
 		}
 	}
 
+	runCLIProgram()
+}
+
+func runCLIProgram() {
 	m := model{
 		state:             stateMainMenu,
 		cursor:            0,
@@ -151,6 +161,9 @@ func restartProcess() error {
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	cmd.Stdin = os.Stdin
+
+	// Repassa variáveis do ambiente e sinaliza que este é o processo pós-update
+	cmd.Env = append(os.Environ(), "GOKIT_AUTO_UPDATED=true")
 
 	return cmd.Start()
 }
