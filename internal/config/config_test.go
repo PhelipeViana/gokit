@@ -6,6 +6,73 @@ import (
 	"testing"
 )
 
+func TestBuildURL(t *testing.T) {
+	tests := []struct {
+		name     string
+		config   ConnConfig
+		expected string
+	}{
+		{
+			name: "postgres config",
+			config: ConnConfig{
+				Dialect:  "postgres",
+				User:     "user",
+				Password: "password",
+				Host:     "localhost",
+				Port:     "5432",
+				Database: "mydb",
+				SSLMode:  "disable",
+			},
+			expected: "postgres://user:password@localhost:5432/mydb?sslmode=disable",
+		},
+		{
+			name: "oracle config",
+			config: ConnConfig{
+				Dialect:  "oracle",
+				User:     "user",
+				Password: "password",
+				Host:     "localhost",
+				Port:     "1521",
+				Service:  "XE",
+			},
+			expected: "oracle://user:password@localhost:1521/XE",
+		},
+		{
+			name: "mysql config",
+			config: ConnConfig{
+				Dialect:  "mysql",
+				User:     "user",
+				Password: "password",
+				Host:     "localhost",
+				Port:     "3306",
+				Database: "mydb",
+			},
+			expected: "user:password@tcp(localhost:3306)/mydb?parseTime=true&charset=utf8mb4&collation=utf8mb4_unicode_ci",
+		},
+		{
+			name: "sqlserver config",
+			config: ConnConfig{
+				Dialect:  "sqlserver",
+				User:     "user",
+				Password: "password",
+				Host:     "localhost",
+				Port:     "1433",
+				Database: "mydb",
+			},
+			expected: "sqlserver://user:password@localhost:1433?database=mydb&encrypt=disable",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := tt.config.BuildURL()
+			if got != tt.expected {
+				t.Errorf("BuildURL() = %q, expected %q", got, tt.expected)
+			}
+		})
+	}
+}
+
 func TestExpandEnvWithDefaults(t *testing.T) {
 	t.Setenv("TEST_VAR_ONE", "value1")
 	t.Setenv("TEST_VAR_TWO", "value2")
@@ -119,10 +186,19 @@ func TestTestDatabaseConnectionIntegration(t *testing.T) {
 	}
 
 	// 1. Testar Postgres se configurado e rodando
-	pgURL := os.ExpandEnv("postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@${POSTGRES_HOST}:${POSTGRES_PORT}/${POSTGRES_DB}?sslmode=disable")
 	if os.Getenv("POSTGRES_HOST") != "" {
+		pgConf := ConnConfig{
+			Dialect:  "postgres",
+			User:     os.Getenv("POSTGRES_USER"),
+			Password: os.Getenv("POSTGRES_PASSWORD"),
+			Host:     os.Getenv("POSTGRES_HOST"),
+			Port:     os.Getenv("POSTGRES_PORT"),
+			Database: os.Getenv("POSTGRES_DB"),
+			SSLMode:  os.Getenv("POSTGRES_SSLMODE"),
+		}
+		pgURL := pgConf.BuildURL()
+
 		t.Run("Postgres connection", func(t *testing.T) {
-			// Testa com "postgres" como dialeto
 			err := TestDatabaseConnection("postgres", pgURL)
 			if err != nil {
 				t.Logf("Postgres connection failed (normal if not running): %v", err)
@@ -130,7 +206,6 @@ func TestTestDatabaseConnectionIntegration(t *testing.T) {
 				t.Log("Postgres connection validated successfully!")
 			}
 
-			// Testa com "postgresql" como dialeto para certificar que a normalização mapeia para "pgx"
 			err = TestDatabaseConnection("postgresql", pgURL)
 			if err != nil {
 				t.Logf("Postgresql dialect normalization check failed: %v", err)
@@ -139,8 +214,17 @@ func TestTestDatabaseConnectionIntegration(t *testing.T) {
 	}
 
 	// 2. Testar Oracle se configurado e rodando
-	oracleURL := os.ExpandEnv("oracle://${ORACLE_USER}:${ORACLE_PASSWORD}@${ORACLE_HOST}:${ORACLE_PORT}/${ORACLE_SERVICE}")
 	if os.Getenv("ORACLE_HOST") != "" {
+		oracleConf := ConnConfig{
+			Dialect:  "oracle",
+			User:     os.Getenv("ORACLE_USER"),
+			Password: os.Getenv("ORACLE_PASSWORD"),
+			Host:     os.Getenv("ORACLE_HOST"),
+			Port:     os.Getenv("ORACLE_PORT"),
+			Service:  os.Getenv("ORACLE_SERVICE"),
+		}
+		oracleURL := oracleConf.BuildURL()
+
 		t.Run("Oracle connection", func(t *testing.T) {
 			err := TestDatabaseConnection("oracle", oracleURL)
 			if err != nil {

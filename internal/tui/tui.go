@@ -171,6 +171,30 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+func getDialectIcon(dialect string) string {
+	d := strings.ToLower(strings.TrimSpace(dialect))
+	switch d {
+	case "postgres", "postgresql":
+		return "🐘 PostgreSQL"
+	case "oracle":
+		return "🔴 Oracle"
+	case "mysql":
+		return "🐬 MySQL"
+	case "sqlserver", "mssql":
+		return "🪟 SQL Server"
+	default:
+		return "💾 " + dialect
+	}
+}
+
+func getEnvLabel(env string) string {
+	e := strings.ToLower(strings.TrimSpace(env))
+	if e == "production" || e == "prod" {
+		return lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#FF5555")).Render("🚨 PRODUÇÃO (production)")
+	}
+	return lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#50FA7B")).Render("💻 LOCAL (development)")
+}
+
 // View renderiza a interface no terminal
 func (m model) View() string {
 	var s strings.Builder
@@ -197,21 +221,34 @@ func (m model) View() string {
 		statusStyle := lipgloss.NewStyle().MarginLeft(2)
 		if m.configData.ConfigFileError != nil {
 			s.WriteString(statusStyle.Foreground(lipgloss.Color("#FF5555")).Render(
-				fmt.Sprintf("Banco de Dados: ✖ Erro (%v)", m.configData.ConfigFileError),
+				fmt.Sprintf("Ambiente:       %s\n  Banco de Dados: ✖ Erro de Configuração (%v)", 
+					getEnvLabel(m.configData.ActiveEnv), m.configData.ConfigFileError),
 			) + "\n")
 		} else if m.configData.Config != nil {
+			envLabel := getEnvLabel(m.configData.ActiveEnv)
+			dialectIcon := getDialectIcon(m.configData.ActiveDialect)
 			if m.configData.ConnSuccess {
-				s.WriteString(statusStyle.Foreground(lipgloss.Color("#50FA7B")).Render(
-					fmt.Sprintf("Banco de Dados: ✔ Conectado (%s • %s)", m.configData.ActiveClient, m.configData.ActiveDialect),
+				s.WriteString(statusStyle.Render(
+					fmt.Sprintf("Ambiente:       %s\n  Banco de Dados: %s (%s)\n  Status:         %s", 
+						envLabel, 
+						dialectIcon, 
+						m.configData.ActiveClient,
+						lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#50FA7B")).Render("✔ Conectado"),
+					),
 				) + "\n")
 			} else {
-				s.WriteString(statusStyle.Foreground(lipgloss.Color("#FF5555")).Render(
-					fmt.Sprintf("Banco de Dados: ✖ Desconectado (%s • %s)", m.configData.ActiveClient, m.configData.ActiveDialect),
+				s.WriteString(statusStyle.Render(
+					fmt.Sprintf("Ambiente:       %s\n  Banco de Dados: %s (%s)\n  Status:         %s", 
+						envLabel, 
+						dialectIcon, 
+						m.configData.ActiveClient,
+						lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#FF5555")).Render("✖ Desconectado"),
+					),
 				) + "\n")
 			}
 		} else {
 			s.WriteString(statusStyle.Foreground(lipgloss.Color("#FFB86C")).Render(
-				"Banco de Dados: ✖ gokit.yaml não inicializado (Acesse 'Configuração' para criar)",
+				"Banco de Dados: ✖ gokit.json não inicializado (Acesse 'Configuração' para criar)",
 			) + "\n")
 		}
 
@@ -270,40 +307,42 @@ func (m model) View() string {
 				fmt.Sprintf("  [✖] Conectividade: Erro ao ler conexões (%v)", cState.ConfigFileError),
 			) + "\n")
 		} else if cState.Config != nil {
+			dialectIcon := getDialectIcon(cState.ActiveDialect)
+			envLabel := getEnvLabel(cState.ActiveEnv)
 			if cState.ConnSuccess {
 				cfgStr.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("#50FA7B")).Render(
-					fmt.Sprintf("  [✔] Conectividade: Conectado (%s • %s)", cState.ActiveClient, cState.ActiveDialect),
+					fmt.Sprintf("  [✔] Conectividade: Conectado ao %s (%s) em %s", dialectIcon, cState.ActiveClient, envLabel),
 				) + "\n")
 			} else {
 				cfgStr.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("#FF5555")).Render(
-					fmt.Sprintf("  [✖] Conectividade: Desconectado (%s • %s) - Erro: %v", cState.ActiveClient, cState.ActiveDialect, cState.ConnError),
+					fmt.Sprintf("  [✖] Conectividade: Desconectado de %s (%s) em %s - Erro: %v", dialectIcon, cState.ActiveClient, envLabel, cState.ConnError),
 				) + "\n")
 			}
 		}
 
-		// 2. Validar existência do gokit.yaml
+		// 2. Validar existência do gokit.json
 		if cState.ScaffoldCreated {
 			cfgStr.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("#50FA7B")).Render(
-				"  [✔] gokit.yaml: Criado com sucesso em "+cState.ConfigPath,
+				"  [✔] gokit.json: Criado com sucesso em "+cState.ConfigPath,
 			) + "\n")
 		} else if cState.ConfigFileError != nil && strings.Contains(cState.ConfigFileError.Error(), "não foi possível ler") {
 			cfgStr.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("#FF5555")).Render(
-				"  [✖] gokit.yaml: Não foi possível ler o arquivo",
+				"  [✖] gokit.json: Não foi possível ler o arquivo",
 			) + "\n")
 		} else {
 			cfgStr.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("#50FA7B")).Render(
-				"  [✔] gokit.yaml: Carregado com sucesso",
+				"  [✔] gokit.json: Carregado com sucesso",
 			) + "\n")
 		}
 
-		// 3. Validar estrutura YAML
-		if cState.ConfigFileError != nil && strings.Contains(cState.ConfigFileError.Error(), "sintaxe YAML") {
+		// 3. Validar estrutura JSON
+		if cState.ConfigFileError != nil && strings.Contains(cState.ConfigFileError.Error(), "sintaxe JSON") {
 			cfgStr.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("#FF5555")).Render(
-				fmt.Sprintf("  [✖] Estrutura YAML: %v", cState.ConfigFileError),
+				fmt.Sprintf("  [✖] Estrutura JSON: %v", cState.ConfigFileError),
 			) + "\n")
 		} else if cState.Config != nil {
 			cfgStr.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("#50FA7B")).Render(
-				"  [✔] Estrutura YAML: Válida",
+				"  [✔] Estrutura JSON: Válida",
 			) + "\n")
 		}
 
@@ -359,12 +398,14 @@ func (m model) View() string {
 		}
 
 		cfgStr.WriteString("\n" + lipgloss.NewStyle().Faint(true).Render("Pressione [Enter] para voltar ao menu principal."))
-		s.WriteString(actionBoxStyle.Render(cfgStr.String()) + "\n")
-	}
 
-	if m.state == stateMainMenu || m.state == stateMigrationsMenu {
-		s.WriteString(footerStyle.Render("↑/↓: navegar • enter: selecionar • ctrl+c: sair") + "\n")
+		boxColor := "#50FA7B" // Verde
+		if cState.ConfigFileError != nil || !cState.ConnSuccess {
+			boxColor = "#FF5555" // Vermelho
+		}
+		currentBoxStyle := actionBoxStyle.Copy().BorderForeground(lipgloss.Color(boxColor))
+		s.WriteString(currentBoxStyle.Render(cfgStr.String()) + "\n")
 	}
-
 	return s.String()
 }
+
