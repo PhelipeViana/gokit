@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"gokit/internal/config"
+	"gokit/internal/migraterun"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -18,6 +19,10 @@ type menuState int
 const (
 	stateMainMenu menuState = iota
 	stateMigrationsMenu
+	stateMigrationSelectMethod
+	stateMigrationInputName
+	stateMigrationSelectTable
+	stateMigrationSelectView
 	stateMigrationCreating
 	stateMigrationRunning
 	stateMigrationRollingBack
@@ -25,11 +30,21 @@ const (
 )
 
 type model struct {
-	state             menuState
-	cursor            int
-	choices           []string
-	migrationsChoices []string
-	configData        config.ConfigState
+	state              menuState
+	cursor             int
+	choices            []string
+	migrationsChoices  []string
+	configData         config.ConfigState
+	migrationError     error
+	migrationOutput    string
+	migrationNameInput string
+	methodsChoices     []string
+	methodCursor       int
+	availableTables    []string
+	availableViews     []string
+	tableCursor        int
+	viewCursor         int
+	selectedTableOrView string
 }
 
 // Estilos Lip Gloss inspirados na estética Charm Bracelet
@@ -82,6 +97,13 @@ func Start(version string) error {
 		choices:           []string{"Configuração", "Migration Options", "Sair (Exit)"},
 		migrationsChoices: []string{"Criar nova Migration", "Executar Migrations pendentes", "Reverter última Migration (Rollback)", "Voltar ao menu principal"},
 		configData:        initialConfig,
+		methodsChoices: []string{
+			"create_table", "drop_table", "add_column", "alter_column", "drop_column",
+			"add_foreign_key", "drop_foreign_key", "create_index", "drop_index",
+			"create_view", "alter_view", "drop_view", "create_sequence", "drop_sequence",
+			"rename_table", "rename_column", "add_primary_key", "add_unique", "add_check",
+			"drop_constraint", "raw_sql", "todo",
+		},
 	}
 
 	p := tea.NewProgram(m)
@@ -98,6 +120,228 @@ func (m model) Init() tea.Cmd {
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
+		if m.state == stateMigrationInputName {
+			switch msg.String() {
+			case "ctrl+c":
+				return m, tea.Quit
+			case "enter":
+				if strings.TrimSpace(m.migrationNameInput) != "" {
+					method := m.methodsChoices[m.methodCursor]
+					if method == "create_table" || method == "create_view" || method == "create_sequence" || method == "raw_sql" || method == "todo" {
+						name, err := migraterun.CreateScaffoldMigration(".", m.configData, m.migrationNameInput, method, "")
+						m.migrationError = err
+						m.migrationOutput = name
+						m.state = stateMigrationCreating
+						return m, tea.ClearScreen
+					} else {
+						descName := strings.TrimSpace(m.migrationNameInput)
+						target := m.selectedTableOrView
+						fileNameDesc := ""
+						switch method {
+						case "add_column":
+							fileNameDesc = "add_" + descName + "_to_" + target
+						case "alter_column":
+							fileNameDesc = "alter_" + descName + "_in_" + target
+						case "drop_column":
+							fileNameDesc = "drop_" + descName + "_from_" + target
+						case "add_foreign_key":
+							fileNameDesc = "add_fk_" + descName + "_to_" + target
+						case "drop_foreign_key":
+							fileNameDesc = "drop_fk_" + descName + "_from_" + target
+						case "create_index":
+							fileNameDesc = "create_index_" + descName + "_on_" + target
+						case "drop_index":
+							fileNameDesc = "drop_index_" + descName + "_on_" + target
+						case "rename_column":
+							fileNameDesc = "rename_col_in_" + target
+						case "add_unique":
+							fileNameDesc = "add_uk_" + descName + "_to_" + target
+						case "drop_constraint":
+							fileNameDesc = "drop_constraint_" + descName + "_from_" + target
+						default:
+							fileNameDesc = method + "_" + descName + "_" + target
+						}
+						
+						name, err := migraterun.CreateScaffoldMigration(".", m.configData, fileNameDesc, method, target)
+						m.migrationError = err
+						m.migrationOutput = name
+						m.state = stateMigrationCreating
+						return m, tea.ClearScreen
+					}
+				}
+				return m, nil
+			case "backspace":
+				if len(m.migrationNameInput) > 0 {
+					m.migrationNameInput = m.migrationNameInput[:len(m.migrationNameInput)-1]
+				}
+				return m, nil
+			case "esc":
+				method := m.methodsChoices[m.methodCursor]
+				if method == "create_table" || method == "create_view" || method == "create_sequence" || method == "raw_sql" || method == "todo" {
+					m.state = stateMigrationSelectMethod
+				} else {
+					m.state = stateMigrationSelectTable
+				}
+				return m, nil
+			default:
+				kStr := msg.String()
+				if len(kStr) == 1 && (kStr[0] >= 'a' && kStr[0] <= 'z' || kStr[0] >= 'A' && kStr[0] <= 'Z' || kStr[0] >= '0' && kStr[0] <= '9' || kStr[0] == '_' || kStr[0] == '-' || kStr[0] == ' ') {
+					if len(m.migrationNameInput) < 50 {
+						if kStr[0] == ' ' {
+							m.migrationNameInput += "_"
+						} else {
+							m.migrationNameInput += kStr
+						}
+					}
+				}
+				return m, nil
+			}
+		}
+
+		if m.state == stateMigrationSelectMethod {
+			switch msg.String() {
+			case "ctrl+c":
+				return m, tea.Quit
+			case "up", "k":
+				m.methodCursor--
+				if m.methodCursor < 0 {
+					m.methodCursor = len(m.methodsChoices) - 1
+				}
+				return m, nil
+			case "down", "j":
+				m.methodCursor++
+				if m.methodCursor >= len(m.methodsChoices) {
+					m.methodCursor = 0
+				}
+				return m, nil
+			case "enter":
+				method := m.methodsChoices[m.methodCursor]
+				tables, views, err := migraterun.LoadCatalogTablesAndViews(".", m.configData)
+				if err != nil {
+					m.migrationError = err
+					m.state = stateMigrationCreating
+					return m, tea.ClearScreen
+				}
+				m.availableTables = tables
+				m.availableViews = views
+
+				switch method {
+				case "create_table", "create_view", "create_sequence", "raw_sql", "todo":
+					m.state = stateMigrationInputName
+					m.migrationNameInput = ""
+					m.selectedTableOrView = ""
+					return m, nil
+				case "alter_view", "drop_view":
+					if len(views) == 0 {
+						m.migrationError = fmt.Errorf("nenhuma view disponível no catálogo. Crie uma view primeiro")
+						m.state = stateMigrationCreating
+						return m, tea.ClearScreen
+					}
+					m.state = stateMigrationSelectView
+					m.viewCursor = 0
+					return m, nil
+				default:
+					if len(tables) == 0 {
+						m.migrationError = fmt.Errorf("nenhuma tabela disponível no catálogo. Crie uma tabela usando CreateTable primeiro")
+						m.state = stateMigrationCreating
+						return m, tea.ClearScreen
+					}
+					m.state = stateMigrationSelectTable
+					m.tableCursor = 0
+					return m, nil
+				}
+			case "esc":
+				m.state = stateMigrationsMenu
+				m.cursor = 0
+				return m, nil
+			}
+		}
+
+		if m.state == stateMigrationSelectTable {
+			switch msg.String() {
+			case "ctrl+c":
+				return m, tea.Quit
+			case "up", "k":
+				m.tableCursor--
+				if m.tableCursor < 0 {
+					m.tableCursor = len(m.availableTables) - 1
+				}
+				return m, nil
+			case "down", "j":
+				m.tableCursor++
+				if m.tableCursor >= len(m.availableTables) {
+					m.tableCursor = 0
+				}
+				return m, nil
+			case "enter":
+				chosenTable := m.availableTables[m.tableCursor]
+				method := m.methodsChoices[m.methodCursor]
+				if method == "drop_table" || method == "rename_table" || method == "add_primary_key" || method == "add_check" {
+					fileNameDesc := ""
+					switch method {
+					case "drop_table":
+						fileNameDesc = "drop_" + chosenTable
+					case "rename_table":
+						fileNameDesc = "rename_" + chosenTable
+					case "add_primary_key":
+						fileNameDesc = "add_pk_to_" + chosenTable
+					case "add_check":
+						fileNameDesc = "add_check_to_" + chosenTable
+					}
+					name, err := migraterun.CreateScaffoldMigration(".", m.configData, fileNameDesc, method, chosenTable)
+					m.migrationError = err
+					m.migrationOutput = name
+					m.state = stateMigrationCreating
+					return m, tea.ClearScreen
+				} else {
+					m.state = stateMigrationInputName
+					m.migrationNameInput = ""
+					m.selectedTableOrView = chosenTable
+					return m, nil
+				}
+			case "esc":
+				m.state = stateMigrationSelectMethod
+				return m, nil
+			}
+		}
+
+		if m.state == stateMigrationSelectView {
+			switch msg.String() {
+			case "ctrl+c":
+				return m, tea.Quit
+			case "up", "k":
+				m.viewCursor--
+				if m.viewCursor < 0 {
+					m.viewCursor = len(m.availableViews) - 1
+				}
+				return m, nil
+			case "down", "j":
+				m.viewCursor++
+				if m.viewCursor >= len(m.availableViews) {
+					m.viewCursor = 0
+				}
+				return m, nil
+			case "enter":
+				chosenView := m.availableViews[m.viewCursor]
+				method := m.methodsChoices[m.methodCursor]
+				fileNameDesc := ""
+				switch method {
+				case "alter_view":
+					fileNameDesc = "alter_" + chosenView
+				case "drop_view":
+					fileNameDesc = "drop_" + chosenView
+				}
+				name, err := migraterun.CreateScaffoldMigration(".", m.configData, fileNameDesc, method, chosenView)
+				m.migrationError = err
+				m.migrationOutput = name
+				m.state = stateMigrationCreating
+				return m, tea.ClearScreen
+			case "esc":
+				m.state = stateMigrationSelectMethod
+				return m, nil
+			}
+		}
+
 		switch msg.String() {
 		case "ctrl+c", "q":
 			return m, tea.Quit
@@ -146,13 +390,18 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case stateMigrationsMenu:
 				switch m.cursor {
 				case 0:
-					m.state = stateMigrationCreating
-					return m, tea.ClearScreen
+					m.state = stateMigrationSelectMethod
+					m.methodCursor = 0
+					return m, nil
 				case 1:
 					m.state = stateMigrationRunning
+					err := migraterun.Run(".", m.configData)
+					m.migrationError = err
 					return m, tea.ClearScreen
 				case 2:
 					m.state = stateMigrationRollingBack
+					err := migraterun.Rollback(".", m.configData)
+					m.migrationError = err
 					return m, tea.ClearScreen
 				case 3:
 					m.state = stateMainMenu
@@ -262,38 +511,202 @@ func (m model) View() string {
 			}
 		}
 
+	case stateMigrationInputName:
+		method := m.methodsChoices[m.methodCursor]
+		s.WriteString("  " + lipgloss.NewStyle().Bold(true).Render(fmt.Sprintf("Scaffold Migration (%s)", method)) + "\n\n")
+		
+		if m.selectedTableOrView != "" {
+			s.WriteString(fmt.Sprintf("  Tabela selecionada: %s\n\n", lipgloss.NewStyle().Foreground(lipgloss.Color("#50FA7B")).Render("alias."+m.selectedTableOrView)))
+			s.WriteString("  Digite o nome descritivo do campo/constraint (ex: email ou chk_users_age):\n")
+		} else {
+			s.WriteString("  Digite o nome descritivo da nova estrutura (ex: users ou active_users):\n")
+		}
+		
+		inputBoxStyle := lipgloss.NewStyle().
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(lipgloss.Color("#00F0FF")).
+			Padding(0, 1).
+			Width(45)
+		
+		inputText := m.migrationNameInput
+		if inputText == "" {
+			inputText = lipgloss.NewStyle().Foreground(lipgloss.Color("#6272A4")).Render("digite aqui...")
+		}
+		s.WriteString("  " + inputBoxStyle.Render(inputText) + "\n\n")
+		s.WriteString("  [Enter] Confirmar e Gerar  ·  [Esc] Voltar\n")
+
+	case stateMigrationSelectMethod:
+		s.WriteString("  " + lipgloss.NewStyle().Bold(true).Render("Selecione o Tipo de Operação:") + "\n\n")
+		
+		colSelectionStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#FF007F"))
+		colItemStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#F8F8F2"))
+		
+		half := (len(m.methodsChoices) + 1) / 2
+		for i := 0; i < half; i++ {
+			idx1 := i
+			col1 := ""
+			if m.methodCursor == idx1 {
+				col1 = colSelectionStyle.Render(fmt.Sprintf("➔ %-20s", m.methodsChoices[idx1]))
+			} else {
+				col1 = colItemStyle.Render(fmt.Sprintf("  %-20s", m.methodsChoices[idx1]))
+			}
+
+			idx2 := i + half
+			col2 := ""
+			if idx2 < len(m.methodsChoices) {
+				if m.methodCursor == idx2 {
+					col2 = colSelectionStyle.Render(fmt.Sprintf("➔ %-20s", m.methodsChoices[idx2]))
+				} else {
+					col2 = colItemStyle.Render(fmt.Sprintf("  %-20s", m.methodsChoices[idx2]))
+				}
+			}
+			
+			s.WriteString("  " + col1 + "    " + col2 + "\n")
+		}
+		s.WriteString("\n  [Enter] Avançar  ·  [Esc] Voltar para Opções\n")
+
+	case stateMigrationSelectTable:
+		s.WriteString("  " + lipgloss.NewStyle().Bold(true).Render("Selecione a Tabela no Catálogo:") + "\n\n")
+		
+		colSelectionStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#FF007F"))
+		colItemStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#F8F8F2"))
+		
+		half := (len(m.availableTables) + 1) / 2
+		if half == 0 {
+			s.WriteString("  " + lipgloss.NewStyle().Foreground(lipgloss.Color("#FF5555")).Render("Nenhuma tabela encontrada no catálogo.") + "\n")
+		} else {
+			for i := 0; i < half; i++ {
+				idx1 := i
+				col1 := ""
+				if m.tableCursor == idx1 {
+					col1 = colSelectionStyle.Render(fmt.Sprintf("➔ %-20s", m.availableTables[idx1]))
+				} else {
+					col1 = colItemStyle.Render(fmt.Sprintf("  %-20s", m.availableTables[idx1]))
+				}
+
+				idx2 := i + half
+				col2 := ""
+				if idx2 < len(m.availableTables) {
+					if m.tableCursor == idx2 {
+						col2 = colSelectionStyle.Render(fmt.Sprintf("➔ %-20s", m.availableTables[idx2]))
+					} else {
+						col2 = colItemStyle.Render(fmt.Sprintf("  %-20s", m.availableTables[idx2]))
+					}
+				}
+				
+				s.WriteString("  " + col1 + "    " + col2 + "\n")
+			}
+		}
+		s.WriteString("\n  [Enter] Avançar  ·  [Esc] Voltar para Ações\n")
+
+	case stateMigrationSelectView:
+		s.WriteString("  " + lipgloss.NewStyle().Bold(true).Render("Selecione a View no Catálogo:") + "\n\n")
+		
+		colSelectionStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#FF007F"))
+		colItemStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#F8F8F2"))
+		
+		half := (len(m.availableViews) + 1) / 2
+		if half == 0 {
+			s.WriteString("  " + lipgloss.NewStyle().Foreground(lipgloss.Color("#FF5555")).Render("Nenhuma view encontrada no catálogo.") + "\n")
+		} else {
+			for i := 0; i < half; i++ {
+				idx1 := i
+				col1 := ""
+				if m.viewCursor == idx1 {
+					col1 = colSelectionStyle.Render(fmt.Sprintf("➔ %-20s", m.availableViews[idx1]))
+				} else {
+					col1 = colItemStyle.Render(fmt.Sprintf("  %-20s", m.availableViews[idx1]))
+				}
+
+				idx2 := i + half
+				col2 := ""
+				if idx2 < len(m.availableViews) {
+					if m.viewCursor == idx2 {
+						col2 = colSelectionStyle.Render(fmt.Sprintf("➔ %-20s", m.availableViews[idx2]))
+					} else {
+						col2 = colItemStyle.Render(fmt.Sprintf("  %-20s", m.availableViews[idx2]))
+					}
+				}
+				
+				s.WriteString("  " + col1 + "    " + col2 + "\n")
+			}
+		}
+		s.WriteString("\n  [Enter] Confirmar e Gerar  ·  [Esc] Voltar para Ações\n")
+
 	case stateMigrationCreating:
-		content := fmt.Sprintf(
-			"%s Criando nova estrutura de migration...\n\n"+
-				"%s\n\n"+
-				"Pressione %s para voltar.",
-			lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#00F0FF")).Render("[Ação]"),
-			lipgloss.NewStyle().Foreground(lipgloss.Color("#50FA7B")).Render("✔ Migration criada com sucesso! (gokit_migration_placeholder.go)"),
-			lipgloss.NewStyle().Bold(true).Render("[Enter]"),
-		)
-		s.WriteString(actionBoxStyle.Render(content) + "\n")
+		var content string
+		borderCol := "#50FA7B" // Verde
+		if m.migrationError != nil {
+			borderCol = "#FF5555" // Vermelho
+			content = fmt.Sprintf(
+				"%s Erro ao criar migration:\n\n"+
+					"%s\n\n"+
+					"Pressione %s para voltar.",
+				lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#FF5555")).Render("[Erro]"),
+				lipgloss.NewStyle().Foreground(lipgloss.Color("#FF5555")).Render(m.migrationError.Error()),
+				lipgloss.NewStyle().Bold(true).Render("[Enter]"),
+			)
+		} else {
+			content = fmt.Sprintf(
+				"%s Criando nova estrutura de migration...\n\n"+
+					"%s\n\n"+
+					"Pressione %s para voltar.",
+				lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#00F0FF")).Render("[Ação]"),
+				lipgloss.NewStyle().Foreground(lipgloss.Color("#50FA7B")).Render(fmt.Sprintf("✔ Migration criada com sucesso: %s", m.migrationOutput)),
+				lipgloss.NewStyle().Bold(true).Render("[Enter]"),
+			)
+		}
+		s.WriteString(actionBoxStyle.Copy().BorderForeground(lipgloss.Color(borderCol)).Render(content) + "\n")
 
 	case stateMigrationRunning:
-		content := fmt.Sprintf(
-			"%s Executando migrações pendentes...\n\n"+
-				"%s\n\n"+
-				"Pressione %s para voltar.",
-			lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#00F0FF")).Render("[Ação]"),
-			lipgloss.NewStyle().Foreground(lipgloss.Color("#50FA7B")).Render("✔ Banco de dados atualizado! Todas as migrações foram aplicadas."),
-			lipgloss.NewStyle().Bold(true).Render("[Enter]"),
-		)
-		s.WriteString(actionBoxStyle.Render(content) + "\n")
+		var content string
+		borderCol := "#50FA7B" // Verde
+		if m.migrationError != nil {
+			borderCol = "#FF5555" // Vermelho
+			content = fmt.Sprintf(
+				"%s Erro ao executar migrações:\n\n"+
+					"%s\n\n"+
+					"Pressione %s para voltar.",
+				lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#FF5555")).Render("[Erro]"),
+				lipgloss.NewStyle().Foreground(lipgloss.Color("#FF5555")).Render(m.migrationError.Error()),
+				lipgloss.NewStyle().Bold(true).Render("[Enter]"),
+			)
+		} else {
+			content = fmt.Sprintf(
+				"%s Executando migrações pendentes...\n\n"+
+					"%s\n\n"+
+					"Pressione %s para voltar.",
+				lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#00F0FF")).Render("[Ação]"),
+				lipgloss.NewStyle().Foreground(lipgloss.Color("#50FA7B")).Render("✔ Banco de dados atualizado! Todas as migrações foram aplicadas."),
+				lipgloss.NewStyle().Bold(true).Render("[Enter]"),
+			)
+		}
+		s.WriteString(actionBoxStyle.Copy().BorderForeground(lipgloss.Color(borderCol)).Render(content) + "\n")
 
 	case stateMigrationRollingBack:
-		content := fmt.Sprintf(
-			"%s Revertendo última migration (Rollback)...\n\n"+
-				"%s\n\n"+
-				"Pressione %s para voltar.",
-			lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#00F0FF")).Render("[Ação]"),
-			lipgloss.NewStyle().Foreground(lipgloss.Color("#50FA7B")).Render("✔ Rollback executado com sucesso!"),
-			lipgloss.NewStyle().Bold(true).Render("[Enter]"),
-		)
-		s.WriteString(actionBoxStyle.Render(content) + "\n")
+		var content string
+		borderCol := "#50FA7B" // Verde
+		if m.migrationError != nil {
+			borderCol = "#FF5555" // Vermelho
+			content = fmt.Sprintf(
+				"%s Erro ao reverter última migration:\n\n"+
+					"%s\n\n"+
+					"Pressione %s para voltar.",
+				lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#FF5555")).Render("[Erro]"),
+				lipgloss.NewStyle().Foreground(lipgloss.Color("#FF5555")).Render(m.migrationError.Error()),
+				lipgloss.NewStyle().Bold(true).Render("[Enter]"),
+			)
+		} else {
+			content = fmt.Sprintf(
+				"%s Revertendo última migration (Rollback)...\n\n"+
+					"%s\n\n"+
+					"Pressione %s para voltar.",
+				lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#00F0FF")).Render("[Ação]"),
+				lipgloss.NewStyle().Foreground(lipgloss.Color("#50FA7B")).Render("✔ Rollback executado com sucesso!"),
+				lipgloss.NewStyle().Bold(true).Render("[Enter]"),
+			)
+		}
+		s.WriteString(actionBoxStyle.Copy().BorderForeground(lipgloss.Color(borderCol)).Render(content) + "\n")
 
 	case stateConfigScreen:
 		var cfgStr strings.Builder

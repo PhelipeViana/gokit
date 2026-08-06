@@ -5,6 +5,8 @@ import (
 	"os"
 	"time"
 
+	"gokit/internal/config"
+	"gokit/internal/migraterun"
 	"gokit/internal/tui"
 	"gokit/internal/updater"
 )
@@ -18,6 +20,59 @@ var (
 func main() {
 	// Remove binários antigos remanescentes de atualizações anteriores (.old)
 	updater.CleanOldExecutables()
+
+	// Se houver argumentos de linha de comando, roda em modo CLI
+	if len(os.Args) > 1 {
+		if os.Args[1] == "migrate" {
+			if len(os.Args) < 3 {
+				fmt.Println("Uso: gokit migrate [run|rollback|validate|create]")
+				os.Exit(1)
+			}
+			state := config.RunConfigChecks()
+			if state.ConfigFileError != nil {
+				fmt.Printf("Erro de configuração: %v\n", state.ConfigFileError)
+				os.Exit(1)
+			}
+			var err error
+			switch os.Args[2] {
+			case "run", "up":
+				err = migraterun.Run(".", state)
+			case "rollback", "down":
+				err = migraterun.Rollback(".", state)
+			case "validate", "check":
+				err = migraterun.ValidateReport(".", state)
+			case "create":
+				if len(os.Args) < 4 {
+					fmt.Println("Uso: gokit migrate create <nome> [metodo]")
+					fmt.Println("\nMétodos válidos:")
+					fmt.Println("  create_table, drop_table, add_column, alter_column, drop_column,")
+					fmt.Println("  add_foreign_key, drop_foreign_key, create_index, drop_index,")
+					fmt.Println("  create_view, alter_view, drop_view, create_sequence, drop_sequence,")
+					fmt.Println("  rename_table, rename_column, add_primary_key, add_unique, add_check,")
+					fmt.Println("  drop_constraint, raw_sql, todo")
+					os.Exit(1)
+				}
+				nome := os.Args[3]
+				metodo := "todo"
+				if len(os.Args) >= 5 {
+					metodo = os.Args[4]
+				}
+				var filename string
+				filename, err = migraterun.CreateScaffoldMigration(".", state, nome, metodo, "")
+				if err == nil {
+					fmt.Printf("Migration criada com sucesso: %s\n", filename)
+				}
+			default:
+				fmt.Printf("Comando de migração desconhecido: %s\n", os.Args[2])
+				os.Exit(1)
+			}
+			if err != nil {
+				fmt.Printf("Erro: %v\n", err)
+				os.Exit(1)
+			}
+			os.Exit(0)
+		}
+	}
 
 	// Checagem rápida e silenciosa de versão no GitHub
 	updateAvailable, _, remoteSHA := updater.RunSilentUpdateCheck(CommitHash)
