@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -48,8 +49,18 @@ func ParseFile(path string) ([]acao.Operacao, error) {
 	}
 
 	var operations []acao.Operacao
+	var seedRows []acao.Linha
+	var seedFound bool
 	for _, declaration := range file.Decls {
 		if function, ok := declaration.(*ast.FuncDecl); ok {
+			if function.Name != nil && function.Name.Name == "Seeder" {
+				rows, err := evalSeederFunction(set, function)
+				if err != nil {
+					return nil, err
+				}
+				seedRows, seedFound = rows, true
+				continue
+			}
 			found, err := evalDefinitionFunction(set, function, catalog, views, path)
 			if err != nil {
 				return nil, err
@@ -85,6 +96,14 @@ func ParseFile(path string) ([]acao.Operacao, error) {
 	if len(operations) == 0 {
 		return nil, fmt.Errorf("nenhuma operação migrate.* encontrada")
 	}
+	if seedFound {
+		seed, err := bindSeederToTable(operations, seedRows)
+		if err != nil {
+			return nil, err
+		}
+		// O seed entra no fim: a tabela precisa existir antes das linhas.
+		operations = append(operations, seed)
+	}
 	for index := range operations {
 		if operations[index].Kind == string(acao.CreateTable) && operations[index].AliasName == "" {
 			if strings.HasSuffix(filepath.Base(path), "_migration.go") {
@@ -95,6 +114,127 @@ func ParseFile(path string) ([]acao.Operacao, error) {
 		}
 	}
 	return operations, nil
+}
+
+// evalSeederFunction lê `func Seeder() migrate.Rows { return migrate.Rows{...} }`.
+func evalSeederFunction(set *token.FileSet, function *ast.FuncDecl) ([]acao.Linha, error) {
+	fail := func(node ast.Node, format string, arguments ...any) ([]acao.Linha, error) {
+		return nil, positionError(set, node, fmt.Errorf(format, arguments...))
+	}
+	if function.Body == nil || len(function.Body.List) != 1 {
+		return fail(function, "Seeder() deve conter apenas `return migrate.Rows{...}`")
+	}
+	statement, ok := function.Body.List[0].(*ast.ReturnStmt)
+	if !ok || len(statement.Results) != 1 {
+		return fail(function, "Seeder() deve retornar exatamente uma lista migrate.Rows")
+	}
+	literal, ok := statement.Results[0].(*ast.CompositeLit)
+	if !ok {
+		return fail(statement, "Seeder() deve retornar um literal migrate.Rows{...}")
+	}
+
+	rows := make([]acao.Linha, 0, len(literal.Elts))
+	for index, element := range literal.Elts {
+		rowLiteral, ok := element.(*ast.CompositeLit)
+		if !ok {
+			return fail(element, "a linha %d deve ser um literal {\"coluna\": valor, ...}", index+1)
+		}
+		row := acao.Linha{}
+		for _, field := range rowLiteral.Elts {
+			pair, ok := field.(*ast.KeyValueExpr)
+			if !ok {
+				return fail(field, "a linha %d deve usar o formato \"coluna\": valor", index+1)
+			}
+			column, err := astparser.StringLiteral(pair.Key)
+			if err != nil {
+				return fail(pair.Key, "a linha %d tem um nome de coluna inválido; use \"coluna\": valor", index+1)
+			}
+			if _, repeated := row[column]; repeated {
+				return fail(pair.Key, "a linha %d repete a coluna %q", index+1, column)
+			}
+			value, err := seedLiteral(pair.Value)
+			if err != nil {
+				return fail(pair.Value, "linha %d, coluna %q: %v", index+1, column, err)
+			}
+			row[column] = value
+		}
+		rows = append(rows, row)
+	}
+	return rows, nil
+}
+
+// seedLiteral avalia um valor de seed. Só literais são aceitos: o arquivo é
+// lido por AST e nunca executado, então não há como resolver expressões.
+func seedLiteral(expression ast.Expr) (any, error) {
+	switch value := expression.(type) {
+	case *ast.BasicLit:
+		switch value.Kind {
+		case token.STRING:
+			return strconv.Unquote(value.Value)
+		case token.INT:
+			return strconv.ParseInt(value.Value, 0, 64)
+		case token.FLOAT:
+			return strconv.ParseFloat(value.Value, 64)
+		}
+	case *ast.Ident:
+		switch value.Name {
+		case "true":
+			return true, nil
+		case "false":
+			return false, nil
+		case "nil":
+			return nil, nil
+		}
+	case *ast.UnaryExpr:
+		if value.Op == token.SUB {
+			inner, err := seedLiteral(value.X)
+			if err != nil {
+				return nil, err
+			}
+			switch number := inner.(type) {
+			case int64:
+				return -number, nil
+			case float64:
+				return -number, nil
+			}
+		}
+	}
+	return nil, fmt.Errorf("valor inválido; use texto, número, true, false ou nil")
+}
+
+// bindSeederToTable amarra o Seeder() ao CreateTable do mesmo arquivo e extrai
+// a chave primária declarada, que é o que decide entre inserir e editar.
+func bindSeederToTable(operations []acao.Operacao, rows []acao.Linha) (acao.Operacao, error) {
+	var target *acao.Operacao
+	for index := range operations {
+		if operations[index].Kind == string(acao.CreateTable) {
+			if target != nil {
+				return acao.Operacao{}, fmt.Errorf("Seeder() exige exatamente um CreateTable no arquivo, mas há mais de um")
+			}
+			target = &operations[index]
+		}
+	}
+	if target == nil {
+		return acao.Operacao{}, fmt.Errorf("Seeder() só pode acompanhar um CreateTable no mesmo arquivo")
+	}
+	var keys []string
+	identity := ""
+	for _, column := range target.Columns {
+		if column.PrimaryKey {
+			keys = append(keys, column.Name)
+		}
+		if column.AutoIncrement {
+			identity = column.Name
+		}
+	}
+	return acao.Operacao{
+		Kind:           string(acao.SeedRows),
+		Table:          target.Table,
+		AliasName:      target.AliasName,
+		Rows:           rows,
+		KeyColumns:     keys,
+		IdentityColumn: identity,
+	}, nil
 }
 
 func loadViewCatalog(path string) map[string]string {

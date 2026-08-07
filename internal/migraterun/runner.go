@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -32,7 +33,6 @@ type Plan struct {
 
 type migrationFile struct {
 	Name, ID, Path, Checksum string
-	Provisional              bool
 	LegacyChecksums          []string
 	Plan                     Plan
 }
@@ -96,14 +96,6 @@ func (e *LoadError) orNil() error {
 		return nil
 	}
 	return e
-}
-
-func CommitPlannedSnapshot(root string) error {
-	return nil
-}
-
-func WriteMigrationMarkdown(root string, cfg config.MigrateConfig) (string, int, error) {
-	return "", 0, nil
 }
 
 func migrationfsFiles(root string) ([]string, error) {
@@ -216,7 +208,6 @@ func Run(root string, state config.ConfigState) error {
 			solution,
 		)
 	}
-	printFinalizationSummary(files)
 	fmt.Printf("  %s %d aplicada(s), %d já executada(s)\n", cliui.Success("✓ OK"), applied, skipped)
 	fmt.Println("\n" + cliui.Success("✓ Migrations atualizadas na conexão padrão."))
 	return nil
@@ -420,6 +411,11 @@ func rollbackSQL(dialect, schema string, operation acao.Operacao) (string, error
 		}
 		return fmt.Sprintf("ALTER TABLE %s RENAME COLUMN %s TO %s",
 			qualified(dialect, schema, operation.Table), quote(dialect, operation.NewName), quote(dialect, operation.Column.Name)), nil
+	case acao.SeedRows:
+		// O seed fixo só existe junto com o CreateTable do mesmo arquivo, e a
+		// reversão desse CreateTable derruba a tabela inteira — inclusive as
+		// linhas. Não há nada separado a desfazer aqui.
+		return "", nil
 	case acao.RawSQL, acao.AlterView:
 		// Sem informação do estado anterior não há como desfazer com segurança.
 		return "", fmt.Errorf("a operação %s não é reversível automaticamente; reverta manualmente ou crie uma migration de correção", operation.Kind)
@@ -431,21 +427,6 @@ func rollbackSQL(dialect, schema string, operation acao.Operacao) (string, error
 	default:
 		return "", fmt.Errorf("operação %s não tem rollback definido", operation.Kind)
 	}
-}
-
-func printFinalizationSummary(files []migrationFile) {
-	count := 0
-	for _, file := range files {
-		if file.Provisional {
-			count++
-		}
-	}
-	if count > 0 {
-		fmt.Printf("%s %d arquivo(s) confirmado(s).\n", cliui.Info("→"), count)
-	}
-}
-
-func refreshMigrationDocumentation(root string, cfg config.MigrateConfig) {
 }
 
 func pingConnection(connection config.ConnConfig) error {
@@ -703,13 +684,11 @@ func loadPlans(folder string) ([]migrationFile, error) {
 		sum := sha256.Sum256(checksumData)
 		legacyChecksums := legacyViewChecksums(plan.Operations)
 		id := name
-		provisional := false
 		if len(goMatch) > 0 {
 			id = goMatch[1]
-			provisional = name == id+".go"
 		}
 		result = append(result, migrationFile{Name: name, ID: id, Path: path,
-			Provisional: provisional, Checksum: hex.EncodeToString(sum[:]), LegacyChecksums: legacyChecksums, Plan: plan})
+			Checksum: hex.EncodeToString(sum[:]), LegacyChecksums: legacyChecksums, Plan: plan})
 	}
 	sort.Slice(result, func(i, j int) bool {
 		if result[i].ID == result[j].ID {
@@ -1125,6 +1104,19 @@ func referencedColumns(operation acao.Operacao) []string {
 			return nil
 		}
 		return []string{operation.Column.Name}
+	case acao.SeedRows:
+		seen := map[string]bool{}
+		var columns []string
+		for _, row := range operation.Rows {
+			for column := range row {
+				if !seen[column] {
+					seen[column] = true
+					columns = append(columns, column)
+				}
+			}
+		}
+		sort.Strings(columns)
+		return columns
 	default:
 		return nil
 	}
@@ -1516,6 +1508,8 @@ func executeOperation(ctx context.Context, db *sql.DB, dialect, schema string, o
 		if _, err := db.ExecContext(ctx, query); err != nil {
 			return fmt.Errorf("remover constraint %s: %w", operation.Name, err)
 		}
+	case "seed_rows":
+		return executeSeedRows(ctx, db, dialect, schema, operation)
 	case "raw_sql":
 		if operation.Dialect != "" && operation.Dialect != "all" && !strings.EqualFold(operation.Dialect, dialect) {
 			return nil
@@ -1581,6 +1575,301 @@ func normalizeStatement(statement string) string {
 func endsPLSQLBlock(statement string) bool {
 	upper := strings.ToUpper(strings.TrimRight(statement, " \t\r\n;"))
 	return strings.HasSuffix(upper, "END")
+}
+
+// placeholder devolve o marcador de parâmetro do dialeto na posição informada.
+func placeholder(dialect string, position int) string {
+	switch dialect {
+	case "postgres":
+		return fmt.Sprintf("$%d", position)
+	case "oracle":
+		return fmt.Sprintf(":%d", position)
+	case "sqlserver":
+		return fmt.Sprintf("@p%d", position)
+	default:
+		return "?"
+	}
+}
+
+// executeSeedRows aplica o seed fixo declarado em func Seeder().
+//
+// A regra de dono é o que impede perda de dado: numa aplicação nova, uma linha
+// que já existe na chave declarada NÃO foi criada por este seed — pode ser um
+// registro que a aplicação gerou. Sobrescrever seria apagar dado real em
+// silêncio, então diverge = erro. Idêntica = no-op, o que mantém a operação
+// reexecutável sem efeito colateral.
+func executeSeedRows(ctx context.Context, db *sql.DB, dialect, schema string, operation acao.Operacao) error {
+	if len(operation.Rows) == 0 {
+		return nil
+	}
+	target := qualified(dialect, schema, operation.Table)
+
+	transaction, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("iniciar transação do seed de %s: %w", operation.Table, err)
+	}
+	defer transaction.Rollback()
+
+	// SET IDENTITY_INSERT é por sessão: precisa da mesma conexão dos inserts,
+	// por isso tudo acontece dentro da transação.
+	identityInsert := dialect == "sqlserver" && operation.IdentityColumn != "" &&
+		seedWritesColumn(operation.Rows, operation.IdentityColumn)
+	if identityInsert {
+		if _, err := transaction.ExecContext(ctx, "SET IDENTITY_INSERT "+target+" ON"); err != nil {
+			return fmt.Errorf("habilitar IDENTITY_INSERT em %s: %w", operation.Table, err)
+		}
+	}
+
+	inserted, unchanged := 0, 0
+	for index, row := range operation.Rows {
+		columns := sortedColumns(row)
+		existing, found, err := seedExistingRow(ctx, transaction, dialect, target, operation.KeyColumns, columns, row)
+		if err != nil {
+			return fmt.Errorf("consultar %s (linha %d): %w", operation.Table, index+1, err)
+		}
+		if found {
+			if difference := seedDifference(row, existing, columns); difference != "" {
+				return cliui.NewUserError(
+					fmt.Sprintf("seed de %s: a linha %s já existe no banco com outro conteúdo (%s).",
+						operation.Table, seedKeyLabel(operation.KeyColumns, row), difference),
+					"Essa linha não foi criada por este seed — pode ter vindo da aplicação. "+
+						"Sobrescrever apagaria dado real. Ajuste o ID no Seeder() ou remova a linha do banco antes de reaplicar.",
+				)
+			}
+			unchanged++
+			continue
+		}
+		if err := seedInsert(ctx, transaction, dialect, target, columns, row); err != nil {
+			return fmt.Errorf("inserir em %s (linha %d): %w", operation.Table, index+1, err)
+		}
+		inserted++
+	}
+
+	if identityInsert {
+		if _, err := transaction.ExecContext(ctx, "SET IDENTITY_INSERT "+target+" OFF"); err != nil {
+			return fmt.Errorf("desabilitar IDENTITY_INSERT em %s: %w", operation.Table, err)
+		}
+	}
+	if err := transaction.Commit(); err != nil {
+		return fmt.Errorf("confirmar seed de %s: %w", operation.Table, err)
+	}
+
+	// Fora da transação: no Oracle e no MySQL o resync é DDL e faria commit
+	// implícito no meio do lote.
+	if operation.IdentityColumn != "" {
+		if err := resyncIdentity(ctx, db, dialect, schema, operation.Table, operation.IdentityColumn); err != nil {
+			return fmt.Errorf("ressincronizar a sequência de %s.%s: %w", operation.Table, operation.IdentityColumn, err)
+		}
+	}
+	fmt.Printf("  %s %s: %d inserida(s), %d já presente(s)\n",
+		cliui.Muted("·"), operation.Table, inserted, unchanged)
+	return nil
+}
+
+func sortedColumns(row acao.Linha) []string {
+	columns := make([]string, 0, len(row))
+	for column := range row {
+		columns = append(columns, column)
+	}
+	sort.Strings(columns)
+	return columns
+}
+
+func seedWritesColumn(rows []acao.Linha, column string) bool {
+	for _, row := range rows {
+		if _, present := row[column]; present {
+			return true
+		}
+	}
+	return false
+}
+
+func seedKeyLabel(keys []string, row acao.Linha) string {
+	parts := make([]string, 0, len(keys))
+	for _, key := range keys {
+		parts = append(parts, fmt.Sprintf("%s=%v", key, row[key]))
+	}
+	return strings.Join(parts, ", ")
+}
+
+func seedExistingRow(ctx context.Context, transaction *sql.Tx, dialect, target string,
+	keys, columns []string, row acao.Linha) (map[string]any, bool, error) {
+
+	predicate := make([]string, 0, len(keys))
+	arguments := make([]any, 0, len(keys))
+	for _, key := range keys {
+		predicate = append(predicate, fmt.Sprintf("%s = %s", quote(dialect, key), placeholder(dialect, len(arguments)+1)))
+		arguments = append(arguments, row[key])
+	}
+	query := fmt.Sprintf("SELECT %s FROM %s WHERE %s",
+		strings.Join(quotedColumns(dialect, columns), ", "), target, strings.Join(predicate, " AND "))
+
+	values := make([]any, len(columns))
+	scan := make([]any, len(columns))
+	for index := range values {
+		scan[index] = &values[index]
+	}
+	err := transaction.QueryRowContext(ctx, query, arguments...).Scan(scan...)
+	if err == sql.ErrNoRows {
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, false, err
+	}
+	result := make(map[string]any, len(columns))
+	for index, column := range columns {
+		result[column] = values[index]
+	}
+	return result, true, nil
+}
+
+// seedDifference descreve a primeira divergência entre o declarado e o banco,
+// ou "" quando a linha já está exatamente como o seed pede.
+func seedDifference(row acao.Linha, existing map[string]any, columns []string) string {
+	for _, column := range columns {
+		declared := normalizeSeedValue(row[column])
+		stored := normalizeSeedValue(existing[column])
+		if declared != stored {
+			return fmt.Sprintf("%s: banco tem %q, seed declara %q", column, stored, declared)
+		}
+	}
+	return ""
+}
+
+// normalizeSeedValue reduz valores a texto comparável. Os drivers devolvem o
+// mesmo número como int64, float64, string ou []byte dependendo do banco.
+func normalizeSeedValue(value any) string {
+	switch typed := value.(type) {
+	case nil:
+		return "<nil>"
+	case []byte:
+		return string(typed)
+	case float64:
+		if typed == float64(int64(typed)) {
+			return strconv.FormatInt(int64(typed), 10)
+		}
+		return strconv.FormatFloat(typed, 'f', -1, 64)
+	case float32:
+		return normalizeSeedValue(float64(typed))
+	case int:
+		return strconv.FormatInt(int64(typed), 10)
+	case int32:
+		return strconv.FormatInt(int64(typed), 10)
+	case int64:
+		return strconv.FormatInt(typed, 10)
+	case bool:
+		if typed {
+			return "1"
+		}
+		return "0"
+	case string:
+		return strings.TrimRight(typed, " ")
+	default:
+		return fmt.Sprint(typed)
+	}
+}
+
+func seedInsert(ctx context.Context, transaction *sql.Tx, dialect, target string,
+	columns []string, row acao.Linha) error {
+
+	markers := make([]string, len(columns))
+	arguments := make([]any, len(columns))
+	for index, column := range columns {
+		markers[index] = placeholder(dialect, index+1)
+		arguments[index] = row[column]
+	}
+	query := fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s)",
+		target, strings.Join(quotedColumns(dialect, columns), ", "), strings.Join(markers, ", "))
+	_, err := transaction.ExecContext(ctx, query, arguments...)
+	return err
+}
+
+// resyncIdentity coloca o gerador de identidade acima do maior valor existente,
+// sem nunca andar para trás. A trava importa: se a sequência recuar, o banco
+// reemite IDs que já foram entregues e as FKs passam a apontar para outra
+// linha, sem erro nenhum.
+func resyncIdentity(ctx context.Context, db *sql.DB, dialect, schema, table, column string) error {
+	target := qualified(dialect, schema, table)
+	quoted := quote(dialect, column)
+
+	var maxUsed int64
+	if err := db.QueryRowContext(ctx,
+		fmt.Sprintf("SELECT COALESCE(MAX(%s), 0) FROM %s", quoted, target)).Scan(&maxUsed); err != nil {
+		return err
+	}
+	current, err := currentIdentityNext(ctx, db, dialect, schema, table, column)
+	if err != nil {
+		return err
+	}
+	next := maxUsed + 1
+	if current > next {
+		next = current
+	}
+
+	switch dialect {
+	case "postgres":
+		_, err := db.ExecContext(ctx,
+			"SELECT setval(pg_get_serial_sequence($1, $2), $3, false)",
+			objectName(schemaOr(schema, "public"), table), column, next)
+		return err
+	case "mysql":
+		_, err := db.ExecContext(ctx, fmt.Sprintf("ALTER TABLE %s AUTO_INCREMENT = %d", target, next))
+		return err
+	case "sqlserver":
+		// RESEED grava o último valor usado, então o próximo entregue é next.
+		_, err := db.ExecContext(ctx,
+			fmt.Sprintf("DBCC CHECKIDENT('%s', RESEED, %d)", objectName(schemaOr(schema, "dbo"), table), next-1))
+		return err
+	default:
+		_, err := db.ExecContext(ctx,
+			fmt.Sprintf("ALTER TABLE %s MODIFY (%s GENERATED BY DEFAULT AS IDENTITY (START WITH %d))", target, quoted, next))
+		return err
+	}
+}
+
+// currentIdentityNext devolve o próximo valor que o gerador entregaria hoje, ou
+// 0 quando o dialeto não expõe essa informação.
+func currentIdentityNext(ctx context.Context, db *sql.DB, dialect, schema, table, column string) (int64, error) {
+	var next sql.NullInt64
+	switch dialect {
+	case "postgres":
+		// pg_sequences.last_value é NULL enquanto a sequência nunca foi usada;
+		// nesse caso o próximo valor entregue é start_value.
+		err := db.QueryRowContext(ctx, `
+			SELECT COALESCE(last_value + 1, start_value)
+			  FROM pg_sequences
+			 WHERE schemaname || '.' || sequencename = pg_get_serial_sequence($1, $2)`,
+			objectName(schemaOr(schema, "public"), table), column).Scan(&next)
+		if err == sql.ErrNoRows {
+			return 0, nil
+		}
+		return next.Int64, err
+	case "mysql":
+		err := db.QueryRowContext(ctx, `
+			SELECT AUTO_INCREMENT FROM information_schema.TABLES
+			 WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ?`, table).Scan(&next)
+		if err == sql.ErrNoRows {
+			return 0, nil
+		}
+		return next.Int64, err
+	case "sqlserver":
+		err := db.QueryRowContext(ctx, "SELECT CAST(IDENT_CURRENT(@p1) AS BIGINT) + 1",
+			objectName(schemaOr(schema, "dbo"), table)).Scan(&next)
+		if err == sql.ErrNoRows {
+			return 0, nil
+		}
+		return next.Int64, err
+	default:
+		err := db.QueryRowContext(ctx, `
+			SELECT s.last_number FROM user_sequences s
+			  JOIN user_tab_identity_cols i ON i.sequence_name = s.sequence_name
+			 WHERE i.table_name = :1 AND i.column_name = :2`,
+			strings.ToUpper(table), strings.ToUpper(column)).Scan(&next)
+		if err == sql.ErrNoRows {
+			return 0, nil
+		}
+		return next.Int64, err
+	}
 }
 
 // sqlServerRequireNotNull converte a coluna para NOT NULL preservando o tipo
@@ -2350,10 +2639,17 @@ func viewPhysicalName(alias string, root string, state config.ConfigState) strin
 
 func CreateScaffoldMigration(root string, state config.ConfigState, name string, method string, targetAlias string) (string, error) {
 	migratePath := filepath.FromSlash(state.Config.Output.Migrate)
-	outputDir := migratePath
+	migrateRoot := migratePath
 	if !filepath.IsAbs(migratePath) {
-		outputDir = filepath.Join(root, migratePath)
+		migrateRoot = filepath.Join(root, migratePath)
 	}
+	// Cada método tem sua subpasta. A ordem de execução continua vindo do
+	// timestamp no nome do arquivo — a pasta é só organização.
+	methodFolder := strings.ToLower(strings.TrimSpace(method))
+	if methodFolder == "" {
+		methodFolder = "todo"
+	}
+	outputDir := filepath.Join(migrateRoot, methodFolder)
 	if err := os.MkdirAll(outputDir, 0755); err != nil {
 		return "", fmt.Errorf("criar pasta de migrations: %w", err)
 	}
@@ -2510,7 +2806,7 @@ func Migration() migrate.Definition {
 		return "", fmt.Errorf("escrever arquivo de migration: %w", err)
 	}
 
-	return filename, nil
+	return filepath.ToSlash(filepath.Join(methodFolder, filename)), nil
 }
 
 func tableIdentifier(name string) string {

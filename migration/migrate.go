@@ -11,6 +11,21 @@ type Table string
 type View struct{ name string }
 type Column = acao.Coluna
 type Operation = acao.Operacao
+
+// Row é uma linha de seed: coluna -> valor literal.
+type Row = acao.Linha
+
+// Rows é o seed fixo de uma tabela, declarado ao lado do CreateTable em uma
+// func Seeder() no mesmo arquivo. Os IDs escritos aqui são fixos: valem em
+// todos os ambientes e são os únicos que um seeder posterior pode editar.
+//
+//	func Seeder() migrate.Rows {
+//	    return migrate.Rows{
+//	        {"id": 10, "nome": "Phelipe", "cidade": "Cuiaba"},
+//	    }
+//	}
+type Rows []Row
+
 // Definition é a lista ordenada de ações de uma migration. Todas compartilham
 // o mesmo registro de histórico e são aplicadas na ordem declarada.
 type Definition = []Operation

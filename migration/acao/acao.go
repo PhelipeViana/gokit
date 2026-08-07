@@ -1,4 +1,4 @@
-﻿// Package acao defines the declarative DSL used by AgendaGoKit migrations.
+// Package acao defines the declarative DSL used by AgendaGoKit migrations.
 package acao
 
 import (
@@ -40,8 +40,13 @@ const (
 	AddCheck       Tipo = "add_check"
 	DropConstraint Tipo = "drop_constraint"
 	RawSQL         Tipo = "raw_sql"
+	SeedRows       Tipo = "seed_rows"
 	Todo           Tipo = "todo"
 )
+
+// Linha é um registro de seed: coluna -> valor. Só aceita literais, porque o
+// arquivo é lido por AST e nunca executado.
+type Linha map[string]any
 
 type ColunaDefinicao struct {
 	Name            string `json:"name"`
@@ -86,6 +91,9 @@ type Operacao struct {
 	SQL          string            `json:"sql,omitempty"`
 	Dialect      string            `json:"dialect,omitempty"`
 	ViewSQL      map[string]string `json:"view_sql,omitempty"`
+	Rows           []Linha  `json:"rows,omitempty"`
+	KeyColumns     []string `json:"key_columns,omitempty"`
+	IdentityColumn string   `json:"identity_column,omitempty"`
 }
 
 func (o Operacao) Alias(name string) Operacao { o.AliasName = name; return o }
@@ -332,6 +340,30 @@ func Validar(operation Operacao) error {
 		if operation.SQL == "" {
 			return fmt.Errorf("SQL exige conteúdo")
 		}
+	case SeedRows:
+		if len(operation.Rows) == 0 {
+			return fmt.Errorf("Seeder() não pode ser vazio; remova a função se não há dados")
+		}
+		if len(operation.KeyColumns) == 0 {
+			return fmt.Errorf("Seeder() exige que a tabela %q tenha chave primária declarada no CreateTable", operation.Table)
+		}
+		for index, row := range operation.Rows {
+			if len(row) == 0 {
+				return fmt.Errorf("Seeder(): a linha %d está vazia", index+1)
+			}
+			for column := range row {
+				if !nomeFisicoValido(column) {
+					return nomeColunaInvalido(column)
+				}
+			}
+			// Sem a chave não há como decidir entre inserir e editar, nem como
+			// garantir que uma reexecução não duplique a linha.
+			for _, key := range operation.KeyColumns {
+				if _, informed := row[key]; !informed {
+					return fmt.Errorf("Seeder(): a linha %d não informa %q; o seed da criação exige ID fixo em todas as linhas", index+1, key)
+				}
+			}
+		}
 	case Todo:
 		return fmt.Errorf("migration ainda não foi preenchida; substitua migrate.TODO() por uma ação")
 	default:
@@ -346,7 +378,8 @@ func Validar(operation Operacao) error {
 func exigeTabela(tipo Tipo) bool {
 	switch tipo {
 	case CreateTable, DropTable, AddColumn, AlterColumn, DropColumn, AddForeignKey, DropForeignKey,
-		CreateIndex, DropIndex, RenameTable, RenameColumn, AddPrimaryKey, AddUnique, AddCheck, DropConstraint:
+		CreateIndex, DropIndex, RenameTable, RenameColumn, AddPrimaryKey, AddUnique, AddCheck, DropConstraint,
+		SeedRows:
 		return true
 	default:
 		return false
@@ -386,4 +419,3 @@ func aliasValido(alias string) bool {
 	}
 	return true
 }
-
