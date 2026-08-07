@@ -209,6 +209,13 @@ func Run(root string, state config.ConfigState) error {
 		)
 	}
 	fmt.Printf("  %s %d aplicada(s), %d já executada(s)\n", cliui.Success("✓ OK"), applied, skipped)
+
+	// O seed inicial de cada tabela roda aqui: nesse ponto a tabela acabou de
+	// nascer, então é inserção pura. As correções ficam para o `seed run`.
+	if err := SeedRun(root, state, true); err != nil {
+		return err
+	}
+
 	fmt.Println("\n" + cliui.Success("✓ Migrations atualizadas na conexão padrão."))
 	return nil
 }
@@ -244,104 +251,24 @@ func SeedableTables(root string, state config.ConfigState) ([]string, error) {
 // É o caminho para não escrever seed à mão: você vê o estado real, edita o que
 // quiser e o gokit garante IDENTITY_INSERT e ressincronização de sequência na
 // hora de aplicar — coisas que um INSERT em SQL bruto não faz.
-func CreateSeedFromDatabase(root string, state config.ConfigState, target string) (string, int, error) {
-	files, err := loadPlans(filepath.Join(root, filepath.FromSlash(state.Config.Output.Migrate)))
-	if err != nil {
-		return "", 0, describeLoadError(err)
-	}
-
-	var host migrationFile
-	var create acao.Operacao
-	found := false
-	for _, file := range files {
-		for _, operation := range file.Plan.Operations {
-			if operation.Kind != string(acao.CreateTable) {
-				continue
-			}
-			if strings.EqualFold(operation.Table, target) || strings.EqualFold(operation.AliasName, target) {
-				host, create, found = file, operation, true
-			}
+func seedPlaceholders(columns []acao.ColunaDefinicao) []string {
+	parts := make([]string, 0, len(columns))
+	for _, column := range columns {
+		valor := `""`
+		switch column.Type {
+		case "int", "integer", "decimal":
+			valor = "0"
+		case "boolean":
+			valor = "false"
+		case "date", "datetime", "timestamp":
+			valor = `"2026-01-01 00:00:00"`
 		}
-	}
-	if !found {
-		return "", 0, cliui.NewUserError(
-			fmt.Sprintf("Não encontrei um CreateTable para %q.", target),
-			"O seed fixo mora junto com a criação da tabela. Confira o nome ou o alias.",
-		)
-	}
-
-	columns := make([]string, 0, len(create.Columns))
-	for _, column := range create.Columns {
-		columns = append(columns, column.Name)
-	}
-	if len(columns) == 0 {
-		return "", 0, fmt.Errorf("a tabela %s não declara colunas", create.Table)
-	}
-
-	dialect := state.ActiveDialect
-	connection := state.Config.Connections[state.ActiveClient]
-	driver := map[string]string{"oracle": "oracle", "postgres": "pgx", "mysql": "mysql", "sqlserver": "sqlserver"}[dialect]
-	if driver == "" {
-		return "", 0, fmt.Errorf("dialeto não suportado: %s", dialect)
-	}
-	db, err := sql.Open(driver, connection.BuildURL())
-	if err != nil {
-		return "", 0, err
-	}
-	defer db.Close()
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-	defer cancel()
-
-	var keys []string
-	for _, column := range create.Columns {
-		if column.PrimaryKey {
-			keys = append(keys, column.Name)
+		if column.Nullable && !column.PrimaryKey {
+			valor = "nil"
 		}
+		parts = append(parts, fmt.Sprintf("%q: %s", column.Name, valor))
 	}
-	order := ""
-	if len(keys) > 0 {
-		order = " ORDER BY " + strings.Join(quotedColumns(dialect, keys), ", ")
-	}
-	query := fmt.Sprintf("SELECT %s FROM %s%s",
-		strings.Join(quotedColumns(dialect, columns), ", "),
-		qualified(dialect, connection.Schema, create.Table), order)
-
-	rows, err := db.QueryContext(ctx, query)
-	if err != nil {
-		return "", 0, fmt.Errorf("ler %s: %w", create.Table, err)
-	}
-	defer rows.Close()
-
-	var literals []string
-	for rows.Next() {
-		values := make([]any, len(columns))
-		scan := make([]any, len(columns))
-		for i := range values {
-			scan[i] = &values[i]
-		}
-		if err := rows.Scan(scan...); err != nil {
-			return "", 0, err
-		}
-		parts := make([]string, 0, len(columns))
-		for i, column := range columns {
-			parts = append(parts, fmt.Sprintf("%q: %s", column, seedGoLiteral(values[i], create.Columns[i])))
-		}
-		literals = append(literals, "\t\t{"+strings.Join(parts, ", ")+"},")
-	}
-	if err := rows.Err(); err != nil {
-		return "", 0, err
-	}
-	if len(literals) == 0 {
-		return "", 0, cliui.NewUserError(
-			fmt.Sprintf("A tabela %s está vazia em %s.", create.Table, state.ActiveClient),
-			"Popule a tabela antes de gerar o seed, ou escreva o Seeder() à mão.",
-		)
-	}
-
-	if err := writeSeederInto(host.Path, state.ActiveClient, literals); err != nil {
-		return "", 0, err
-	}
-	return host.Path, len(literals), nil
+	return parts
 }
 
 // seedGoLiteral converte o valor lido do banco no literal do DSL.
@@ -385,30 +312,6 @@ func quoteOrNumber(text string, textual bool) string {
 		return text
 	}
 	return strconv.Quote(text)
-}
-
-var seederBlock = regexp.MustCompile(`(?m)^// Seed fixo[\s\S]*$|(?m)^func Seeder\(\)[\s\S]*$`)
-
-func writeSeederInto(path, origin string, literals []string) error {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return err
-	}
-	text := seederBlock.ReplaceAllString(string(data), "")
-	text = strings.TrimRight(text, "\n") + "\n"
-
-	seeder := fmt.Sprintf(`
-// Seed fixo — gerado a partir da conexão %q.
-// Os IDs escritos aqui são fixos: valem em todos os ambientes e são os únicos
-// que um seeder posterior pode editar.
-func Seeder() migrate.Rows {
-	return migrate.Rows{
-%s
-	}
-}
-`, origin, strings.Join(literals, "\n"))
-
-	return os.WriteFile(path, []byte(text+seeder), 0644)
 }
 
 // describeLoadError transforma a lista crua de problemas em um resumo por
@@ -609,11 +512,6 @@ func rollbackSQL(dialect, schema string, operation acao.Operacao) (string, error
 		}
 		return fmt.Sprintf("ALTER TABLE %s RENAME COLUMN %s TO %s",
 			qualified(dialect, schema, operation.Table), quote(dialect, operation.NewName), quote(dialect, operation.Column.Name)), nil
-	case acao.SeedRows:
-		// O seed fixo só existe junto com o CreateTable do mesmo arquivo, e a
-		// reversão desse CreateTable derruba a tabela inteira — inclusive as
-		// linhas. Não há nada separado a desfazer aqui.
-		return "", nil
 	case acao.RawSQL, acao.AlterView:
 		// Sem informação do estado anterior não há como desfazer com segurança.
 		return "", fmt.Errorf("a operação %s não é reversível automaticamente; reverta manualmente ou crie uma migration de correção", operation.Kind)
@@ -1302,19 +1200,6 @@ func referencedColumns(operation acao.Operacao) []string {
 			return nil
 		}
 		return []string{operation.Column.Name}
-	case acao.SeedRows:
-		seen := map[string]bool{}
-		var columns []string
-		for _, row := range operation.Rows {
-			for column := range row {
-				if !seen[column] {
-					seen[column] = true
-					columns = append(columns, column)
-				}
-			}
-		}
-		sort.Strings(columns)
-		return columns
 	default:
 		return nil
 	}
@@ -1706,8 +1591,6 @@ func executeOperation(ctx context.Context, db *sql.DB, dialect, schema string, o
 		if _, err := db.ExecContext(ctx, query); err != nil {
 			return fmt.Errorf("remover constraint %s: %w", operation.Name, err)
 		}
-	case "seed_rows":
-		return executeSeedRows(ctx, db, dialect, schema, operation)
 	case "raw_sql":
 		if operation.Dialect != "" && operation.Dialect != "all" && !strings.EqualFold(operation.Dialect, dialect) {
 			return nil
@@ -1796,7 +1679,11 @@ func placeholder(dialect string, position int) string {
 // registro que a aplicação gerou. Sobrescrever seria apagar dado real em
 // silêncio, então diverge = erro. Idêntica = no-op, o que mantém a operação
 // reexecutável sem efeito colateral.
-func executeSeedRows(ctx context.Context, db *sql.DB, dialect, schema string, operation acao.Operacao) error {
+// owned traz as chaves que seeders anteriores da mesma tabela declararam
+// explicitamente. São os IDs fixos: os únicos que este seed pode editar. Uma
+// linha divergente fora desse conjunto veio de outro lugar — provavelmente da
+// aplicação — e sobrescrevê-la apagaria dado real.
+func executeSeedRows(ctx context.Context, db *sql.DB, dialect, schema string, operation acao.Operacao, owned map[string]bool) error {
 	if len(operation.Rows) == 0 {
 		return nil
 	}
@@ -1808,33 +1695,79 @@ func executeSeedRows(ctx context.Context, db *sql.DB, dialect, schema string, op
 	}
 	defer transaction.Rollback()
 
-	// SET IDENTITY_INSERT é por sessão: precisa da mesma conexão dos inserts,
-	// por isso tudo acontece dentro da transação.
-	identityInsert := dialect == "sqlserver" && operation.IdentityColumn != "" &&
-		seedWritesColumn(operation.Rows, operation.IdentityColumn)
-	if identityInsert {
-		if _, err := transaction.ExecContext(ctx, "SET IDENTITY_INSERT "+target+" ON"); err != nil {
-			return fmt.Errorf("habilitar IDENTITY_INSERT em %s: %w", operation.Table, err)
+	// SET IDENTITY_INSERT é por sessão — daí a transação, senão o SET e o
+	// INSERT cairiam em conexões diferentes do pool.
+	//
+	// E ele precisa ser alternado linha a linha: com IDENTITY_INSERT ligado o
+	// SQL Server passa a EXIGIR o valor em todo insert, então uma linha sem ID
+	// (inserção com chave gerada) falha se ele ficar ligado o lote inteiro.
+	identityOn := false
+	alternaIdentity := func(ligar bool) error {
+		if dialect != "sqlserver" || operation.IdentityColumn == "" || identityOn == ligar {
+			return nil
 		}
+		verbo := "OFF"
+		if ligar {
+			verbo = "ON"
+		}
+		if _, err := transaction.ExecContext(ctx, "SET IDENTITY_INSERT "+target+" "+verbo); err != nil {
+			return fmt.Errorf("%s IDENTITY_INSERT em %s: %w", verbo, operation.Table, err)
+		}
+		identityOn = ligar
+		return nil
 	}
 
-	inserted, unchanged := 0, 0
+	inserted, updated, unchanged := 0, 0, 0
 	for index, row := range operation.Rows {
 		columns := sortedColumns(row)
+		chave := seedKeyLabel(operation.KeyColumns, row)
+
+		// Linha sem a chave informada é inserção pura: o banco gera o ID.
+		informouChave := true
+		for _, key := range operation.KeyColumns {
+			if _, ok := row[key]; !ok {
+				informouChave = false
+				break
+			}
+		}
+		escreveIdentity := operation.IdentityColumn != ""
+		if escreveIdentity {
+			_, escreveIdentity = row[operation.IdentityColumn]
+		}
+		if err := alternaIdentity(escreveIdentity); err != nil {
+			return err
+		}
+
+		if !informouChave {
+			if err := seedInsert(ctx, transaction, dialect, target, columns, row); err != nil {
+				return fmt.Errorf("inserir em %s (linha %d): %w", operation.Table, index+1, err)
+			}
+			inserted++
+			continue
+		}
+
 		existing, found, err := seedExistingRow(ctx, transaction, dialect, target, operation.KeyColumns, columns, row)
 		if err != nil {
 			return fmt.Errorf("consultar %s (linha %d): %w", operation.Table, index+1, err)
 		}
 		if found {
-			if difference := seedDifference(row, existing, columns); difference != "" {
+			difference := seedDifference(row, existing, columns)
+			if difference == "" {
+				unchanged++
+				continue
+			}
+			if !owned[chave] {
 				return cliui.NewUserError(
 					fmt.Sprintf("seed de %s: a linha %s já existe no banco com outro conteúdo (%s).",
-						operation.Table, seedKeyLabel(operation.KeyColumns, row), difference),
-					"Essa linha não foi criada por este seed — pode ter vindo da aplicação. "+
-						"Sobrescrever apagaria dado real. Ajuste o ID no Seeder() ou remova a linha do banco antes de reaplicar.",
+						operation.Table, chave, difference),
+					"Esse ID não foi declarado por nenhum seeder anterior — a linha pode ter vindo da aplicação. "+
+						"Sobrescrever apagaria dado real. Só IDs fixos podem ser editados.",
 				)
 			}
-			unchanged++
+			if err := seedUpdate(ctx, transaction, dialect, target, operation.KeyColumns, columns, row); err != nil {
+				return fmt.Errorf("atualizar %s (linha %d): %w", operation.Table, index+1, err)
+			}
+			updated++
 			continue
 		}
 		if err := seedInsert(ctx, transaction, dialect, target, columns, row); err != nil {
@@ -1843,10 +1776,8 @@ func executeSeedRows(ctx context.Context, db *sql.DB, dialect, schema string, op
 		inserted++
 	}
 
-	if identityInsert {
-		if _, err := transaction.ExecContext(ctx, "SET IDENTITY_INSERT "+target+" OFF"); err != nil {
-			return fmt.Errorf("desabilitar IDENTITY_INSERT em %s: %w", operation.Table, err)
-		}
+	if err := alternaIdentity(false); err != nil {
+		return err
 	}
 	if err := transaction.Commit(); err != nil {
 		return fmt.Errorf("confirmar seed de %s: %w", operation.Table, err)
@@ -1859,9 +1790,43 @@ func executeSeedRows(ctx context.Context, db *sql.DB, dialect, schema string, op
 			return fmt.Errorf("ressincronizar a sequência de %s.%s: %w", operation.Table, operation.IdentityColumn, err)
 		}
 	}
-	fmt.Printf("  %s %s: %d inserida(s), %d já presente(s)\n",
-		cliui.Muted("·"), operation.Table, inserted, unchanged)
+	fmt.Printf("  %s %s: %d inserida(s), %d editada(s), %d inalterada(s)\n",
+		cliui.Muted("·"), operation.Table, inserted, updated, unchanged)
 	return nil
+}
+
+// seedUpdate altera apenas as colunas que a linha do seeder declara. Um seeder
+// antigo, escrito antes de a tabela ganhar colunas novas, não pode zerá-las.
+func seedUpdate(ctx context.Context, transaction *sql.Tx, dialect, target string,
+	keys, columns []string, row acao.Linha) error {
+
+	chave := map[string]bool{}
+	for _, key := range keys {
+		chave[key] = true
+	}
+	var atribuicoes []string
+	var arguments []any
+	for _, column := range columns {
+		if chave[column] {
+			continue
+		}
+		atribuicoes = append(atribuicoes, fmt.Sprintf("%s = %s",
+			quote(dialect, column), placeholder(dialect, len(arguments)+1)))
+		arguments = append(arguments, row[column])
+	}
+	if len(atribuicoes) == 0 {
+		return nil // a linha só tem a chave: nada a alterar
+	}
+	var predicado []string
+	for _, key := range keys {
+		predicado = append(predicado, fmt.Sprintf("%s = %s",
+			quote(dialect, key), placeholder(dialect, len(arguments)+1)))
+		arguments = append(arguments, row[key])
+	}
+	query := fmt.Sprintf("UPDATE %s SET %s WHERE %s",
+		target, strings.Join(atribuicoes, ", "), strings.Join(predicado, " AND "))
+	_, err := transaction.ExecContext(ctx, query, arguments...)
+	return err
 }
 
 func sortedColumns(row acao.Linha) []string {
@@ -1871,15 +1836,6 @@ func sortedColumns(row acao.Linha) []string {
 	}
 	sort.Strings(columns)
 	return columns
-}
-
-func seedWritesColumn(rows []acao.Linha, column string) bool {
-	for _, row := range rows {
-		if _, present := row[column]; present {
-			return true
-		}
-	}
-	return false
 }
 
 func seedKeyLabel(keys []string, row acao.Linha) string {

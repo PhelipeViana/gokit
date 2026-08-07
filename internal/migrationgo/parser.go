@@ -53,17 +53,14 @@ func ParseFile(path string) ([]acao.Operacao, error) {
 	}
 
 	var operations []acao.Operacao
-	var seedRows []acao.Linha
-	var seedFound bool
 	for _, declaration := range file.Decls {
 		if function, ok := declaration.(*ast.FuncDecl); ok {
+			// Seed não mora mais dentro da migration: uma migration aplicada é
+			// imutável, então corrigir o dado exigiria mexer no passado.
 			if function.Name != nil && function.Name.Name == "Seeder" {
-				rows, err := evalSeederFunction(set, function)
-				if err != nil {
-					return nil, err
-				}
-				seedRows, seedFound = rows, true
-				continue
+				return nil, fmt.Errorf(
+					"func Seeder() não pertence a uma migration; mova as linhas para %s/<tabela>/<timestamp>_seeder.go (veja: gokit seed create <tabela>)",
+					"database/seeds")
 			}
 			found, err := evalDefinitionFunction(set, function, catalog, views, path)
 			if err != nil {
@@ -99,14 +96,6 @@ func ParseFile(path string) ([]acao.Operacao, error) {
 
 	if len(operations) == 0 {
 		return nil, fmt.Errorf("nenhuma operação migrate.* encontrada")
-	}
-	if seedFound {
-		seed, err := bindSeederToTable(operations, seedRows)
-		if err != nil {
-			return nil, err
-		}
-		// O seed entra no fim: a tabela precisa existir antes das linhas.
-		operations = append(operations, seed)
 	}
 	for index := range operations {
 		if operations[index].Kind == string(acao.CreateTable) && operations[index].AliasName == "" {
@@ -235,6 +224,13 @@ var seedTimeLayouts = []string{
 	"2006-01-02",
 }
 
+// CoerceValue ajusta um valor ao tipo declarado da coluna. As factories usam
+// a mesma regra dos seeds: quem gera o dado informa o valor, o motor resolve
+// como cada driver quer recebê-lo.
+func CoerceValue(value any, kind string) (any, error) {
+	return coerceSeedValue(value, kind)
+}
+
 // coerceSeedRows ajusta cada valor ao tipo declarado da coluna no CreateTable.
 //
 // A conversão vive aqui e não no arquivo de seed porque é conhecimento do
@@ -278,7 +274,11 @@ func coerceSeedValue(value any, kind string) (any, error) {
 
 	case "string", "char", "text":
 		// Número em coluna de texto: o pgx recusa, os outros três convertem.
+		// int e int64 aparecem os dois: o seed literal produz int64, as funções
+		// Fake* das factories produzem int.
 		switch typed := value.(type) {
+		case int:
+			return strconv.Itoa(typed), nil
 		case int64:
 			return strconv.FormatInt(typed, 10), nil
 		case float64:
@@ -299,43 +299,29 @@ func coerceSeedValue(value any, kind string) (any, error) {
 	return value, nil
 }
 
-// bindSeederToTable amarra o Seeder() ao CreateTable do mesmo arquivo e extrai
-// a chave primária declarada, que é o que decide entre inserir e editar.
-func bindSeederToTable(operations []acao.Operacao, rows []acao.Linha) (acao.Operacao, error) {
-	var target *acao.Operacao
-	for index := range operations {
-		if operations[index].Kind == string(acao.CreateTable) {
-			if target != nil {
-				return acao.Operacao{}, fmt.Errorf("Seeder() exige exatamente um CreateTable no arquivo, mas há mais de um")
-			}
-			target = &operations[index]
+// ParseSeedFile lê um arquivo de seed avulso — database/seeds/<tabela>/<ts>_seeder.go.
+// A tabela vem da pasta; o arquivo só carrega as linhas.
+func ParseSeedFile(path string, columns []acao.ColunaDefinicao) ([]acao.Linha, error) {
+	set := token.NewFileSet()
+	file, err := parser.ParseFile(set, path, nil, 0)
+	if err != nil {
+		return nil, err
+	}
+	for _, declaration := range file.Decls {
+		function, ok := declaration.(*ast.FuncDecl)
+		if !ok || function.Name == nil || function.Name.Name != "Seeder" {
+			continue
 		}
-	}
-	if target == nil {
-		return acao.Operacao{}, fmt.Errorf("Seeder() só pode acompanhar um CreateTable no mesmo arquivo")
-	}
-	if err := coerceSeedRows(rows, target.Columns); err != nil {
-		return acao.Operacao{}, err
-	}
-
-	var keys []string
-	identity := ""
-	for _, column := range target.Columns {
-		if column.PrimaryKey {
-			keys = append(keys, column.Name)
+		rows, err := evalSeederFunction(set, function)
+		if err != nil {
+			return nil, err
 		}
-		if column.AutoIncrement {
-			identity = column.Name
+		if err := coerceSeedRows(rows, columns); err != nil {
+			return nil, err
 		}
+		return rows, nil
 	}
-	return acao.Operacao{
-		Kind:           string(acao.SeedRows),
-		Table:          target.Table,
-		AliasName:      target.AliasName,
-		Rows:           rows,
-		KeyColumns:     keys,
-		IdentityColumn: identity,
-	}, nil
+	return nil, fmt.Errorf("nenhuma func Seeder() encontrada")
 }
 
 func loadViewCatalog(path string) map[string]string {

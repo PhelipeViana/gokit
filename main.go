@@ -24,10 +24,11 @@ func main() {
 	// Se houver argumentos de linha de comando, roda em modo CLI
 	if len(os.Args) > 1 {
 		if os.Args[1] == "seed" {
-			if len(os.Args) < 4 || os.Args[2] != "create" {
-				fmt.Println("Uso: gokit seed create <tabela|alias>")
-				fmt.Println("\nLê as linhas que a tabela tem hoje na conexão ativa e grava")
-				fmt.Println("um func Seeder() na migration de criação dela.")
+			if len(os.Args) < 3 {
+				fmt.Println("Uso: gokit seed [run|validate|create <tabela>]")
+				fmt.Println("\n  run       aplica os seeders pendentes")
+				fmt.Println("  validate  confere os seeders sem tocar no banco")
+				fmt.Println("  create    cria database/seeds/<tabela>/<timestamp>_seeder.go")
 				os.Exit(1)
 			}
 			state := config.RunConfigChecks()
@@ -35,12 +36,74 @@ func main() {
 				fmt.Printf("Erro de configuração: %v\n", state.ConfigFileError)
 				os.Exit(1)
 			}
-			path, total, err := migraterun.CreateSeedFromDatabase(".", state, os.Args[3])
+			var err error
+			switch os.Args[2] {
+			case "run":
+				err = migraterun.SeedRun(".", state, false)
+			case "validate", "check":
+				err = migraterun.SeedValidate(".", state)
+			case "create":
+				if len(os.Args) < 4 {
+					fmt.Println("Uso: gokit seed create <tabela>")
+					os.Exit(1)
+				}
+				var path string
+				var total int
+				path, total, err = migraterun.CreateSeedFile(".", state, os.Args[3])
+				if err == nil {
+					if total == 0 {
+						fmt.Printf("Esqueleto de seeder criado em %s\n", path)
+						fmt.Println("Preencha os valores e rode: gokit seed validate")
+					} else {
+						fmt.Printf("Seeder com %d linha(s) criado em %s\n", total, path)
+					}
+				}
+			default:
+				fmt.Printf("Comando de seed desconhecido: %s\n", os.Args[2])
+				os.Exit(1)
+			}
 			if err != nil {
 				fmt.Printf("Erro: %v\n", err)
 				os.Exit(1)
 			}
-			fmt.Printf("Seed com %d linha(s) gravado em %s\n", total, path)
+			os.Exit(0)
+		}
+		if os.Args[1] == "factory" {
+			if len(os.Args) < 3 {
+				fmt.Println("Uso: gokit factory [run|validate|create] [tabela...]")
+				fmt.Println("\n  run       popula as tabelas com dados fake")
+				fmt.Println("  validate  confere as factories sem tocar no banco")
+				fmt.Println("  create    gera database/factories/<tabela>_factory.go a partir da migration")
+				fmt.Println("\n  gokit factory run              todas as factories ativas")
+				fmt.Println("  gokit factory run cidades      só cidades e as tabelas de que ela depende")
+				fmt.Println("  gokit factory create           gera as factories que faltam")
+				os.Exit(1)
+			}
+			state := config.RunConfigChecks()
+			if state.ConfigFileError != nil {
+				fmt.Printf("Erro de configuração: %v\n", state.ConfigFileError)
+				os.Exit(1)
+			}
+			var err error
+			switch os.Args[2] {
+			case "run":
+				err = migraterun.FactoryRun(".", state, os.Args[3:])
+			case "validate", "check":
+				err = migraterun.FactoryValidate(".", state)
+			case "create":
+				tabela := ""
+				if len(os.Args) >= 4 {
+					tabela = os.Args[3]
+				}
+				err = migraterun.FactoryCreate(".", state, tabela)
+			default:
+				fmt.Printf("Comando de factory desconhecido: %s\n", os.Args[2])
+				os.Exit(1)
+			}
+			if err != nil {
+				fmt.Printf("Erro: %v\n", err)
+				os.Exit(1)
+			}
 			os.Exit(0)
 		}
 		if os.Args[1] == "migrate" {

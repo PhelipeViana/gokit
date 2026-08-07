@@ -30,6 +30,9 @@ const (
 	stateSeedMenu
 	stateSeedSelectTable
 	stateSeedCreating
+	stateFactoryMenu
+	stateFactorySelectTable
+	stateFactoryRunning
 	stateConfigScreen
 )
 
@@ -96,6 +99,9 @@ type model struct {
 	seedChoices         []string
 	seedTables          []string
 	seedCursor          int
+	factoryChoices      []string
+	factoryTables       []string
+	factoryCursor       int
 }
 
 // Estilos Lip Gloss inspirados na estética Charm Bracelet
@@ -145,9 +151,18 @@ func Start(version string) error {
 	m := model{
 		state:   stateMainMenu,
 		cursor:  0,
-		choices: []string{"Configuração", "Migration Options", "Seed Options", "Sair (Exit)"},
+		choices: []string{"Configuração", "Migration Options", "Seed Options", "Factory Options", "Sair (Exit)"},
+		factoryChoices: []string{
+			"Gerar Factories a partir das Migrations",
+			"Validar Factories (não toca no banco)",
+			"Popular todas as tabelas ativas",
+			"Popular uma tabela (traz as dependências)",
+			"Voltar ao menu principal",
+		},
 		seedChoices: []string{
-			"Gerar Seed a partir do banco",
+			"Criar Seeder de uma tabela",
+			"Validar Seeders (não toca no banco)",
+			"Executar Seeders pendentes",
 			"Voltar ao menu principal",
 		},
 		migrationsChoices: []string{
@@ -428,6 +443,16 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if m.seedCursor < 0 {
 					m.seedCursor = len(m.seedTables) - 1
 				}
+			} else if m.state == stateFactoryMenu {
+				m.cursor--
+				if m.cursor < 0 {
+					m.cursor = len(m.factoryChoices) - 1
+				}
+			} else if m.state == stateFactorySelectTable {
+				m.factoryCursor--
+				if m.factoryCursor < 0 {
+					m.factoryCursor = len(m.factoryTables) - 1
+				}
 			}
 
 		case "down", "j":
@@ -451,6 +476,16 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if m.seedCursor >= len(m.seedTables) {
 					m.seedCursor = 0
 				}
+			} else if m.state == stateFactoryMenu {
+				m.cursor++
+				if m.cursor >= len(m.factoryChoices) {
+					m.cursor = 0
+				}
+			} else if m.state == stateFactorySelectTable {
+				m.factoryCursor++
+				if m.factoryCursor >= len(m.factoryTables) {
+					m.factoryCursor = 0
+				}
 			}
 
 		case "enter":
@@ -470,6 +505,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.cursor = 0
 					return m, tea.ClearScreen
 				case 3:
+					m.state = stateFactoryMenu
+					m.cursor = 0
+					return m, tea.ClearScreen
+				case 4:
 					return m, tea.Quit
 				}
 			case stateSeedMenu:
@@ -485,10 +524,69 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.state = stateSeedSelectTable
 					return m, tea.ClearScreen
 				case 1:
+					m.state = stateSeedCreating
+					m.migrationOutput, m.migrationError = captureOutput(func() error {
+						return migraterun.SeedValidate(".", m.configData)
+					})
+					return m, tea.ClearScreen
+				case 2:
+					m.state = stateSeedCreating
+					m.migrationOutput, m.migrationError = captureOutput(func() error {
+						return migraterun.SeedRun(".", m.configData, false)
+					})
+					return m, tea.ClearScreen
+				case 3:
 					m.state = stateMainMenu
 					m.cursor = 0
 					return m, tea.ClearScreen
 				}
+			case stateFactoryMenu:
+				switch m.cursor {
+				case 0:
+					m.state = stateFactoryRunning
+					m.migrationOutput, m.migrationError = captureOutput(func() error {
+						return migraterun.FactoryCreate(".", m.configData, "")
+					})
+					return m, tea.ClearScreen
+				case 1:
+					m.state = stateFactoryRunning
+					m.migrationOutput, m.migrationError = captureOutput(func() error {
+						return migraterun.FactoryValidate(".", m.configData)
+					})
+					return m, tea.ClearScreen
+				case 2:
+					m.state = stateFactoryRunning
+					m.migrationOutput, m.migrationError = captureOutput(func() error {
+						return migraterun.FactoryRun(".", m.configData, nil)
+					})
+					return m, tea.ClearScreen
+				case 3:
+					tables, err := migraterun.FactoryTables(".", m.configData)
+					if err != nil {
+						m.state = stateFactoryRunning
+						m.migrationOutput, m.migrationError = "", err
+						return m, tea.ClearScreen
+					}
+					m.factoryTables, m.factoryCursor = tables, 0
+					m.state = stateFactorySelectTable
+					return m, tea.ClearScreen
+				case 4:
+					m.state = stateMainMenu
+					m.cursor = 0
+					return m, tea.ClearScreen
+				}
+			case stateFactorySelectTable:
+				if len(m.factoryTables) == 0 {
+					m.state = stateFactoryMenu
+					m.cursor = 0
+					return m, tea.ClearScreen
+				}
+				table := m.factoryTables[m.factoryCursor]
+				m.state = stateFactoryRunning
+				m.migrationOutput, m.migrationError = captureOutput(func() error {
+					return migraterun.FactoryRun(".", m.configData, []string{table})
+				})
+				return m, tea.ClearScreen
 			case stateSeedSelectTable:
 				if len(m.seedTables) == 0 {
 					m.state = stateSeedMenu
@@ -498,16 +596,19 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				table := m.seedTables[m.seedCursor]
 				m.state = stateSeedCreating
 				m.migrationOutput, m.migrationError = captureOutput(func() error {
-					path, total, err := migraterun.CreateSeedFromDatabase(".", m.configData, table)
+					path, total, err := migraterun.CreateSeedFile(".", m.configData, table)
 					if err != nil {
 						return err
 					}
 					fmt.Printf("Tabela:  %s\n", table)
 					fmt.Printf("Origem:  %s (%s)\n", m.configData.ActiveClient, m.configData.ActiveDialect)
-					fmt.Printf("Linhas:  %d\n", total)
 					fmt.Printf("Arquivo: %s\n", path)
-					fmt.Println("\nA migration mudou, então o checksum dela também.")
-					fmt.Println("Se ela já foi aplicada, resete o banco antes do próximo migrate run.")
+					if total == 0 {
+						fmt.Println("\nEsqueleto criado — preencha os valores.")
+					} else {
+						fmt.Printf("Linhas:  %d (retrato do banco)\n", total)
+					}
+					fmt.Println("Depois: gokit seed validate  e  gokit seed run")
 					return nil
 				})
 				return m, tea.ClearScreen
@@ -605,7 +706,7 @@ func (m model) View() string {
 	var s strings.Builder
 
 	// Cabeçalho da aplicação - Apenas impresso no menu principal e submenus de navegação
-	if m.state == stateMainMenu || m.state == stateMigrationsMenu || m.state == stateSeedMenu {
+	if m.state == stateMainMenu || m.state == stateMigrationsMenu || m.state == stateSeedMenu || m.state == stateFactoryMenu {
 		s.WriteString(titleStyle.Render("GO KIT CLI") + "\n")
 		s.WriteString(versionStyle.Render("Última Atualização: "+Version) + "\n\n")
 	}
@@ -874,7 +975,59 @@ func (m model) View() string {
 			m.seedCursor+1, len(m.seedTables))) + "\n")
 
 	case stateSeedCreating:
-		s.WriteString(m.renderActionResult("Seed gerado.", "Não foi possível gerar o seed:"))
+		s.WriteString(m.renderActionResult("Concluído.", "A operação de seed falhou:"))
+
+	case stateFactoryMenu:
+		s.WriteString("  " + lipgloss.NewStyle().Bold(true).Render("Opções de Factory:") + "\n\n")
+		for i, choice := range m.factoryChoices {
+			if m.cursor == i {
+				s.WriteString(selectedItemStyle.Render("➔ "+choice) + "\n")
+			} else {
+				s.WriteString(itemStyle.Render(choice) + "\n")
+			}
+		}
+		s.WriteString("\n" + footerStyle.Render(fmt.Sprintf(
+			"Popular limpa a tabela antes de inserir. Destino: %s (%s).",
+			m.configData.ActiveClient, m.configData.ActiveDialect)) + "\n")
+
+	case stateFactorySelectTable:
+		s.WriteString("  " + lipgloss.NewStyle().Bold(true).Render("Popular uma tabela") + "\n\n")
+		if len(m.factoryTables) == 0 {
+			s.WriteString("  Nenhuma factory encontrada.\n\n  [Enter] Voltar\n")
+			break
+		}
+		s.WriteString(footerStyle.Render("As tabelas de que ela depende entram junto, na ordem certa.") + "\n\n")
+
+		// Janela de 12 itens em volta do cursor: a lista tem centenas de tabelas.
+		start := m.factoryCursor - 6
+		if start < 0 {
+			start = 0
+		}
+		end := start + 12
+		if end > len(m.factoryTables) {
+			end = len(m.factoryTables)
+			if start = end - 12; start < 0 {
+				start = 0
+			}
+		}
+		if start > 0 {
+			s.WriteString(itemStyle.Render("↑ ...") + "\n")
+		}
+		for i := start; i < end; i++ {
+			if m.factoryCursor == i {
+				s.WriteString(selectedItemStyle.Render("➔ "+m.factoryTables[i]) + "\n")
+			} else {
+				s.WriteString(itemStyle.Render(m.factoryTables[i]) + "\n")
+			}
+		}
+		if end < len(m.factoryTables) {
+			s.WriteString(itemStyle.Render("↓ ...") + "\n")
+		}
+		s.WriteString("\n" + footerStyle.Render(fmt.Sprintf("%d de %d  ·  [Enter] Popular  ·  [q] Sair",
+			m.factoryCursor+1, len(m.factoryTables))) + "\n")
+
+	case stateFactoryRunning:
+		s.WriteString(m.renderActionResult("Concluído.", "A operação de factory falhou:"))
 
 	case stateConfigScreen:
 		var cfgStr strings.Builder

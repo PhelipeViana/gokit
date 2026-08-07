@@ -5,6 +5,8 @@ import (
 	"os"
 	"strings"
 	"testing"
+
+	"gokit/internal/config"
 )
 
 func osStdout() *os.File { return os.Stdout }
@@ -63,5 +65,72 @@ func TestLastLinesMantemAsUltimas(t *testing.T) {
 	}
 	if !strings.Contains(got, "3 linha(s) acima omitidas") {
 		t.Fatalf("esperava aviso de linhas omitidas, veio %q", got)
+	}
+}
+
+// menuDeTeste monta o modelo como Start faz, sem abrir conexão.
+func menuDeTeste() model {
+	return model{
+		choices: []string{"Configuração", "Migration Options", "Seed Options", "Factory Options", "Sair (Exit)"},
+		factoryChoices: []string{
+			"Gerar Factories a partir das Migrations",
+			"Validar Factories (não toca no banco)",
+			"Popular todas as tabelas ativas",
+			"Popular uma tabela (traz as dependências)",
+			"Voltar ao menu principal",
+		},
+		configData: config.ConfigState{ActiveClient: "postgres", ActiveDialect: "postgres"},
+	}
+}
+
+func TestMenuPrincipalOfereceFactory(t *testing.T) {
+	m := menuDeTeste()
+	m.state = stateMainMenu
+	if !strings.Contains(m.View(), "Factory Options") {
+		t.Fatalf("o menu principal deveria listar Factory Options:\n%s", m.View())
+	}
+}
+
+func TestMenuDeFactoryListaAsQuatroAcoes(t *testing.T) {
+	m := menuDeTeste()
+	m.state = stateFactoryMenu
+	saida := m.View()
+	for _, esperado := range []string{"Gerar Factories", "Validar Factories", "Popular todas", "Popular uma tabela", "Voltar"} {
+		if !strings.Contains(saida, esperado) {
+			t.Fatalf("faltou %q no menu:\n%s", esperado, saida)
+		}
+	}
+	// O aviso de que popular limpa a tabela precisa estar visível antes do ato.
+	if !strings.Contains(saida, "limpa a tabela") {
+		t.Fatalf("o menu deveria avisar que popular limpa a tabela:\n%s", saida)
+	}
+}
+
+// A lista tem centenas de tabelas: só uma janela em volta do cursor aparece.
+func TestSelecaoDeTabelaUsaJanela(t *testing.T) {
+	m := menuDeTeste()
+	m.state = stateFactorySelectTable
+	for i := 0; i < 40; i++ {
+		m.factoryTables = append(m.factoryTables, fmt.Sprintf("TABELA_%02d", i))
+	}
+	m.factoryCursor = 20
+	saida := m.View()
+
+	if strings.Count(saida, "TABELA_") > 14 {
+		t.Fatalf("a janela deveria limitar os itens visíveis:\n%s", saida)
+	}
+	if !strings.Contains(saida, "TABELA_20") {
+		t.Fatal("o item sob o cursor precisa aparecer")
+	}
+	if !strings.Contains(saida, "21 de 40") {
+		t.Fatalf("faltou a posição na lista:\n%s", saida)
+	}
+}
+
+func TestSelecaoVaziaOrientaVoltar(t *testing.T) {
+	m := menuDeTeste()
+	m.state = stateFactorySelectTable
+	if !strings.Contains(m.View(), "Nenhuma factory encontrada") {
+		t.Fatalf("lista vazia deveria explicar o que houve:\n%s", m.View())
 	}
 }
