@@ -3,9 +3,27 @@ package migrate
 
 import (
 	"strings"
+	"time"
 
 	"gokit/migration/acao"
 )
+
+// SeedTimeLayout é o formato aceito por Time em um seed.
+const SeedTimeLayout = "2006-01-02 15:04:05"
+
+// Time declara um valor de data/hora numa linha de seed.
+//
+//	{"id": 1, "created_at": migrate.Time("2026-07-01 18:06:57")}
+//
+// Sem isso o valor iria como texto e dependeria da conversão implícita do
+// banco, que no Oracle varia conforme o NLS da sessão.
+func Time(value string) time.Time {
+	parsed, err := time.Parse(SeedTimeLayout, value)
+	if err != nil {
+		return time.Time{}
+	}
+	return parsed
+}
 
 type Table string
 type View struct{ name string }

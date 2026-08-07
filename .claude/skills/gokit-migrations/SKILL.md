@@ -133,3 +133,8 @@ operação cair no default e virar erro no rollback.
 - Mensagem de erro diz o que aconteceu **e** como resolver — o usuário lê no
   meio de uma migration de 267 arquivos.
 - Toda mudança roda `go test ./...` e `.\testlab\lab.ps1 matrix` antes de fechar.
+
+
+Projeto de teste em implementacao: C:\Users\phelipe.viana\Desktop\prevcontas_test\
+Projeto do plugin gokit: C:\Users\phelipe.viana\Desktop\gokit\
+Referencia do projeto em producao: C:\Users\phelipe.viana\Documents\TCE_MT\back

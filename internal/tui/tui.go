@@ -27,6 +27,9 @@ const (
 	stateMigrationRunning
 	stateMigrationRollingBack
 	stateMigrationValidating
+	stateSeedMenu
+	stateSeedSelectTable
+	stateSeedCreating
 	stateConfigScreen
 )
 
@@ -90,6 +93,9 @@ type model struct {
 	tableCursor         int
 	viewCursor          int
 	selectedTableOrView string
+	seedChoices         []string
+	seedTables          []string
+	seedCursor          int
 }
 
 // Estilos Lip Gloss inspirados na estética Charm Bracelet
@@ -139,7 +145,11 @@ func Start(version string) error {
 	m := model{
 		state:   stateMainMenu,
 		cursor:  0,
-		choices: []string{"Configuração", "Migration Options", "Sair (Exit)"},
+		choices: []string{"Configuração", "Migration Options", "Seed Options", "Sair (Exit)"},
+		seedChoices: []string{
+			"Gerar Seed a partir do banco",
+			"Voltar ao menu principal",
+		},
 		migrationsChoices: []string{
 			"Criar nova Migration",
 			"Validar Migrations (não toca no banco)",
@@ -408,6 +418,16 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if m.cursor < 0 {
 					m.cursor = len(m.migrationsChoices) - 1
 				}
+			} else if m.state == stateSeedMenu {
+				m.cursor--
+				if m.cursor < 0 {
+					m.cursor = len(m.seedChoices) - 1
+				}
+			} else if m.state == stateSeedSelectTable {
+				m.seedCursor--
+				if m.seedCursor < 0 {
+					m.seedCursor = len(m.seedTables) - 1
+				}
 			}
 
 		case "down", "j":
@@ -420,6 +440,16 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.cursor++
 				if m.cursor >= len(m.migrationsChoices) {
 					m.cursor = 0
+				}
+			} else if m.state == stateSeedMenu {
+				m.cursor++
+				if m.cursor >= len(m.seedChoices) {
+					m.cursor = 0
+				}
+			} else if m.state == stateSeedSelectTable {
+				m.seedCursor++
+				if m.seedCursor >= len(m.seedTables) {
+					m.seedCursor = 0
 				}
 			}
 
@@ -436,8 +466,51 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.cursor = 0
 					return m, tea.ClearScreen
 				case 2:
+					m.state = stateSeedMenu
+					m.cursor = 0
+					return m, tea.ClearScreen
+				case 3:
 					return m, tea.Quit
 				}
+			case stateSeedMenu:
+				switch m.cursor {
+				case 0:
+					tables, err := migraterun.SeedableTables(".", m.configData)
+					if err != nil {
+						m.state = stateSeedCreating
+						m.migrationOutput, m.migrationError = "", err
+						return m, tea.ClearScreen
+					}
+					m.seedTables, m.seedCursor = tables, 0
+					m.state = stateSeedSelectTable
+					return m, tea.ClearScreen
+				case 1:
+					m.state = stateMainMenu
+					m.cursor = 0
+					return m, tea.ClearScreen
+				}
+			case stateSeedSelectTable:
+				if len(m.seedTables) == 0 {
+					m.state = stateSeedMenu
+					m.cursor = 0
+					return m, tea.ClearScreen
+				}
+				table := m.seedTables[m.seedCursor]
+				m.state = stateSeedCreating
+				m.migrationOutput, m.migrationError = captureOutput(func() error {
+					path, total, err := migraterun.CreateSeedFromDatabase(".", m.configData, table)
+					if err != nil {
+						return err
+					}
+					fmt.Printf("Tabela:  %s\n", table)
+					fmt.Printf("Origem:  %s (%s)\n", m.configData.ActiveClient, m.configData.ActiveDialect)
+					fmt.Printf("Linhas:  %d\n", total)
+					fmt.Printf("Arquivo: %s\n", path)
+					fmt.Println("\nA migration mudou, então o checksum dela também.")
+					fmt.Println("Se ela já foi aplicada, resete o banco antes do próximo migrate run.")
+					return nil
+				})
+				return m, tea.ClearScreen
 			case stateMigrationsMenu:
 				switch m.cursor {
 				case 0:
@@ -532,7 +605,7 @@ func (m model) View() string {
 	var s strings.Builder
 
 	// Cabeçalho da aplicação - Apenas impresso no menu principal e submenus de navegação
-	if m.state == stateMainMenu || m.state == stateMigrationsMenu {
+	if m.state == stateMainMenu || m.state == stateMigrationsMenu || m.state == stateSeedMenu {
 		s.WriteString(titleStyle.Render("GO KIT CLI") + "\n")
 		s.WriteString(versionStyle.Render("Última Atualização: "+Version) + "\n\n")
 	}
@@ -749,6 +822,59 @@ func (m model) View() string {
 
 	case stateMigrationValidating:
 		s.WriteString(m.renderActionResult("Corpus válido.", "A pré-validação encontrou problemas:"))
+
+	case stateSeedMenu:
+		s.WriteString("  " + lipgloss.NewStyle().Bold(true).Render("Opções de Seed:") + "\n\n")
+		for i, choice := range m.seedChoices {
+			if m.cursor == i {
+				s.WriteString(selectedItemStyle.Render("➔ "+choice) + "\n")
+			} else {
+				s.WriteString(itemStyle.Render(choice) + "\n")
+			}
+		}
+		s.WriteString("\n" + footerStyle.Render(fmt.Sprintf(
+			"O seed fixo é lido de %s (%s) e gravado na migration que cria a tabela.",
+			m.configData.ActiveClient, m.configData.ActiveDialect)) + "\n")
+
+	case stateSeedSelectTable:
+		s.WriteString("  " + lipgloss.NewStyle().Bold(true).Render("Gerar Seed a partir do banco") + "\n\n")
+		if len(m.seedTables) == 0 {
+			s.WriteString("  Nenhuma tabela com chave primária declarada.\n\n  [Enter] Voltar\n")
+			break
+		}
+		s.WriteString(footerStyle.Render(fmt.Sprintf("Lendo de: %s (%s)",
+			m.configData.ActiveClient, m.configData.ActiveDialect)) + "\n\n")
+
+		// Janela de 12 itens em volta do cursor: a lista tem centenas de tabelas.
+		start := m.seedCursor - 6
+		if start < 0 {
+			start = 0
+		}
+		end := start + 12
+		if end > len(m.seedTables) {
+			end = len(m.seedTables)
+			if start = end - 12; start < 0 {
+				start = 0
+			}
+		}
+		if start > 0 {
+			s.WriteString(itemStyle.Render("↑ ...") + "\n")
+		}
+		for i := start; i < end; i++ {
+			if m.seedCursor == i {
+				s.WriteString(selectedItemStyle.Render("➔ "+m.seedTables[i]) + "\n")
+			} else {
+				s.WriteString(itemStyle.Render(m.seedTables[i]) + "\n")
+			}
+		}
+		if end < len(m.seedTables) {
+			s.WriteString(itemStyle.Render("↓ ...") + "\n")
+		}
+		s.WriteString("\n" + footerStyle.Render(fmt.Sprintf("%d de %d  ·  [Enter] Gerar  ·  [q] Sair",
+			m.seedCursor+1, len(m.seedTables))) + "\n")
+
+	case stateSeedCreating:
+		s.WriteString(m.renderActionResult("Seed gerado.", "Não foi possível gerar o seed:"))
 
 	case stateConfigScreen:
 		var cfgStr strings.Builder

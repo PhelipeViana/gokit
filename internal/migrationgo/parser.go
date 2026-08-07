@@ -21,6 +21,10 @@ var tableEntry = regexp.MustCompile(`(?m)^\s*(?:var\s+)?([A-Za-z_][A-Za-z0-9_]*)
 var viewEntry = regexp.MustCompile(`(?m)^\s*(?:var\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*migrate\.(?:RegisteredView|View)\("([^"]+)"\)`)
 var migrationIDEntry = regexp.MustCompile(`^(\d{4}_\d{2}_\d{2}_\d{6})`)
 
+// seedTimeLayout espelha migrate.SeedTimeLayout. O parser não importa o pacote
+// público para evitar ciclo, então o formato é repetido aqui.
+const seedTimeLayout = "2006-01-02 15:04:05"
+
 // ParseFile avalia o arquivo Go de migration usando AST e retorna suas operações declarativas.
 func ParseFile(path string) ([]acao.Operacao, error) {
 	// loadCatalog devolve o mapa do cache compartilhado, então trabalhamos
@@ -185,6 +189,24 @@ func seedLiteral(expression ast.Expr) (any, error) {
 		case "nil":
 			return nil, nil
 		}
+	case *ast.CallExpr:
+		// Única chamada aceita num valor de seed: migrate.Time("...").
+		selector, ok := value.Fun.(*ast.SelectorExpr)
+		if !ok || astparser.IdentName(selector.X) != "migrate" || selector.Sel.Name != "Time" {
+			return nil, fmt.Errorf("só migrate.Time(\"...\") é aceito como chamada em valor de seed")
+		}
+		if len(value.Args) != 1 {
+			return nil, fmt.Errorf("migrate.Time exige exatamente um texto")
+		}
+		text, err := astparser.StringLiteral(value.Args[0])
+		if err != nil {
+			return nil, fmt.Errorf("migrate.Time exige um texto entre aspas")
+		}
+		parsed, err := time.Parse(seedTimeLayout, text)
+		if err != nil {
+			return nil, fmt.Errorf("migrate.Time(%q) fora do formato %s", text, seedTimeLayout)
+		}
+		return parsed, nil
 	case *ast.UnaryExpr:
 		if value.Op == token.SUB {
 			inner, err := seedLiteral(value.X)
@@ -202,6 +224,81 @@ func seedLiteral(expression ast.Expr) (any, error) {
 	return nil, fmt.Errorf("valor inválido; use texto, número, true, false ou nil")
 }
 
+// seedTimeLayouts são os formatos aceitos num valor de data/hora. O primeiro é
+// o canônico; os demais cobrem o que costuma sair de um dump.
+var seedTimeLayouts = []string{
+	seedTimeLayout,
+	"2006-01-02T15:04:05",
+	"2006-01-02 15:04:05.999999999",
+	"2006-01-02T15:04:05.999999999",
+	time.RFC3339,
+	"2006-01-02",
+}
+
+// coerceSeedRows ajusta cada valor ao tipo declarado da coluna no CreateTable.
+//
+// A conversão vive aqui e não no arquivo de seed porque é conhecimento do
+// motor, não do autor: só o Oracle exige data com bind tipado (uma string cai
+// no NLS_TIMESTAMP_FORMAT da sessão e estoura ORA-01843), e só o driver do
+// Postgres recusa número em coluna de texto. Quem escreve o seed informa o
+// valor; o gokit resolve o resto.
+func coerceSeedRows(rows []acao.Linha, columns []acao.ColunaDefinicao) error {
+	kinds := make(map[string]string, len(columns))
+	for _, column := range columns {
+		kinds[strings.ToLower(column.Name)] = column.Type
+	}
+	for index, row := range rows {
+		for name, value := range row {
+			coerced, err := coerceSeedValue(value, kinds[strings.ToLower(name)])
+			if err != nil {
+				return fmt.Errorf("linha %d, coluna %q: %w", index+1, name, err)
+			}
+			row[name] = coerced
+		}
+	}
+	return nil
+}
+
+func coerceSeedValue(value any, kind string) (any, error) {
+	if value == nil {
+		return nil, nil
+	}
+	switch kind {
+	case "date", "datetime", "timestamp":
+		text, ok := value.(string)
+		if !ok {
+			return value, nil // já é time.Time (migrate.Time) ou outro tipo
+		}
+		for _, layout := range seedTimeLayouts {
+			if parsed, err := time.Parse(layout, text); err == nil {
+				return parsed, nil
+			}
+		}
+		return nil, fmt.Errorf("%q não é uma data válida; use o formato %s", text, seedTimeLayout)
+
+	case "string", "char", "text":
+		// Número em coluna de texto: o pgx recusa, os outros três convertem.
+		switch typed := value.(type) {
+		case int64:
+			return strconv.FormatInt(typed, 10), nil
+		case float64:
+			return strconv.FormatFloat(typed, 'f', -1, 64), nil
+		}
+
+	case "int", "integer", "decimal":
+		// Número entre aspas em coluna numérica: mesma história ao contrário.
+		if text, ok := value.(string); ok {
+			if number, err := strconv.ParseInt(text, 10, 64); err == nil {
+				return number, nil
+			}
+			if number, err := strconv.ParseFloat(text, 64); err == nil {
+				return number, nil
+			}
+		}
+	}
+	return value, nil
+}
+
 // bindSeederToTable amarra o Seeder() ao CreateTable do mesmo arquivo e extrai
 // a chave primária declarada, que é o que decide entre inserir e editar.
 func bindSeederToTable(operations []acao.Operacao, rows []acao.Linha) (acao.Operacao, error) {
@@ -217,6 +314,10 @@ func bindSeederToTable(operations []acao.Operacao, rows []acao.Linha) (acao.Oper
 	if target == nil {
 		return acao.Operacao{}, fmt.Errorf("Seeder() só pode acompanhar um CreateTable no mesmo arquivo")
 	}
+	if err := coerceSeedRows(rows, target.Columns); err != nil {
+		return acao.Operacao{}, err
+	}
+
 	var keys []string
 	identity := ""
 	for _, column := range target.Columns {

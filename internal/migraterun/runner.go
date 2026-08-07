@@ -213,6 +213,204 @@ func Run(root string, state config.ConfigState) error {
 	return nil
 }
 
+// SeedableTables lista as tabelas que podem receber um seed fixo, ou seja,
+// as que têm um CreateTable com chave primária declarada.
+func SeedableTables(root string, state config.ConfigState) ([]string, error) {
+	files, err := loadPlans(filepath.Join(root, filepath.FromSlash(state.Config.Output.Migrate)))
+	if err != nil {
+		return nil, describeLoadError(err)
+	}
+	var names []string
+	for _, file := range files {
+		for _, operation := range file.Plan.Operations {
+			if operation.Kind != string(acao.CreateTable) {
+				continue
+			}
+			for _, column := range operation.Columns {
+				if column.PrimaryKey {
+					names = append(names, operation.Table)
+					break
+				}
+			}
+		}
+	}
+	sort.Strings(names)
+	return names, nil
+}
+
+// CreateSeedFromDatabase lê as linhas que a tabela tem hoje na conexão ativa e
+// grava um func Seeder() na migration de CreateTable dela.
+//
+// É o caminho para não escrever seed à mão: você vê o estado real, edita o que
+// quiser e o gokit garante IDENTITY_INSERT e ressincronização de sequência na
+// hora de aplicar — coisas que um INSERT em SQL bruto não faz.
+func CreateSeedFromDatabase(root string, state config.ConfigState, target string) (string, int, error) {
+	files, err := loadPlans(filepath.Join(root, filepath.FromSlash(state.Config.Output.Migrate)))
+	if err != nil {
+		return "", 0, describeLoadError(err)
+	}
+
+	var host migrationFile
+	var create acao.Operacao
+	found := false
+	for _, file := range files {
+		for _, operation := range file.Plan.Operations {
+			if operation.Kind != string(acao.CreateTable) {
+				continue
+			}
+			if strings.EqualFold(operation.Table, target) || strings.EqualFold(operation.AliasName, target) {
+				host, create, found = file, operation, true
+			}
+		}
+	}
+	if !found {
+		return "", 0, cliui.NewUserError(
+			fmt.Sprintf("Não encontrei um CreateTable para %q.", target),
+			"O seed fixo mora junto com a criação da tabela. Confira o nome ou o alias.",
+		)
+	}
+
+	columns := make([]string, 0, len(create.Columns))
+	for _, column := range create.Columns {
+		columns = append(columns, column.Name)
+	}
+	if len(columns) == 0 {
+		return "", 0, fmt.Errorf("a tabela %s não declara colunas", create.Table)
+	}
+
+	dialect := state.ActiveDialect
+	connection := state.Config.Connections[state.ActiveClient]
+	driver := map[string]string{"oracle": "oracle", "postgres": "pgx", "mysql": "mysql", "sqlserver": "sqlserver"}[dialect]
+	if driver == "" {
+		return "", 0, fmt.Errorf("dialeto não suportado: %s", dialect)
+	}
+	db, err := sql.Open(driver, connection.BuildURL())
+	if err != nil {
+		return "", 0, err
+	}
+	defer db.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	var keys []string
+	for _, column := range create.Columns {
+		if column.PrimaryKey {
+			keys = append(keys, column.Name)
+		}
+	}
+	order := ""
+	if len(keys) > 0 {
+		order = " ORDER BY " + strings.Join(quotedColumns(dialect, keys), ", ")
+	}
+	query := fmt.Sprintf("SELECT %s FROM %s%s",
+		strings.Join(quotedColumns(dialect, columns), ", "),
+		qualified(dialect, connection.Schema, create.Table), order)
+
+	rows, err := db.QueryContext(ctx, query)
+	if err != nil {
+		return "", 0, fmt.Errorf("ler %s: %w", create.Table, err)
+	}
+	defer rows.Close()
+
+	var literals []string
+	for rows.Next() {
+		values := make([]any, len(columns))
+		scan := make([]any, len(columns))
+		for i := range values {
+			scan[i] = &values[i]
+		}
+		if err := rows.Scan(scan...); err != nil {
+			return "", 0, err
+		}
+		parts := make([]string, 0, len(columns))
+		for i, column := range columns {
+			parts = append(parts, fmt.Sprintf("%q: %s", column, seedGoLiteral(values[i], create.Columns[i])))
+		}
+		literals = append(literals, "\t\t{"+strings.Join(parts, ", ")+"},")
+	}
+	if err := rows.Err(); err != nil {
+		return "", 0, err
+	}
+	if len(literals) == 0 {
+		return "", 0, cliui.NewUserError(
+			fmt.Sprintf("A tabela %s está vazia em %s.", create.Table, state.ActiveClient),
+			"Popule a tabela antes de gerar o seed, ou escreva o Seeder() à mão.",
+		)
+	}
+
+	if err := writeSeederInto(host.Path, state.ActiveClient, literals); err != nil {
+		return "", 0, err
+	}
+	return host.Path, len(literals), nil
+}
+
+// seedGoLiteral converte o valor lido do banco no literal do DSL.
+func seedGoLiteral(value any, column acao.ColunaDefinicao) string {
+	textual := column.Type == "string" || column.Type == "char" || column.Type == "text"
+	switch typed := value.(type) {
+	case nil:
+		return "nil"
+	case bool:
+		return strconv.FormatBool(typed)
+	case time.Time:
+		// Sai como texto: o parser converte para time.Time usando o tipo
+		// declarado da coluna, então o arquivo de seed não precisa saber disso.
+		return strconv.Quote(typed.UTC().Format("2006-01-02 15:04:05"))
+	case []byte:
+		return quoteOrNumber(string(typed), textual)
+	case string:
+		return quoteOrNumber(typed, textual)
+	case int64:
+		return quoteOrNumber(strconv.FormatInt(typed, 10), textual)
+	case float64:
+		if typed == float64(int64(typed)) {
+			return quoteOrNumber(strconv.FormatInt(int64(typed), 10), textual)
+		}
+		return quoteOrNumber(strconv.FormatFloat(typed, 'f', -1, 64), textual)
+	default:
+		return strconv.Quote(fmt.Sprint(typed))
+	}
+}
+
+// quoteOrNumber respeita o tipo declarado da coluna: o driver do Postgres
+// recusa número em coluna de texto, enquanto os outros três convertem sozinhos.
+func quoteOrNumber(text string, textual bool) string {
+	if textual {
+		return strconv.Quote(text)
+	}
+	if _, err := strconv.ParseInt(text, 10, 64); err == nil {
+		return text
+	}
+	if _, err := strconv.ParseFloat(text, 64); err == nil {
+		return text
+	}
+	return strconv.Quote(text)
+}
+
+var seederBlock = regexp.MustCompile(`(?m)^// Seed fixo[\s\S]*$|(?m)^func Seeder\(\)[\s\S]*$`)
+
+func writeSeederInto(path, origin string, literals []string) error {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	text := seederBlock.ReplaceAllString(string(data), "")
+	text = strings.TrimRight(text, "\n") + "\n"
+
+	seeder := fmt.Sprintf(`
+// Seed fixo — gerado a partir da conexão %q.
+// Os IDs escritos aqui são fixos: valem em todos os ambientes e são os únicos
+// que um seeder posterior pode editar.
+func Seeder() migrate.Rows {
+	return migrate.Rows{
+%s
+	}
+}
+`, origin, strings.Join(literals, "\n"))
+
+	return os.WriteFile(path, []byte(text+seeder), 0644)
+}
+
 // describeLoadError transforma a lista crua de problemas em um resumo por
 // causa, mantendo a saída legível mesmo com centenas de arquivos quebrados.
 func describeLoadError(err error) error {
@@ -1764,6 +1962,11 @@ func normalizeSeedValue(value any) string {
 		return "0"
 	case string:
 		return strings.TrimRight(typed, " ")
+	case time.Time:
+		// Os quatro drivers devolvem TIMESTAMP como time.Time, mas com zonas e
+		// precisões diferentes. Comparar em UTC até o segundo é o denominador
+		// comum — fração de segundo não é preservada igual em todos.
+		return typed.UTC().Format("2006-01-02 15:04:05")
 	default:
 		return fmt.Sprint(typed)
 	}

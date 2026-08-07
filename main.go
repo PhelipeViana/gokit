@@ -23,6 +23,26 @@ func main() {
 
 	// Se houver argumentos de linha de comando, roda em modo CLI
 	if len(os.Args) > 1 {
+		if os.Args[1] == "seed" {
+			if len(os.Args) < 4 || os.Args[2] != "create" {
+				fmt.Println("Uso: gokit seed create <tabela|alias>")
+				fmt.Println("\nLê as linhas que a tabela tem hoje na conexão ativa e grava")
+				fmt.Println("um func Seeder() na migration de criação dela.")
+				os.Exit(1)
+			}
+			state := config.RunConfigChecks()
+			if state.ConfigFileError != nil {
+				fmt.Printf("Erro de configuração: %v\n", state.ConfigFileError)
+				os.Exit(1)
+			}
+			path, total, err := migraterun.CreateSeedFromDatabase(".", state, os.Args[3])
+			if err != nil {
+				fmt.Printf("Erro: %v\n", err)
+				os.Exit(1)
+			}
+			fmt.Printf("Seed com %d linha(s) gravado em %s\n", total, path)
+			os.Exit(0)
+		}
 		if os.Args[1] == "migrate" {
 			if len(os.Args) < 3 {
 				fmt.Println("Uso: gokit migrate [run|rollback|validate|create]")
