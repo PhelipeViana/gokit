@@ -1,0 +1,72 @@
+{
+  "environment": {
+    "mapper_env": "./.env",
+    "ambient": "APP_ENV",
+    "client": "DB_CLIENT"
+  },
+  "connections": {
+    "client_postgres": {
+      "dialect": "postgres",
+      "host": "${POSTGRES_HOST}",
+      "port": "${POSTGRES_PORT}",
+      "user": "${POSTGRES_USER}",
+      "password": "${POSTGRES_PASSWORD}",
+      "database": "${POSTGRES_DB}",
+      "sslmode": "${POSTGRES_SSLMODE:-disable}",
+      "schema": "${POSTGRES_SCHEMA:-public}"
+    },
+    "client_oracle": {
+      "dialect": "oracle",
+      "host": "${ORACLE_HOST}",
+      "port": "${ORACLE_PORT}",
+      "user": "${ORACLE_USER}",
+      "password": "${ORACLE_PASSWORD}",
+      "service": "${ORACLE_SERVICE}",
+      "schema": "${ORACLE_SCHEMA:-AGENDAGOKIT}"
+    },
+    "client_mysql": {
+      "dialect": "mysql",
+      "host": "${MYSQL_HOST}",
+      "port": "${MYSQL_PORT}",
+      "user": "${MYSQL_USER}",
+      "password": "${MYSQL_PASSWORD}",
+      "database": "${MYSQL_DATABASE}"
+    },
+    "client_sqlserver": {
+      "dialect": "sqlserver",
+      "host": "${MSSQL_HOST}",
+      "port": "${MSSQL_PORT}",
+      "user": "${MSSQL_USER}",
+      "password": "${MSSQL_SA_PASSWORD}",
+      "database": "${MSSQL_DATABASE}",
+      "schema": "${MSSQL_SCHEMA:-dbo}"
+    }
+  },
+  "output": {
+    "settings": "internal/gokit/",
+    "orm": "internal/gokit/orm",
+    "migrate": "internal/gokit/migrate",
+    "factory": "internal/gokit/factory",
+    "seed": "internal/gokit/seed",
+    "docs": "internal/gokit/docs"
+  },
+  "migrate": {
+    "table": "migrations_gokit"
+  },
+  "seed": {
+    "table": "seeders_gokit"
+  },
+  "factory": {
+    "expressions": {
+      "mappers": {
+        "tabela.campo": "gokit.FakeMetodo(index, 0, 1)"
+      }
+    }
+  },
+  "notifications": {
+    "slack": {
+      "enabled": false,
+      "webhook_url": "${SLACK_WEBHOOK_URL}"
+    }
+  }
+}
