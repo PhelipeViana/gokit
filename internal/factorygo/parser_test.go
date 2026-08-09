@@ -17,7 +17,7 @@ func escreve(t *testing.T, corpo string) string {
 	return caminho
 }
 
-const cabecalho = "package factories\n\nimport migrate \"gokit/migration\"\n\n"
+const cabecalho = "package factories\n\nimport migrate \"github.com/PhelipeViana/gokit/migration\"\n\n"
 
 func factoria(campos string, antes ...string) string {
 	return cabecalho + `

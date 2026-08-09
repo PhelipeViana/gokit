@@ -18,8 +18,8 @@ import (
 	"strconv"
 	"strings"
 
-	"gokit/internal/astparser"
-	migrate "gokit/migration"
+	"github.com/PhelipeViana/gokit/internal/astparser"
+	migrate "github.com/PhelipeViana/gokit/migration"
 )
 
 // Campo é uma coluna da factory já resolvida para uma forma executável.

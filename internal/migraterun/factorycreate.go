@@ -17,11 +17,11 @@ import (
 	"strconv"
 	"strings"
 
-	"gokit/internal/cliui"
-	"gokit/internal/config"
-	"gokit/internal/factorygo"
-	migrate "gokit/migration"
-	"gokit/migration/acao"
+	"github.com/PhelipeViana/gokit/internal/cliui"
+	"github.com/PhelipeViana/gokit/internal/config"
+	"github.com/PhelipeViana/gokit/internal/factorygo"
+	migrate "github.com/PhelipeViana/gokit/migration"
+	"github.com/PhelipeViana/gokit/migration/acao"
 )
 
 // FactoryCreate gera ou atualiza a factory de uma tabela. Sem tabela, percorre
@@ -102,6 +102,9 @@ func FactoryCreate(root string, state config.ConfigState, table string) error {
 		if novo {
 			if err := os.WriteFile(caminho, []byte(conteudo), 0o644); err != nil {
 				return err
+			}
+			if err := recordGeneratedFile(root, nome, "factory", caminho); err != nil {
+				return fmt.Errorf("registrar factory gerada: %w", err)
 			}
 			fmt.Printf("  %s %s\n", cliui.Success("+"), filepath.Base(caminho))
 			criadas++
@@ -226,7 +229,7 @@ func renderizaFactory(forma acao.Operacao, checks map[string][]string, state con
 
 	var texto strings.Builder
 	texto.WriteString("package factories\n\n")
-	texto.WriteString("import migrate \"gokit/migration\"\n\n")
+	texto.WriteString("import migrate \"github.com/PhelipeViana/gokit/migration\"\n\n")
 	fmt.Fprintf(&texto, "// %s gera dados fake para a tabela %s.\n", nomeDaFuncao(forma.Table), tabela)
 	fmt.Fprintf(&texto, "func %s() migrate.Factory {\n", nomeDaFuncao(forma.Table))
 	texto.WriteString("\treturn migrate.Factory{\n")

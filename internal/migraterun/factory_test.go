@@ -5,10 +5,10 @@ import (
 	"strings"
 	"testing"
 
-	"gokit/internal/config"
-	"gokit/internal/factorygo"
-	migrate "gokit/migration"
-	"gokit/migration/acao"
+	"github.com/PhelipeViana/gokit/internal/config"
+	"github.com/PhelipeViana/gokit/internal/factorygo"
+	migrate "github.com/PhelipeViana/gokit/migration"
+	"github.com/PhelipeViana/gokit/migration/acao"
 )
 
 func planoDe(tabela string, pais ...string) plano {

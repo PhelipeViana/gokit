@@ -13,8 +13,8 @@ import (
 	"sync"
 	"time"
 
-	"gokit/internal/astparser"
-	"gokit/migration/acao"
+	"github.com/PhelipeViana/gokit/internal/astparser"
+	"github.com/PhelipeViana/gokit/migration/acao"
 )
 
 var tableEntry = regexp.MustCompile(`(?m)^\s*(?:var\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*(?::|=)\s*migrate\.Table\("([^"]+)"\),?`)
@@ -57,7 +57,7 @@ func ParseFile(path string) ([]acao.Operacao, error) {
 		if function, ok := declaration.(*ast.FuncDecl); ok {
 			// Seed não mora mais dentro da migration: uma migration aplicada é
 			// imutável, então corrigir o dado exigiria mexer no passado.
-			if function.Name != nil && function.Name.Name == "Seeder" {
+			if function.Name != nil && strings.HasPrefix(function.Name.Name, "Seeder") {
 				return nil, fmt.Errorf(
 					"func Seeder() não pertence a uma migration; mova as linhas para %s/<tabela>/<timestamp>_seeder.go (veja: gokit seed create <tabela>)",
 					"database/seeds")
@@ -309,7 +309,7 @@ func ParseSeedFile(path string, columns []acao.ColunaDefinicao) ([]acao.Linha, e
 	}
 	for _, declaration := range file.Decls {
 		function, ok := declaration.(*ast.FuncDecl)
-		if !ok || function.Name == nil || function.Name.Name != "Seeder" {
+		if !ok || function.Name == nil || !strings.HasPrefix(function.Name.Name, "Seeder") {
 			continue
 		}
 		rows, err := evalSeederFunction(set, function)
@@ -332,6 +332,9 @@ func projectRoot(path string) string {
 	current, _ := filepath.Abs(path)
 	for {
 		if _, err := os.Stat(filepath.Join(current, "go.mod")); err == nil {
+			return current
+		}
+		if _, err := os.Stat(filepath.Join(current, "internal", "gokit", "gokit.json")); err == nil {
 			return current
 		}
 		parent := filepath.Dir(current)

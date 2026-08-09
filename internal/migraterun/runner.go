@@ -18,10 +18,10 @@ import (
 	"strings"
 	"time"
 
-	"gokit/internal/cliui"
-	"gokit/internal/config"
-	"gokit/internal/migrationgo"
-	"gokit/migration/acao"
+	"github.com/PhelipeViana/gokit/internal/cliui"
+	"github.com/PhelipeViana/gokit/internal/config"
+	"github.com/PhelipeViana/gokit/internal/migrationgo"
+	"github.com/PhelipeViana/gokit/migration/acao"
 )
 
 type Plan struct {
@@ -35,6 +35,16 @@ type migrationFile struct {
 	Name, ID, Path, Checksum string
 	LegacyChecksums          []string
 	Plan                     Plan
+}
+
+// MigrationChangedError indica divergência entre um arquivo local e o
+// checksum imutável que já foi registrado no histórico do banco.
+type MigrationChangedError struct {
+	Name string
+}
+
+func (e MigrationChangedError) Error() string {
+	return fmt.Sprintf("migration %s foi alterada depois de executada", e.Name)
 }
 
 // LoadIssue é um problema encontrado em um arquivo de migration durante a
@@ -134,7 +144,6 @@ func Validate(root string, state config.ConfigState) (int, error) {
 // ValidateReport imprime o resultado da pré-validação de todo o corpus sem
 // abrir conexão com o banco.
 func ValidateReport(root string, state config.ConfigState) error {
-	cliui.PrintTitle("GoKit · Validate")
 	folder := filepath.Join(root, filepath.FromSlash(state.Config.Output.Migrate))
 	files, err := loadPlans(folder)
 
@@ -188,7 +197,6 @@ func Run(root string, state config.ConfigState) error {
 		)
 	}
 
-	cliui.PrintTitle("GoKit · Migrations")
 	connection := state.Config.Connections[state.ActiveClient]
 	dialect := state.ActiveDialect
 	historyTable := state.Config.Migrate.Table
@@ -203,6 +211,13 @@ func Run(root string, state config.ConfigState) error {
 		fmt.Printf("  %s %s\n", cliui.Failure("✗ ERRO:"), runErr)
 		message, solution := migrationConnectionAdvice(connection, runErr)
 		fmt.Printf("  %s %s\n", cliui.Warning("⚠ Diagnóstico:"), message)
+		var changed MigrationChangedError
+		if errors.As(runErr, &changed) {
+			return cliui.NewUserError(
+				"O histórico de migrations divergiu dos arquivos locais.",
+				solution,
+			)
+		}
 		return cliui.NewUserError(
 			"A conexão ativa não concluiu as migrations.",
 			solution,
@@ -338,7 +353,6 @@ func Rollback(root string, state config.ConfigState) error {
 		return cliui.NewUserError("Nenhuma migration encontrada.", "Nenhuma migration disponível.")
 	}
 
-	cliui.PrintTitle("GoKit · Rollback")
 	connection := state.Config.Connections[state.ActiveClient]
 	dialect := state.ActiveDialect
 	activeURL := state.ActiveURL
@@ -657,6 +671,19 @@ func managedTables(files []migrationFile) []string {
 }
 
 func migrationConnectionAdvice(connection config.ConnConfig, err error) (string, string) {
+	var changed MigrationChangedError
+	if errors.As(err, &changed) {
+		return fmt.Sprintf(
+				"%s já foi executada e o arquivo local agora possui outro conteúdo; a conexão com o banco está funcionando",
+				changed.Name,
+			), strings.Join([]string{
+				"Não altere nem apague uma migration já executada.",
+				"Se ela foi compartilhada: restaure o arquivo original e mantenha a correção ou o Drop em uma nova migration.",
+				"Se o banco é descartável e somente de desenvolvimento: restaure o arquivo ou remova apenas os arquivos locais ainda não executados e use Reload Fresh para reconstruir o banco.",
+				"Se Create e Drop nunca foram executados em nenhum ambiente: remova os dois arquivos e rode Reload novamente.",
+			}, "\n")
+	}
+
 	detail := strings.ToLower(err.Error())
 	host := connectionHost(connection)
 	local := isLocalHost(host)
@@ -841,6 +868,9 @@ func findProjectRoot(path string) string {
 	current, _ := filepath.Abs(path)
 	for {
 		if _, err := os.Stat(filepath.Join(current, "go.mod")); err == nil {
+			return current
+		}
+		if _, err := os.Stat(filepath.Join(current, "internal", "gokit", "gokit.json")); err == nil {
 			return current
 		}
 		parent := filepath.Dir(current)
@@ -1259,7 +1289,7 @@ func runConnection(connection config.ConnConfig, historyTable string, files []mi
 		}
 		if exists {
 			if checksum != file.Checksum && !containsChecksum(file.LegacyChecksums, checksum) {
-				return applied, skipped, fmt.Errorf("migration %s foi alterada depois de executada", file.Name)
+				return applied, skipped, MigrationChangedError{Name: file.Name}
 			}
 			skipped++
 			advanceAliases(aliases, file.Plan.Operations)
@@ -1592,7 +1622,13 @@ func executeOperation(ctx context.Context, db *sql.DB, dialect, schema string, o
 			return fmt.Errorf("remover constraint %s: %w", operation.Name, err)
 		}
 	case "raw_sql":
-		if operation.Dialect != "" && operation.Dialect != "all" && !strings.EqualFold(operation.Dialect, dialect) {
+		// Só executa se o dialeto declarado na migration bater com o banco ativo.
+		// Um raw_sql sem dialeto explícito é ignorado — use "all" para rodar
+		// em todos os bancos, ou o nome do dialeto para restringir.
+		if operation.Dialect == "" {
+			return nil
+		}
+		if operation.Dialect != "all" && !strings.EqualFold(operation.Dialect, dialect) {
 			return nil
 		}
 		// SQL bruto pode criar tabelas e colunas fora do DSL, então o retrato
@@ -2934,27 +2970,35 @@ func CreateScaffoldMigration(root string, state config.ConfigState, name string,
 	case "drop_constraint":
 		operationBody = `migrate.DropConstraint(alias.` + aliasRef + `, "constraint_nome")`
 	case "raw_sql":
-		operationBody = `migrate.SQL("common", "SELECT 1")`
+		// Usa o dialeto ativo como padrão do scaffold: o desenvolvedor vê
+		// imediatamente que está escrevendo SQL para um banco específico.
+		// Trocar por "all" para rodar em todos os dialetos.
+		activeDialect := state.ActiveDialect
+		if activeDialect == "" {
+			activeDialect = "oracle"
+		}
+		operationBody = `migrate.SQL("` + activeDialect + `", "-- escreva o SQL aqui")`
 	case "todo":
 		operationBody = `migrate.TODO()`
 	default:
 		return "", fmt.Errorf("tipo de operação de migração desconhecido: %s", method)
 	}
 
-	importsBlock := `import migrate "gokit/migration"`
+	importsBlock := `import migrate "github.com/PhelipeViana/gokit/migration"`
 	if method != "todo" && method != "raw_sql" {
 		importsBlock = `import (
 	alias "` + moduleName + `/internal/gokit/core/migration/alias"
 	view "` + moduleName + `/internal/gokit/core/migration/view"
-	migrate "gokit/migration"
+	migrate "github.com/PhelipeViana/gokit/migration"
 )`
 	}
 
+	declarationName := dynamicDeclarationName("Migration", filename)
 	content := `package migrations
 
 ` + importsBlock + `
 
-func Migration() migrate.Definition {
+func ` + declarationName + `() migrate.Definition {
 	return migrate.Define(
 		` + operationBody + `,
 	)
@@ -2963,6 +3007,9 @@ func Migration() migrate.Definition {
 
 	if err := os.WriteFile(filePath, []byte(content), 0644); err != nil {
 		return "", fmt.Errorf("escrever arquivo de migration: %w", err)
+	}
+	if err := recordGeneratedFile(pRoot, name, "migration", filePath); err != nil {
+		return "", fmt.Errorf("registrar migration gerada: %w", err)
 	}
 
 	return filepath.ToSlash(filepath.Join(methodFolder, filename)), nil

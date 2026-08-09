@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"gokit/migration/acao"
+	"github.com/PhelipeViana/gokit/migration/acao"
 )
 
 func colunas() []acao.ColunaDefinicao {

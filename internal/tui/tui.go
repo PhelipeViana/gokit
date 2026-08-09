@@ -1,12 +1,18 @@
 package tui
 
 import (
+	"crypto/sha256"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
-	"gokit/internal/config"
-	"gokit/internal/migraterun"
+	"github.com/PhelipeViana/gokit/internal/cliui"
+	"github.com/PhelipeViana/gokit/internal/config"
+	"github.com/PhelipeViana/gokit/internal/i18n"
+	"github.com/PhelipeViana/gokit/internal/migraterun"
+	"github.com/PhelipeViana/gokit/internal/updater"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -15,6 +21,14 @@ import (
 var Version string
 
 type menuState int
+
+type statusTickMsg struct{}
+type spinnerTickMsg struct{}
+
+type reloadFinishedMsg struct {
+	output string
+	err    error
+}
 
 const (
 	stateMainMenu menuState = iota
@@ -26,6 +40,8 @@ const (
 	stateMigrationCreating
 	stateMigrationRunning
 	stateMigrationRollingBack
+	stateMigrationRollbackConfirmDelete
+	stateMigrationRollbackConfirmFresh
 	stateMigrationValidating
 	stateSeedMenu
 	stateSeedSelectTable
@@ -34,6 +50,9 @@ const (
 	stateFactorySelectTable
 	stateFactoryRunning
 	stateConfigScreen
+	stateReloadRunning
+	stateUpdateConfirm
+	stateUpdateRunning
 )
 
 // captureOutput executa a ação desviando os.Stdout para um buffer. O runner
@@ -102,6 +121,14 @@ type model struct {
 	factoryChoices      []string
 	factoryTables       []string
 	factoryCursor       int
+	doctorReport        migraterun.DoctorReport
+	updateStatus        updater.Status
+	updateMenuIndex     int
+	exitMenuIndex       int
+	statusSignature     string
+	terminalHeight      int
+	actionRunning       bool
+	spinnerFrame        int
 }
 
 // Estilos Lip Gloss inspirados na estética Charm Bracelet
@@ -142,37 +169,65 @@ var (
 )
 
 // Start inicia o loop do aplicativo interativo Bubble Tea
-func Start(version string) error {
+func Start(version, commitHash string) error {
 	Version = version
 
 	// Carrega dados iniciais de configuração para expor o status no menu
 	initialConfig := config.RunConfigChecks()
 
+	updateStatus := updater.Check(commitHash)
+	var choices []string
+	if initialConfig.ActiveEnv == "production" {
+		choices = []string{
+			i18n.T("menu_prod_update"),
+		}
+	} else {
+		choices = []string{
+			i18n.T("menu_reload"),
+			i18n.T("menu_migrations"),
+			i18n.T("menu_seeds"),
+			i18n.T("menu_factories"),
+			i18n.T("menu_config"),
+		}
+	}
+	updateIndex := -1
+	if updateStatus.Available {
+		updateIndex = len(choices)
+		choices = append(choices, fmt.Sprintf("⚡ Atualizar GoKit %s → %s", updateStatus.Local, updateStatus.Remote))
+	}
+	exitIndex := len(choices)
+	choices = append(choices, i18n.T("menu_exit"))
+
 	m := model{
 		state:   stateMainMenu,
 		cursor:  0,
-		choices: []string{"Configuração", "Migration Options", "Seed Options", "Factory Options", "Sair (Exit)"},
+		choices: choices,
 		factoryChoices: []string{
-			"Gerar Factories a partir das Migrations",
-			"Validar Factories (não toca no banco)",
-			"Popular todas as tabelas ativas",
-			"Popular uma tabela (traz as dependências)",
-			"Voltar ao menu principal",
+			i18n.T("fact_create"),
+			i18n.T("fact_validate"),
+			i18n.T("fact_run_all"),
+			i18n.T("fact_run_one"),
+			i18n.T("mig_back"),
 		},
 		seedChoices: []string{
-			"Criar Seeder de uma tabela",
-			"Validar Seeders (não toca no banco)",
-			"Executar Seeders pendentes",
-			"Voltar ao menu principal",
+			i18n.T("seed_create"),
+			i18n.T("seed_validate"),
+			i18n.T("seed_run"),
+			i18n.T("mig_back"),
 		},
 		migrationsChoices: []string{
-			"Criar nova Migration",
-			"Validar Migrations (não toca no banco)",
-			"Executar Migrations pendentes",
-			"Reverter última Migration (Rollback)",
-			"Voltar ao menu principal",
+			i18n.T("mig_create"),
+			i18n.T("mig_validate"),
+			i18n.T("mig_run"),
+			i18n.T("mig_rollback"),
+			i18n.T("mig_back"),
 		},
-		configData: initialConfig,
+		configData:      initialConfig,
+		updateStatus:    updateStatus,
+		updateMenuIndex: updateIndex,
+		exitMenuIndex:   exitIndex,
+		statusSignature: environmentSignature(initialConfig),
+		terminalHeight:  24,
 		methodsChoices: []string{
 			"create_table", "drop_table", "add_column", "alter_column", "drop_column",
 			"add_foreign_key", "drop_foreign_key", "create_index", "drop_index",
@@ -182,20 +237,127 @@ func Start(version string) error {
 		},
 	}
 
-	p := tea.NewProgram(m)
+	p := tea.NewProgram(m, tea.WithAltScreen())
 	_, err := p.Run()
 	return err
 }
 
 // Init inicializa o modelo do Bubble Tea
 func (m model) Init() tea.Cmd {
-	return nil
+	return statusTick()
+}
+
+func statusTick() tea.Cmd {
+	return tea.Tick(time.Second, func(time.Time) tea.Msg { return statusTickMsg{} })
+}
+
+func spinnerTick() tea.Cmd {
+	return tea.Tick(120*time.Millisecond, func(time.Time) tea.Msg { return spinnerTickMsg{} })
+}
+
+func runReloadCmd(state config.ConfigState) tea.Cmd {
+	return func() tea.Msg {
+		output, err := captureOutput(func() error { return migraterun.RunReload(state) })
+		return reloadFinishedMsg{output: output, err: err}
+	}
+}
+
+func environmentSignature(state config.ConfigState) string {
+	paths := []string{"gokit.json"}
+	if state.ConfigPath != "" {
+		paths[0] = state.ConfigPath
+	}
+	if state.Config != nil && state.Config.Environment.MapperEnv != "" {
+		paths = append(paths, state.Config.Environment.MapperEnv)
+	}
+	hash := sha256.New()
+	for _, path := range paths {
+		hash.Write([]byte(path))
+		content, err := os.ReadFile(path)
+		if err != nil {
+			hash.Write([]byte(err.Error()))
+			continue
+		}
+		hash.Write(content)
+	}
+	return fmt.Sprintf("%x", hash.Sum(nil))
 }
 
 // Update gerencia as interações do Bubble Tea
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
+	case tea.WindowSizeMsg:
+		m.terminalHeight = msg.Height
+		return m, nil
+	case spinnerTickMsg:
+		if !m.actionRunning {
+			return m, nil
+		}
+		m.spinnerFrame++
+		return m, spinnerTick()
+	case reloadFinishedMsg:
+		m.actionRunning = false
+		m.migrationOutput = msg.output
+		m.migrationError = msg.err
+		m.configData = config.RunConfigChecks()
+		m.statusSignature = environmentSignature(m.configData)
+		return m, tea.ClearScreen
+	case statusTickMsg:
+		signature := environmentSignature(m.configData)
+		if signature != m.statusSignature {
+			m.configData = config.RunConfigChecks()
+			m.statusSignature = environmentSignature(m.configData)
+			if m.state == stateConfigScreen {
+				m.doctorReport = migraterun.RunDoctor(m.configData)
+			}
+		}
+		return m, statusTick()
 	case tea.KeyMsg:
+		if m.state == stateUpdateConfirm {
+			switch msg.String() {
+			case "ctrl+c":
+				return m, tea.Quit
+			case "esc", "n":
+				m.state = stateMainMenu
+				return m, tea.ClearScreen
+			case "enter", "y":
+				m.state = stateUpdateRunning
+				m.migrationOutput, m.migrationError = captureOutput(func() error {
+					fmt.Printf("Baixando GoKit %s...\n", m.updateStatus.Remote)
+					if err := updater.RunSelfUpdate(); err != nil {
+						return err
+					}
+					fmt.Println("Atualização instalada. Reiniciando o GoKit...")
+					return updater.RestartProcess()
+				})
+				if m.migrationError == nil {
+					return m, tea.Quit
+				}
+				return m, tea.ClearScreen
+			}
+			return m, nil
+		}
+		if m.state == stateMigrationRollbackConfirmDelete || m.state == stateMigrationRollbackConfirmFresh {
+			switch msg.String() {
+			case "ctrl+c":
+				return m, tea.Quit
+			case "esc", "n":
+				m.state = stateMigrationsMenu
+				m.cursor = 0
+				return m, tea.ClearScreen
+			case "enter", "y":
+				if m.state == stateMigrationRollbackConfirmDelete {
+					m.state = stateMigrationRollbackConfirmFresh
+					return m, tea.ClearScreen
+				}
+				m.state = stateMigrationRollingBack
+				m.migrationOutput, m.migrationError = captureOutput(func() error {
+					return migraterun.RunDevelopmentRollback(".", m.configData, true, true)
+				})
+				return m, tea.ClearScreen
+			}
+			return m, nil
+		}
 		if m.state == stateMigrationInputName {
 			switch msg.String() {
 			case "ctrl+c":
@@ -491,25 +653,48 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "enter":
 			switch m.state {
 			case stateMainMenu:
-				switch m.cursor {
-				case 0:
-					m.state = stateConfigScreen
-					m.configData = config.RunConfigChecks()
+				if m.cursor == m.updateMenuIndex && m.updateMenuIndex >= 0 {
+					m.state = stateUpdateConfirm
 					return m, tea.ClearScreen
-				case 1:
-					m.state = stateMigrationsMenu
-					m.cursor = 0
-					return m, tea.ClearScreen
-				case 2:
-					m.state = stateSeedMenu
-					m.cursor = 0
-					return m, tea.ClearScreen
-				case 3:
-					m.state = stateFactoryMenu
-					m.cursor = 0
-					return m, tea.ClearScreen
-				case 4:
+				}
+				if m.cursor == m.exitMenuIndex {
 					return m, tea.Quit
+				}
+				if m.configData.ActiveEnv == "production" {
+					switch m.cursor {
+					case 0:
+						m.state = stateMigrationRunning
+						m.migrationOutput, m.migrationError = captureOutput(func() error {
+							return migraterun.Run(".", m.configData)
+						})
+						return m, tea.ClearScreen
+					}
+				} else {
+					switch m.cursor {
+					case 0:
+						m.state = stateReloadRunning
+						m.actionRunning = true
+						m.spinnerFrame = 0
+						m.migrationOutput, m.migrationError = "", nil
+						return m, tea.Batch(tea.ClearScreen, runReloadCmd(m.configData), spinnerTick())
+					case 1:
+						m.state = stateMigrationsMenu
+						m.cursor = 0
+						return m, tea.ClearScreen
+					case 2:
+						m.state = stateSeedMenu
+						m.cursor = 0
+						return m, tea.ClearScreen
+					case 3:
+						m.state = stateFactoryMenu
+						m.cursor = 0
+						return m, tea.ClearScreen
+					case 4:
+						m.state = stateConfigScreen
+						m.configData = config.RunConfigChecks()
+						m.doctorReport = migraterun.RunDoctor(m.configData)
+						return m, tea.ClearScreen
+					}
 				}
 			case stateSeedMenu:
 				switch m.cursor {
@@ -631,10 +816,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					})
 					return m, tea.ClearScreen
 				case 3:
-					m.state = stateMigrationRollingBack
-					m.migrationOutput, m.migrationError = captureOutput(func() error {
-						return migraterun.Rollback(".", m.configData)
-					})
+					m.state = stateMigrationRollbackConfirmDelete
 					return m, tea.ClearScreen
 				case 4:
 					m.state = stateMainMenu
@@ -657,11 +839,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 // É o que permite conferir o relatório de validação ou as linhas de seed sem
 // sair da TUI.
 func (m model) renderActionResult(successTitle, failureTitle string) string {
-	borderCol := "#50FA7B"
-	title := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#50FA7B")).Render("✔ "+successTitle) + "\n"
+	title := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#50FA7B")).Render("✅ "+successTitle) + "\n"
 	if m.migrationError != nil {
-		borderCol = "#FF5555"
-		title = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#FF5555")).Render("✖ "+failureTitle) + "\n"
+		title = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#FF5555")).Render("❌ "+failureTitle) + "\n"
 	}
 
 	var body strings.Builder
@@ -670,11 +850,22 @@ func (m model) renderActionResult(successTitle, failureTitle string) string {
 		body.WriteString("\n" + lastLines(output, 24) + "\n")
 	}
 	if m.migrationError != nil {
-		body.WriteString("\n" + lipgloss.NewStyle().Foreground(lipgloss.Color("#FF5555")).Render(m.migrationError.Error()) + "\n")
+		var userError cliui.UserError
+		if errors.As(m.migrationError, &userError) {
+			body.WriteString("\n" + lipgloss.NewStyle().Foreground(lipgloss.Color("#FF5555")).Render("❌ "+userError.Message) + "\n")
+			if solution := strings.TrimSpace(userError.Solution); solution != "" {
+				body.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("#FFB86C")).Render("⚠️ Possíveis soluções:") + "\n")
+				for _, line := range strings.Split(solution, "\n") {
+					body.WriteString("   • " + line + "\n")
+				}
+			}
+		} else {
+			body.WriteString("\n" + lipgloss.NewStyle().Foreground(lipgloss.Color("#FF5555")).Render("❌ "+m.migrationError.Error()) + "\n")
+		}
 	}
 	body.WriteString("\nPressione " + lipgloss.NewStyle().Bold(true).Render("[Enter]") + " para voltar.")
 
-	return actionBoxStyle.Copy().BorderForeground(lipgloss.Color(borderCol)).Render(body.String()) + "\n"
+	return body.String() + "\n"
 }
 
 func getDialectIcon(dialect string) string {
@@ -701,61 +892,154 @@ func getEnvLabel(env string) string {
 	return lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#50FA7B")).Render("💻 LOCAL (development)")
 }
 
+func (m model) statusColor() lipgloss.Color {
+	if m.configData.ConfigFileError != nil || m.configData.Config == nil || !m.configData.ConnSuccess {
+		return lipgloss.Color("#FF5555")
+	}
+	if m.updateStatus.Available {
+		return lipgloss.Color("#F1FA8C")
+	}
+	return lipgloss.Color("#50FA7B")
+}
+
+func visibleRange(total, cursor, limit int) (int, int) {
+	if total <= limit {
+		return 0, total
+	}
+	start := cursor - limit/2
+	if start < 0 {
+		start = 0
+	}
+	if start+limit > total {
+		start = total - limit
+	}
+	return start, start + limit
+}
+
+func renderScrollableList(items []string, cursor, limit int) string {
+	if len(items) == 0 {
+		return ""
+	}
+	start, end := visibleRange(len(items), cursor, limit)
+	var output strings.Builder
+	if start > 0 {
+		output.WriteString(itemStyle.Render("  ↑ mais opções") + "\n")
+	}
+	for index := start; index < end; index++ {
+		if index == cursor {
+			output.WriteString(selectedItemStyle.Render("➔ "+items[index]) + "\n")
+		} else {
+			output.WriteString(itemStyle.Render("  "+items[index]) + "\n")
+		}
+	}
+	if end < len(items) {
+		output.WriteString(itemStyle.Render("  ↓ mais opções") + "\n")
+	}
+	return output.String()
+}
+
+func (m model) navigationListLimit() int {
+	limit := m.terminalHeight - 8 // cabeçalho, título, contador e atalhos
+	if limit < 3 {
+		limit = 3
+	}
+	if limit > 12 {
+		limit = 12
+	}
+	return limit
+}
+
+func (m model) renderHeader() string {
+	color := m.statusColor()
+	environment := strings.ToUpper(strings.TrimSpace(m.configData.ActiveEnv))
+	if environment == "" {
+		environment = "ENV?"
+	} else if strings.HasPrefix(environment, "DEV") {
+		environment = "DEV"
+	} else if strings.HasPrefix(environment, "PROD") {
+		environment = "PROD"
+	}
+	database := "💾 banco não configurado"
+	if m.configData.Config != nil {
+		if connection, ok := m.configData.Config.Connections[m.configData.ActiveClient]; ok {
+			database = getDialectIcon(connection.Dialect)
+		}
+	}
+	connectionStatus := "✅ sucesso"
+	if !m.configData.ConnSuccess {
+		connectionStatus = "❌ falha"
+	}
+	line := fmt.Sprintf("%s  │  %s  │  %s", environment, database, connectionStatus)
+	if m.updateStatus.Available {
+		line += "  │  ⚡ " + m.updateStatus.Remote
+	}
+	var output strings.Builder
+	output.WriteString(lipgloss.NewStyle().Bold(true).Foreground(color).Render(line) + "\n")
+	output.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("#6272A4")).Render(strings.Repeat("─", 54)) + "\n")
+	return output.String()
+}
+
+func doctorCheck(ok bool, success, failure string) string {
+	if ok {
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("#50FA7B")).Render("✅ " + success)
+	}
+	return lipgloss.NewStyle().Foreground(lipgloss.Color("#FF5555")).Render("❌ " + failure)
+}
+
+func (m model) renderDoctorList() string {
+	state, report := m.configData, m.doctorReport
+	var output strings.Builder
+	output.WriteString(lipgloss.NewStyle().Bold(true).Render("🔍 Doctor · checklist") + "\n\n")
+	output.WriteString(doctorCheck(state.ConfigFileError == nil && state.Config != nil,
+		"gokit.json carregado", fmt.Sprintf("gokit.json inválido: %v", state.ConfigFileError)) + "\n")
+
+	envOK := false
+	envPath := ".env"
+	if state.Config != nil {
+		envPath = state.Config.Environment.MapperEnv
+		_, err := os.Stat(envPath)
+		envOK = err == nil && len(state.EnvWarnings) == 0
+	}
+	envFailure := "arquivo de ambiente ausente ou inválido: " + envPath
+	if len(state.EnvWarnings) > 0 {
+		envFailure = "variáveis duplicadas: " + strings.Join(state.EnvWarnings, ", ")
+	}
+	output.WriteString(doctorCheck(envOK, "ambiente carregado: "+envPath, envFailure) + "\n")
+	output.WriteString(doctorCheck(report.ConnSuccess,
+		"conexão com o banco estabelecida", fmt.Sprintf("falha na conexão: %v", report.ConnError)) + "\n")
+	if report.ConnSuccess {
+		output.WriteString(doctorCheck(report.VersionOK,
+			"versão compatível: "+report.Version, "versão incompatível: "+report.VersionWarning) + "\n")
+		output.WriteString(doctorCheck(report.DDLSuccess,
+			"permissões CREATE/DROP disponíveis", fmt.Sprintf("permissões DDL falharam: %v", report.DDLError)) + "\n")
+	} else {
+		output.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("#6272A4")).Render("⚠️ versão e permissões não verificadas sem conexão") + "\n")
+	}
+	if m.updateStatus.Error != nil {
+		output.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("#F1FA8C")).Render("⚠️ não foi possível consultar atualizações no Git") + "\n")
+	} else if m.updateStatus.Available {
+		output.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("#F1FA8C")).Render("⚠️ atualização do exec disponível: "+m.updateStatus.Remote) + "\n")
+	} else {
+		output.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("#50FA7B")).Render("✅ exec atualizado") + "\n")
+	}
+	output.WriteString("\n" + footerStyle.Render("[Enter] Voltar ao menu principal"))
+	return output.String()
+}
+
 // View renderiza a interface no terminal
 func (m model) View() string {
 	var s strings.Builder
-
-	// Cabeçalho da aplicação - Apenas impresso no menu principal e submenus de navegação
-	if m.state == stateMainMenu || m.state == stateMigrationsMenu || m.state == stateSeedMenu || m.state == stateFactoryMenu {
-		s.WriteString(titleStyle.Render("GO KIT CLI") + "\n")
-		s.WriteString(versionStyle.Render("Última Atualização: "+Version) + "\n\n")
-	}
+	s.WriteString(m.renderHeader())
 
 	switch m.state {
 	case stateMainMenu:
-		s.WriteString("  " + lipgloss.NewStyle().Bold(true).Render("Menu Principal:") + "\n\n")
+		selectionStyle := lipgloss.NewStyle().Bold(true).Foreground(m.statusColor()).MarginLeft(2)
 		for i, choice := range m.choices {
 			if m.cursor == i {
-				s.WriteString(selectedItemStyle.Render("➔ "+choice) + "\n")
+				s.WriteString(selectionStyle.Render("➔ "+choice) + "\n")
 			} else {
 				s.WriteString(itemStyle.Render(choice) + "\n")
 			}
-		}
-
-		// Exibe o status da conexão atual de forma clara no Menu Principal
-		s.WriteString("\n")
-		statusStyle := lipgloss.NewStyle().MarginLeft(2)
-		if m.configData.ConfigFileError != nil {
-			s.WriteString(statusStyle.Foreground(lipgloss.Color("#FF5555")).Render(
-				fmt.Sprintf("Ambiente:       %s\n  Banco de Dados: ✖ Erro de Configuração (%v)",
-					getEnvLabel(m.configData.ActiveEnv), m.configData.ConfigFileError),
-			) + "\n")
-		} else if m.configData.Config != nil {
-			envLabel := getEnvLabel(m.configData.ActiveEnv)
-			dialectIcon := getDialectIcon(m.configData.ActiveDialect)
-			if m.configData.ConnSuccess {
-				s.WriteString(statusStyle.Render(
-					fmt.Sprintf("Ambiente:       %s\n  Banco de Dados: %s (%s)\n  Status:         %s",
-						envLabel,
-						dialectIcon,
-						m.configData.ActiveClient,
-						lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#50FA7B")).Render("✔ Conectado"),
-					),
-				) + "\n")
-			} else {
-				s.WriteString(statusStyle.Render(
-					fmt.Sprintf("Ambiente:       %s\n  Banco de Dados: %s (%s)\n  Status:         %s",
-						envLabel,
-						dialectIcon,
-						m.configData.ActiveClient,
-						lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#FF5555")).Render("✖ Desconectado"),
-					),
-				) + "\n")
-			}
-		} else {
-			s.WriteString(statusStyle.Foreground(lipgloss.Color("#FFB86C")).Render(
-				"Banco de Dados: ✖ gokit.json não inicializado (Acesse 'Configuração' para criar)",
-			) + "\n")
 		}
 
 	case stateMigrationsMenu:
@@ -794,99 +1078,29 @@ func (m model) View() string {
 
 	case stateMigrationSelectMethod:
 		s.WriteString("  " + lipgloss.NewStyle().Bold(true).Render("Selecione o Tipo de Operação:") + "\n\n")
-
-		colSelectionStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#FF007F"))
-		colItemStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#F8F8F2"))
-
-		half := (len(m.methodsChoices) + 1) / 2
-		for i := 0; i < half; i++ {
-			idx1 := i
-			col1 := ""
-			if m.methodCursor == idx1 {
-				col1 = colSelectionStyle.Render(fmt.Sprintf("➔ %-20s", m.methodsChoices[idx1]))
-			} else {
-				col1 = colItemStyle.Render(fmt.Sprintf("  %-20s", m.methodsChoices[idx1]))
-			}
-
-			idx2 := i + half
-			col2 := ""
-			if idx2 < len(m.methodsChoices) {
-				if m.methodCursor == idx2 {
-					col2 = colSelectionStyle.Render(fmt.Sprintf("➔ %-20s", m.methodsChoices[idx2]))
-				} else {
-					col2 = colItemStyle.Render(fmt.Sprintf("  %-20s", m.methodsChoices[idx2]))
-				}
-			}
-
-			s.WriteString("  " + col1 + "    " + col2 + "\n")
-		}
+		s.WriteString(renderScrollableList(m.methodsChoices, m.methodCursor, m.navigationListLimit()))
+		s.WriteString(footerStyle.Render(fmt.Sprintf("%d de %d", m.methodCursor+1, len(m.methodsChoices))) + "\n")
 		s.WriteString("\n  [Enter] Avançar  ·  [Esc] Voltar para Opções\n")
 
 	case stateMigrationSelectTable:
 		s.WriteString("  " + lipgloss.NewStyle().Bold(true).Render("Selecione a Tabela no Catálogo:") + "\n\n")
 
-		colSelectionStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#FF007F"))
-		colItemStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#F8F8F2"))
-
-		half := (len(m.availableTables) + 1) / 2
-		if half == 0 {
+		if len(m.availableTables) == 0 {
 			s.WriteString("  " + lipgloss.NewStyle().Foreground(lipgloss.Color("#FF5555")).Render("Nenhuma tabela encontrada no catálogo.") + "\n")
 		} else {
-			for i := 0; i < half; i++ {
-				idx1 := i
-				col1 := ""
-				if m.tableCursor == idx1 {
-					col1 = colSelectionStyle.Render(fmt.Sprintf("➔ %-20s", m.availableTables[idx1]))
-				} else {
-					col1 = colItemStyle.Render(fmt.Sprintf("  %-20s", m.availableTables[idx1]))
-				}
-
-				idx2 := i + half
-				col2 := ""
-				if idx2 < len(m.availableTables) {
-					if m.tableCursor == idx2 {
-						col2 = colSelectionStyle.Render(fmt.Sprintf("➔ %-20s", m.availableTables[idx2]))
-					} else {
-						col2 = colItemStyle.Render(fmt.Sprintf("  %-20s", m.availableTables[idx2]))
-					}
-				}
-
-				s.WriteString("  " + col1 + "    " + col2 + "\n")
-			}
+			s.WriteString(renderScrollableList(m.availableTables, m.tableCursor, 12))
+			s.WriteString(footerStyle.Render(fmt.Sprintf("%d de %d", m.tableCursor+1, len(m.availableTables))) + "\n")
 		}
 		s.WriteString("\n  [Enter] Avançar  ·  [Esc] Voltar para Ações\n")
 
 	case stateMigrationSelectView:
 		s.WriteString("  " + lipgloss.NewStyle().Bold(true).Render("Selecione a View no Catálogo:") + "\n\n")
 
-		colSelectionStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#FF007F"))
-		colItemStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#F8F8F2"))
-
-		half := (len(m.availableViews) + 1) / 2
-		if half == 0 {
+		if len(m.availableViews) == 0 {
 			s.WriteString("  " + lipgloss.NewStyle().Foreground(lipgloss.Color("#FF5555")).Render("Nenhuma view encontrada no catálogo.") + "\n")
 		} else {
-			for i := 0; i < half; i++ {
-				idx1 := i
-				col1 := ""
-				if m.viewCursor == idx1 {
-					col1 = colSelectionStyle.Render(fmt.Sprintf("➔ %-20s", m.availableViews[idx1]))
-				} else {
-					col1 = colItemStyle.Render(fmt.Sprintf("  %-20s", m.availableViews[idx1]))
-				}
-
-				idx2 := i + half
-				col2 := ""
-				if idx2 < len(m.availableViews) {
-					if m.viewCursor == idx2 {
-						col2 = colSelectionStyle.Render(fmt.Sprintf("➔ %-20s", m.availableViews[idx2]))
-					} else {
-						col2 = colItemStyle.Render(fmt.Sprintf("  %-20s", m.availableViews[idx2]))
-					}
-				}
-
-				s.WriteString("  " + col1 + "    " + col2 + "\n")
-			}
+			s.WriteString(renderScrollableList(m.availableViews, m.viewCursor, 12))
+			s.WriteString(footerStyle.Render(fmt.Sprintf("%d de %d", m.viewCursor+1, len(m.availableViews))) + "\n")
 		}
 		s.WriteString("\n  [Enter] Confirmar e Gerar  ·  [Esc] Voltar para Ações\n")
 
@@ -919,7 +1133,29 @@ func (m model) View() string {
 		s.WriteString(m.renderActionResult("Migrations aplicadas.", "Erro ao executar migrações:"))
 
 	case stateMigrationRollingBack:
-		s.WriteString(m.renderActionResult("Rollback executado.", "Erro ao reverter última migration:"))
+		s.WriteString(m.renderActionResult("Arquivos removidos e banco reconstruído.", "Rollback de desenvolvimento falhou:"))
+
+	case stateMigrationRollbackConfirmDelete:
+		plan, err := migraterun.PlanDevelopmentRollback(".")
+		if err != nil {
+			s.WriteString(actionBoxStyle.Copy().BorderForeground(lipgloss.Color("#FF5555")).Render("Não foi possível preparar o rollback:\n\n"+err.Error()+"\n\n[Esc] Voltar") + "\n")
+			break
+		}
+		var files strings.Builder
+		for _, path := range plan.Files {
+			files.WriteString("  - " + path + "\n")
+		}
+		s.WriteString(actionBoxStyle.Copy().BorderForeground(lipgloss.Color("#FFB86C")).Render("Confirmação 1/2 · Excluir arquivos não comitados\n\n"+files.String()+"\n[Enter/Y] Confirmar  ·  [Esc/N] Cancelar") + "\n")
+
+	case stateMigrationRollbackConfirmFresh:
+		s.WriteString(actionBoxStyle.Copy().BorderForeground(lipgloss.Color("#FF5555")).Render("Confirmação 2/2 · Reconstruir banco development\n\nAs tabelas administradas pelo GoKit serão removidas e recriadas.\n\n[Enter/Y] Confirmar  ·  [Esc/N] Cancelar") + "\n")
+
+	case stateUpdateConfirm:
+		content := fmt.Sprintf("Atualização disponível\n\nVersão atual: %s\nNova versão:  %s\n\nO executável será substituído e reiniciado.\n\n[Enter/Y] Atualizar  ·  [Esc/N] Agora não", m.updateStatus.Local, m.updateStatus.Remote)
+		s.WriteString(actionBoxStyle.Copy().BorderForeground(lipgloss.Color("#F1FA8C")).Render(content) + "\n")
+
+	case stateUpdateRunning:
+		s.WriteString(m.renderActionResult("GoKit atualizado.", "Não foi possível atualizar o GoKit:"))
 
 	case stateMigrationValidating:
 		s.WriteString(m.renderActionResult("Corpus válido.", "A pré-validação encontrou problemas:"))
@@ -1029,116 +1265,18 @@ func (m model) View() string {
 	case stateFactoryRunning:
 		s.WriteString(m.renderActionResult("Concluído.", "A operação de factory falhou:"))
 
-	case stateConfigScreen:
-		var cfgStr strings.Builder
-		cState := m.configData
-
-		cfgStr.WriteString(lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#00F0FF")).Render("[Configuração - Checklist de Validação]") + "\n\n")
-
-		// 1. Validar Conectividade do banco de dados (Sempre no topo e simplificado, apenas diz qual cliente e dialeto)
-		if cState.ConfigFileError != nil && !strings.Contains(cState.ConfigFileError.Error(), "sintaxe YAML") {
-			cfgStr.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("#FF5555")).Render(
-				fmt.Sprintf("  [✖] Conectividade: Erro ao ler conexões (%v)", cState.ConfigFileError),
-			) + "\n")
-		} else if cState.Config != nil {
-			dialectIcon := getDialectIcon(cState.ActiveDialect)
-			envLabel := getEnvLabel(cState.ActiveEnv)
-			if cState.ConnSuccess {
-				cfgStr.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("#50FA7B")).Render(
-					fmt.Sprintf("  [✔] Conectividade: Conectado ao %s (%s) em %s", dialectIcon, cState.ActiveClient, envLabel),
-				) + "\n")
-			} else {
-				cfgStr.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("#FF5555")).Render(
-					fmt.Sprintf("  [✖] Conectividade: Desconectado de %s (%s) em %s - Erro: %v", dialectIcon, cState.ActiveClient, envLabel, cState.ConnError),
-				) + "\n")
-			}
-		}
-
-		// 2. Validar existência do gokit.json
-		if cState.ScaffoldCreated {
-			cfgStr.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("#50FA7B")).Render(
-				"  [✔] gokit.json: Criado com sucesso em "+cState.ConfigPath,
-			) + "\n")
-		} else if cState.ConfigFileError != nil && strings.Contains(cState.ConfigFileError.Error(), "não foi possível ler") {
-			cfgStr.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("#FF5555")).Render(
-				"  [✖] gokit.json: Não foi possível ler o arquivo",
-			) + "\n")
+	case stateReloadRunning:
+		if m.actionRunning {
+			frames := []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
+			frame := frames[m.spinnerFrame%len(frames)]
+			s.WriteString(lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#F1FA8C")).Render(frame+" Reload em andamento...") + "\n")
+			s.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("#6272A4")).Render("  Preparando ambiente, banco, migrations e catálogos. Aguarde.") + "\n")
 		} else {
-			cfgStr.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("#50FA7B")).Render(
-				"  [✔] gokit.json: Carregado com sucesso",
-			) + "\n")
+			s.WriteString(m.renderActionResult("Reload concluído com sucesso.", "A operação de reload falhou:"))
 		}
 
-		// 3. Validar estrutura JSON
-		if cState.ConfigFileError != nil && strings.Contains(cState.ConfigFileError.Error(), "sintaxe JSON") {
-			cfgStr.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("#FF5555")).Render(
-				fmt.Sprintf("  [✖] Estrutura JSON: %v", cState.ConfigFileError),
-			) + "\n")
-		} else if cState.Config != nil {
-			cfgStr.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("#50FA7B")).Render(
-				"  [✔] Estrutura JSON: Válida",
-			) + "\n")
-		}
-
-		// 4. Validar .env
-		if cState.Config != nil {
-			envPath := cState.Config.Environment.MapperEnv
-			if _, err := os.Stat(envPath); err == nil {
-				if len(cState.EnvWarnings) > 0 {
-					cfgStr.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("#FFB86C")).Render(
-						fmt.Sprintf("  [!] Ambiente (.env): Carregado, mas contém variáveis duplicadas (sobrescritas): %s", strings.Join(cState.EnvWarnings, ", ")),
-					) + "\n")
-				} else {
-					cfgStr.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("#50FA7B")).Render(
-						fmt.Sprintf("  [✔] Ambiente (.env): Carregado de \"%s\"", envPath),
-					) + "\n")
-				}
-			} else {
-				cfgStr.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("#FFB86C")).Render(
-					fmt.Sprintf("  [!] Ambiente (.env): Arquivo \"%s\" não encontrado", envPath),
-				) + "\n")
-			}
-		}
-
-		// 5. Validar Notificações via Slack
-		if cState.Config != nil {
-			slackConf := cState.Config.Notifications.Slack
-			if slackConf.Enabled {
-				if slackConf.WebhookURL != "" && slackConf.WebhookURL != "${SLACK_WEBHOOK_URL}" {
-					cfgStr.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("#50FA7B")).Render(
-						"  [✔] Notificações Slack: Ativas (Webhook configurado)",
-					) + "\n")
-				} else {
-					cfgStr.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("#FF5555")).Render(
-						"  [✖] Notificações Slack: Habilitadas, mas sem webhook_url válido",
-					) + "\n")
-				}
-			} else {
-				cfgStr.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("#6272A4")).Render(
-					"  [✔] Notificações Slack: Desativadas",
-				) + "\n")
-			}
-		}
-
-		// 6. Mostrar Mapeamento de Diretórios (Output)
-		if cState.Config != nil {
-			cfgStr.WriteString("\n  " + lipgloss.NewStyle().Bold(true).Render("Diretórios de Destino (Output):") + "\n")
-			cfgStr.WriteString(fmt.Sprintf("    Settings:  %s\n", cState.Config.Output.Settings))
-			cfgStr.WriteString(fmt.Sprintf("    ORM:       %s\n", cState.Config.Output.ORM))
-			cfgStr.WriteString(fmt.Sprintf("    Migrate:   %s\n", cState.Config.Output.Migrate))
-			cfgStr.WriteString(fmt.Sprintf("    Factory:   %s\n", cState.Config.Output.Factory))
-			cfgStr.WriteString(fmt.Sprintf("    Seed:      %s\n", cState.Config.Output.Seed))
-			cfgStr.WriteString(fmt.Sprintf("    Docs:      %s\n", cState.Config.Output.Docs))
-		}
-
-		cfgStr.WriteString("\n" + lipgloss.NewStyle().Faint(true).Render("Pressione [Enter] para voltar ao menu principal."))
-
-		boxColor := "#50FA7B" // Verde
-		if cState.ConfigFileError != nil || !cState.ConnSuccess {
-			boxColor = "#FF5555" // Vermelho
-		}
-		currentBoxStyle := actionBoxStyle.Copy().BorderForeground(lipgloss.Color(boxColor))
-		s.WriteString(currentBoxStyle.Render(cfgStr.String()) + "\n")
+	case stateConfigScreen:
+		s.WriteString(m.renderDoctorList() + "\n")
 	}
 	return s.String()
 }

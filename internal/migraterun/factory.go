@@ -16,11 +16,11 @@ import (
 	"strings"
 	"time"
 
-	"gokit/internal/cliui"
-	"gokit/internal/config"
-	"gokit/internal/factorygo"
-	"gokit/internal/migrationgo"
-	"gokit/migration/acao"
+	"github.com/PhelipeViana/gokit/internal/cliui"
+	"github.com/PhelipeViana/gokit/internal/config"
+	"github.com/PhelipeViana/gokit/internal/factorygo"
+	"github.com/PhelipeViana/gokit/internal/migrationgo"
+	"github.com/PhelipeViana/gokit/migration/acao"
 )
 
 // plano é uma factory pronta para executar, já casada com a tabela declarada

@@ -5,7 +5,7 @@ import (
 	"strings"
 	"time"
 
-	"gokit/migration/acao"
+	"github.com/PhelipeViana/gokit/migration/acao"
 )
 
 // SeedTimeLayout é o formato aceito por Time em um seed.

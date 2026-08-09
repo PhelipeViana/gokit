@@ -3,12 +3,12 @@ package main
 import (
 	"fmt"
 	"os"
-	"time"
 
-	"gokit/internal/config"
-	"gokit/internal/migraterun"
-	"gokit/internal/tui"
-	"gokit/internal/updater"
+	"github.com/PhelipeViana/gokit/internal/cliui"
+	"github.com/PhelipeViana/gokit/internal/config"
+	"github.com/PhelipeViana/gokit/internal/migraterun"
+	"github.com/PhelipeViana/gokit/internal/tui"
+	"github.com/PhelipeViana/gokit/internal/updater"
 )
 
 // CommitHash e Version são injetados em tempo de compilação via -ldflags.
@@ -23,17 +23,26 @@ func main() {
 
 	// Se houver argumentos de linha de comando, roda em modo CLI
 	if len(os.Args) > 1 {
+		state := config.RunConfigChecks()
+		if state.ConfigFileError != nil {
+			fmt.Printf("Erro de configuração: %v\n", state.ConfigFileError)
+			os.Exit(1)
+		}
+
+		if state.ActiveEnv == "production" {
+			isAllowed := len(os.Args) >= 3 && os.Args[1] == "migrate" && (os.Args[2] == "run" || os.Args[2] == "up")
+			if !isAllowed {
+				fmt.Println("Erro: Apenas o comando 'gokit migrate run' é permitido em ambiente de produção.")
+				os.Exit(1)
+			}
+		}
+
 		if os.Args[1] == "seed" {
 			if len(os.Args) < 3 {
 				fmt.Println("Uso: gokit seed [run|validate|create <tabela>]")
 				fmt.Println("\n  run       aplica os seeders pendentes")
 				fmt.Println("  validate  confere os seeders sem tocar no banco")
 				fmt.Println("  create    cria database/seeds/<tabela>/<timestamp>_seeder.go")
-				os.Exit(1)
-			}
-			state := config.RunConfigChecks()
-			if state.ConfigFileError != nil {
-				fmt.Printf("Erro de configuração: %v\n", state.ConfigFileError)
 				os.Exit(1)
 			}
 			var err error
@@ -79,11 +88,6 @@ func main() {
 				fmt.Println("  gokit factory create           gera as factories que faltam")
 				os.Exit(1)
 			}
-			state := config.RunConfigChecks()
-			if state.ConfigFileError != nil {
-				fmt.Printf("Erro de configuração: %v\n", state.ConfigFileError)
-				os.Exit(1)
-			}
 			var err error
 			switch os.Args[2] {
 			case "run":
@@ -111,17 +115,21 @@ func main() {
 				fmt.Println("Uso: gokit migrate [run|rollback|validate|create]")
 				os.Exit(1)
 			}
-			state := config.RunConfigChecks()
-			if state.ConfigFileError != nil {
-				fmt.Printf("Erro de configuração: %v\n", state.ConfigFileError)
-				os.Exit(1)
-			}
 			var err error
 			switch os.Args[2] {
 			case "run", "up":
 				err = migraterun.Run(".", state)
 			case "rollback", "down":
-				err = migraterun.Rollback(".", state)
+				confirmDelete, confirmFresh := false, false
+				for _, argument := range os.Args[3:] {
+					if argument == "--confirm-delete" {
+						confirmDelete = true
+					}
+					if argument == "--confirm-fresh" {
+						confirmFresh = true
+					}
+				}
+				err = migraterun.RunDevelopmentRollback(".", state, confirmDelete, confirmFresh)
 			case "validate", "check":
 				err = migraterun.ValidateReport(".", state)
 			case "create":
@@ -155,26 +163,55 @@ func main() {
 			}
 			os.Exit(0)
 		}
-	}
+		if os.Args[1] == "doctor" || os.Args[1] == "check" {
+			cliui.PrintTitle("GoKit · Doctor")
+			report := migraterun.RunDoctor(state)
 
-	// Checagem rápida e silenciosa de versão no GitHub
-	updateAvailable, _, remoteSHA := updater.RunSilentUpdateCheck(CommitHash)
+			dialect := state.ActiveDialect
+			fmt.Printf("→ %s (%s) [ATIVO]\n", dialect, state.ActiveClient)
+			fmt.Printf("  Histórico: %s\n", state.ActiveURL)
 
-	// Se houver nova versão disponível, atualiza e reinicia automaticamente em background
-	if updateAvailable {
-		fmt.Printf("\n\033[1m\033[36m⚡ Nova versão detectada (%s). Atualizando gokit automaticamente...\033[0m\n", remoteSHA[:7])
-		err := updater.RunSelfUpdate()
-		if err != nil {
-			fmt.Printf("\033[31m✖ Erro ao atualizar automaticamente: %v. Continuando com a versão atual...\033[0m\n", err)
-			time.Sleep(2 * time.Second)
-		} else {
-			fmt.Println("\033[32m✔ Atualizado com sucesso! Reiniciando...\033[0m")
-			time.Sleep(500 * time.Millisecond)
-
-			// Reinicia o processo atual
-			err = updater.RestartProcess()
+			if report.ConnSuccess {
+				fmt.Println("  ✓ Conectividade física: OK")
+				if report.VersionOK {
+					fmt.Printf("  ✓ Versão do Banco: %s (Compatível)\n", report.Version)
+				} else {
+					fmt.Printf("  ✗ Versão do Banco: %s (%s)\n", report.Version, report.VersionWarning)
+				}
+				if report.DDLSuccess {
+					fmt.Println("  ✓ Permissão de DDL: OK (CREATE/DROP executados)")
+				} else {
+					fmt.Printf("  ✗ Permissão de DDL: Falha (%v)\n", report.DDLError)
+				}
+			} else {
+				fmt.Printf("  ✗ Conectividade física: Falha (Erro: %v)\n", report.ConnError)
+			}
+			os.Exit(0)
+		}
+		if os.Args[1] == "rollback" {
+			confirmDelete, confirmFresh := false, false
+			for _, argument := range os.Args[2:] {
+				switch argument {
+				case "--confirm-delete":
+					confirmDelete = true
+				case "--confirm-fresh":
+					confirmFresh = true
+				}
+			}
+			if err := migraterun.RunDevelopmentRollback(".", state, confirmDelete, confirmFresh); err != nil {
+				fmt.Printf("Erro: %v\n", err)
+				os.Exit(1)
+			}
+			os.Exit(0)
+		}
+		if os.Args[1] == "reload" {
+			var err error
+			if len(os.Args) >= 3 && os.Args[2] == "--fresh" {
+				err = migraterun.RunFreshReload(".", state)
+			} else {
+				err = migraterun.RunReload(state)
+			}
 			if err != nil {
-				fmt.Printf("\033[31m✖ Falha ao reiniciar: %v. Por favor, execute novamente.\033[0m\n", err)
 				os.Exit(1)
 			}
 			os.Exit(0)
@@ -182,7 +219,7 @@ func main() {
 	}
 
 	// Inicia a interface TUI do aplicativo
-	err := tui.Start(Version)
+	err := tui.Start(Version, CommitHash)
 	if err != nil {
 		fmt.Printf("Ocorreu um erro no aplicativo: %v\n", err)
 		os.Exit(1)

@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"gokit/migration/acao"
+	"github.com/PhelipeViana/gokit/migration/acao"
 )
 
 func seed(id string, first bool, rows ...acao.Linha) seedFile {

@@ -12,12 +12,43 @@ import (
 	"time"
 )
 
+type Status struct {
+	Available bool
+	Local     string
+	Remote    string
+	Error     error
+}
+
+func Check(commitHash string) Status {
+	if commitHash == "development" || commitHash == "local" || commitHash == "" {
+		return Status{Local: commitHash}
+	}
+	if os.Getenv("GOKIT_NO_UPDATE") == "true" {
+		return Status{Local: shortHash(commitHash)}
+	}
+	remote, err := fetchLatestRemoteCommit()
+	status := Status{Local: shortHash(commitHash), Remote: shortHash(remote), Error: err}
+	if err == nil {
+		status.Available = !strings.HasPrefix(remote, commitHash) && !strings.HasPrefix(commitHash, remote)
+	}
+	return status
+}
+
+func shortHash(value string) string {
+	value = strings.TrimSpace(value)
+	if len(value) > 7 {
+		return value[:7]
+	}
+	return value
+}
+
 // CleanOldExecutables deleta arquivos temporários .old gerados no auto-update.
 // Executado em goroutine com retentativas para dar tempo do processo pai fechar.
 func CleanOldExecutables() {
 	execPath, err := os.Executable()
 	if err == nil {
 		oldPath := execPath + ".old"
+		_ = os.Remove(execPath + ".new")
 		if _, err := os.Stat(oldPath); err == nil {
 			go func() {
 				for i := 0; i < 5; i++ {
@@ -48,24 +79,8 @@ func RunSilentUpdateCheck(commitHash string) (bool, string, string) {
 		return false, "", ""
 	}
 
-	remoteSHA, err := fetchLatestRemoteCommit()
-	if err != nil {
-		return false, "", ""
-	}
-
-	if !strings.HasPrefix(remoteSHA, commitHash) && !strings.HasPrefix(commitHash, remoteSHA) {
-		shortLocal := commitHash
-		if len(shortLocal) > 7 {
-			shortLocal = shortLocal[:7]
-		}
-		shortRemote := remoteSHA
-		if len(shortRemote) > 7 {
-			shortRemote = shortRemote[:7]
-		}
-		return true, shortLocal, shortRemote
-	}
-
-	return false, "", ""
+	status := Check(commitHash)
+	return status.Available, status.Local, status.Remote
 }
 
 func fetchLatestRemoteCommit() (string, error) {
@@ -101,7 +116,7 @@ func fetchLatestRemoteCommit() (string, error) {
 // GetDirectDownloadURL gera o link de download direto do arquivo binário bruto no repositório GitHub
 func GetDirectDownloadURL() string {
 	baseURL := "https://github.com/PhelipeViana/gokit/raw/main/dist"
-	
+
 	goos := runtime.GOOS
 	goarch := runtime.GOARCH
 
@@ -123,7 +138,7 @@ func GetDirectDownloadURL() string {
 // RunSelfUpdate executa a substituição do binário atual em tempo de execução
 func RunSelfUpdate() error {
 	downloadURL := GetDirectDownloadURL()
-	
+
 	currentExec, err := os.Executable()
 	if err != nil {
 		return fmt.Errorf("não foi possível identificar o executável: %v", err)
@@ -149,29 +164,64 @@ func RunSelfUpdate() error {
 		return fmt.Errorf("servidor retornou erro (status %d)", resp.StatusCode)
 	}
 
+	newExec := currentExec + ".new"
 	oldExec := currentExec + ".old"
+	_ = os.Remove(newExec)
+	out, err := os.OpenFile(newExec, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o755)
+	if err != nil {
+		return fmt.Errorf("falha ao preparar download: %v", err)
+	}
+	written, copyErr := io.Copy(out, resp.Body)
+	closeErr := out.Close()
+	if copyErr != nil || closeErr != nil {
+		_ = os.Remove(newExec)
+		if copyErr != nil {
+			return fmt.Errorf("falha ao gravar atualização: %v", copyErr)
+		}
+		return fmt.Errorf("falha ao finalizar atualização: %v", closeErr)
+	}
+	if written < 1024 {
+		_ = os.Remove(newExec)
+		return fmt.Errorf("download inválido: executável recebido tem apenas %d bytes", written)
+	}
+	if err := os.Chmod(newExec, 0o755); err != nil {
+		_ = os.Remove(newExec)
+		return fmt.Errorf("falha ao tornar atualização executável: %v", err)
+	}
+
 	_ = os.Remove(oldExec)
-
-	// Renomeia o executável em execução (funciona no Windows)
-	err = os.Rename(currentExec, oldExec)
-	if err != nil {
-		return fmt.Errorf("falha ao preparar arquivos: %v", err)
+	if err := os.Rename(currentExec, oldExec); err != nil {
+		_ = os.Remove(newExec)
+		return fmt.Errorf("falha ao preservar executável atual: %v", err)
 	}
-
-	// Cria o novo executável no mesmo local original
-	out, err := os.OpenFile(currentExec, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o755)
-	if err != nil {
-		_ = os.Rename(oldExec, currentExec) // Desfaz em caso de erro
-		return fmt.Errorf("falha ao abrir novo arquivo: %v", err)
+	if err := os.Rename(newExec, currentExec); err != nil {
+		_ = os.Rename(oldExec, currentExec)
+		_ = os.Remove(newExec)
+		return fmt.Errorf("falha ao instalar atualização: %v", err)
 	}
-	defer out.Close()
-
-	_, err = io.Copy(out, resp.Body)
-	if err != nil {
+	if _, err := os.Stat(currentExec); err != nil {
 		_ = os.Rename(oldExec, currentExec)
 		return fmt.Errorf("falha ao gravar atualização: %v", err)
 	}
+	if err := prepareExecutable(currentExec); err != nil {
+		_ = os.Remove(currentExec)
+		_ = os.Rename(oldExec, currentExec)
+		return fmt.Errorf("falha ao validar atualização no macOS: %v", err)
+	}
+	return nil
+}
 
+// prepareExecutable renova a assinatura ad-hoc depois que o arquivo é
+// substituído. Sem isso, o macOS pode encerrar o processo com SIGKILL antes
+// mesmo de o GoKit conseguir mostrar uma mensagem de erro.
+func prepareExecutable(path string) error {
+	if runtime.GOOS != "darwin" {
+		return nil
+	}
+	output, err := exec.Command("codesign", "--force", "--sign", "-", path).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("codesign: %s: %w", strings.TrimSpace(string(output)), err)
+	}
 	return nil
 }
 

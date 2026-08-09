@@ -15,7 +15,7 @@ func TestParseFileSimpleCreateTable(t *testing.T) {
 
 	src := `package migrations
 
-import migrate "gokit/migration"
+import migrate "github.com/PhelipeViana/gokit/migration"
 
 func Migration() migrate.Definition {
 	return migrate.Define(

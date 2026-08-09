@@ -3,10 +3,13 @@ package tui
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
-	"gokit/internal/config"
+	"github.com/PhelipeViana/gokit/internal/cliui"
+	"github.com/PhelipeViana/gokit/internal/config"
+	"github.com/PhelipeViana/gokit/internal/updater"
 )
 
 func osStdout() *os.File { return os.Stdout }
@@ -132,5 +135,141 @@ func TestSelecaoVaziaOrientaVoltar(t *testing.T) {
 	m.state = stateFactorySelectTable
 	if !strings.Contains(m.View(), "Nenhuma factory encontrada") {
 		t.Fatalf("lista vazia deveria explicar o que houve:\n%s", m.View())
+	}
+}
+
+func TestCorDoSelectRefleteEstadoDoExec(t *testing.T) {
+	m := menuDeTeste()
+	if got := string(m.statusColor()); got != "#FF5555" {
+		t.Fatalf("sem conexão deveria ser vermelho, veio %s", got)
+	}
+	m.configData.Config = &config.Config{}
+	m.configData.ConnSuccess = true
+	m.updateStatus = updater.Status{Available: true}
+	if got := string(m.statusColor()); got != "#F1FA8C" {
+		t.Fatalf("com atualização deveria ser amarelo, veio %s", got)
+	}
+	m.updateStatus.Available = false
+	if got := string(m.statusColor()); got != "#50FA7B" {
+		t.Fatalf("estado saudável deveria ser verde, veio %s", got)
+	}
+}
+
+func TestSelecaoDeMigrationTemScrollAutomatico(t *testing.T) {
+	m := menuDeTeste()
+	m.state = stateMigrationSelectTable
+	for i := 0; i < 50; i++ {
+		m.availableTables = append(m.availableTables, fmt.Sprintf("TABELA_%02d", i))
+	}
+	m.tableCursor = 30
+	saida := m.View()
+	if !strings.Contains(saida, "TABELA_30") || !strings.Contains(saida, "31 de 50") {
+		t.Fatalf("cursor e posição devem permanecer visíveis:\n%s", saida)
+	}
+	if strings.Count(saida, "TABELA_") > 12 {
+		t.Fatalf("a lista não deveria ultrapassar a janela do terminal:\n%s", saida)
+	}
+}
+
+func TestDoctorEhChecklistSemCaixa(t *testing.T) {
+	m := menuDeTeste()
+	m.state = stateConfigScreen
+	m.configData.Config = &config.Config{}
+	m.doctorReport.ConnSuccess = true
+	m.doctorReport.VersionOK = true
+	m.doctorReport.DDLSuccess = true
+	saida := m.View()
+	if !strings.Contains(saida, "🔍 Doctor · checklist") || !strings.Contains(saida, "✅") {
+		t.Fatalf("doctor deveria ser uma lista de checks:\n%s", saida)
+	}
+	if strings.Contains(saida, "╭") || strings.Contains(saida, "╰") {
+		t.Fatalf("doctor não deveria usar caixa:\n%s", saida)
+	}
+}
+
+func TestCabecalhoDeAmbienteEhCompacto(t *testing.T) {
+	m := menuDeTeste()
+	m.configData.ActiveEnv = "development"
+	m.configData.ActiveClient = "mysql"
+	m.configData.ConnSuccess = true
+	m.configData.Config = &config.Config{Connections: map[string]config.ConnConfig{
+		"mysql": {Dialect: "mysql", Host: "127.0.0.1", Port: "3306", Database: "app"},
+	}}
+	header := m.renderHeader()
+	for _, expected := range []string{"DEV", "🐬 MySQL", "✅ sucesso"} {
+		if !strings.Contains(header, expected) {
+			t.Fatalf("cabeçalho não contém %q:\n%s", expected, header)
+		}
+	}
+}
+
+func TestAssinaturaDoAmbienteMudaQuandoEnvForSalvo(t *testing.T) {
+	dir := t.TempDir()
+	envPath := filepath.Join(dir, ".env")
+	configPath := filepath.Join(dir, "gokit.json")
+	if err := os.WriteFile(envPath, []byte("DB_PORT=3306\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(configPath, []byte("{}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	state := config.ConfigState{
+		ConfigPath: configPath,
+		Config:     &config.Config{Environment: config.EnvConfig{MapperEnv: envPath}},
+	}
+	before := environmentSignature(state)
+	if err := os.WriteFile(envPath, []byte("DB_PORT=3307\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if after := environmentSignature(state); after == before {
+		t.Fatal("salvar o .env deveria disparar uma nova verificação de status")
+	}
+}
+
+func TestResultadoDeErroEhListaSemCaixa(t *testing.T) {
+	m := menuDeTeste()
+	m.migrationError = cliui.NewUserError("Conexão indisponível.", "Revise o host.\nInicie o container.")
+	saida := m.renderActionResult("OK", "Falha")
+	for _, expected := range []string{"❌", "⚠️ Possíveis soluções:", "• Revise o host.", "• Inicie o container."} {
+		if !strings.Contains(saida, expected) {
+			t.Fatalf("resultado não contém %q:\n%s", expected, saida)
+		}
+	}
+	if strings.Contains(saida, "╭") || strings.Contains(saida, "╰") {
+		t.Fatalf("resultado não deveria usar caixa:\n%s", saida)
+	}
+}
+
+func TestReloadMostraEstadoDeExecucaoAntesDoResultado(t *testing.T) {
+	m := menuDeTeste()
+	m.state = stateReloadRunning
+	m.actionRunning = true
+	saida := m.View()
+	if !strings.Contains(saida, "Reload em andamento") || !strings.Contains(saida, "Aguarde") {
+		t.Fatalf("reload deveria mostrar retorno visual imediato:\n%s", saida)
+	}
+	if strings.Contains(saida, "Reload concluído") {
+		t.Fatalf("reload não pode indicar sucesso antes de terminar:\n%s", saida)
+	}
+}
+
+func TestListaDeMetodosSeAdaptaAoTerminalPequeno(t *testing.T) {
+	m := menuDeTeste()
+	m.state = stateMigrationSelectMethod
+	m.terminalHeight = 11
+	m.methodsChoices = []string{"create_table", "drop_table", "add_column", "alter_column", "drop_column", "raw_sql", "todo"}
+	m.methodCursor = 0
+	saida := m.View()
+	if !strings.Contains(saida, "create_table") {
+		t.Fatalf("primeira opção deve continuar visível em terminal pequeno:\n%s", saida)
+	}
+	if strings.Count(saida, "_table") > 3 {
+		t.Fatalf("lista deveria respeitar a altura disponível:\n%s", saida)
+	}
+
+	m.methodCursor = len(m.methodsChoices) - 1
+	saida = m.View()
+	if !strings.Contains(saida, "todo") || !strings.Contains(saida, "↑ mais opções") {
+		t.Fatalf("seleção final e indicação de opções anteriores devem aparecer:\n%s", saida)
 	}
 }

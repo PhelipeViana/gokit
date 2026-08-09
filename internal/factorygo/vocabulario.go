@@ -14,7 +14,7 @@ import (
 	"sort"
 	"strings"
 
-	migrate "gokit/migration"
+	migrate "github.com/PhelipeViana/gokit/migration"
 )
 
 // chamadaFake executa uma função do vocabulário com os argumentos já avaliados.

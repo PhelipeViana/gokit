@@ -3,8 +3,70 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+
+	"github.com/PhelipeViana/gokit/internal/gomodule"
 )
+
+func TestCreateOnboardingScaffoldInitializesGoModule(t *testing.T) {
+	previousDir, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := t.TempDir()
+	framework := filepath.Join(root, "gokit")
+	project := filepath.Join(root, "projeto-vazio")
+	if err := os.MkdirAll(framework, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(project, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(framework, "go.mod"), []byte("module "+gomodule.CanonicalGoKitModule+"\n\ngo 1.26\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(project); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(previousDir) })
+
+	if err := createOnboardingScaffold(); err != nil {
+		t.Fatal(err)
+	}
+
+	assertFileContains := func(path string, expected ...string) {
+		t.Helper()
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, value := range expected {
+			if !strings.Contains(string(data), value) {
+				t.Errorf("%s não contém %q", path, value)
+			}
+		}
+	}
+	assertFileContains("go.mod",
+		"module projeto-vazio",
+		"require "+gomodule.CanonicalGoKitModule+" v0.0.0",
+		"replace "+gomodule.CanonicalGoKitModule+" => ../gokit",
+	)
+	assertFileContains(filepath.Join("internal", "gokit", "gokit.json"),
+		`"module": "projeto-vazio"`,
+		`"execution": "docker"`,
+		`"docker_auto_start": true`,
+		`"gokit_local": "../gokit"`,
+	)
+	assertFileContains("docker-compose.yml",
+		"toolchain:",
+		"- ../gokit:/gokit",
+	)
+	assertFileContains(filepath.Join("internal", "gokit", "migrate", "add_column", "2026_08_08_000003_add_cidade_to_users.go"),
+		`alias "projeto-vazio/internal/gokit/core/migration/alias"`,
+		`migrate "`+gomodule.CanonicalGoKitModule+`/migration"`,
+	)
+}
 
 func TestBuildURL(t *testing.T) {
 	tests := []struct {
@@ -241,5 +303,5 @@ func TestTestDatabaseConnectionIntegration(t *testing.T) {
 		if err == nil {
 			t.Error("expected error for invalid dialect, but got nil")
 		}
-	} )
+	})
 }

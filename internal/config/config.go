@@ -6,10 +6,15 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"math/rand"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/PhelipeViana/gokit/internal/gomodule"
+	"github.com/PhelipeViana/gokit/internal/i18n"
+	"github.com/PhelipeViana/gokit/internal/migrationgo"
 
 	// Drivers de banco de dados
 	_ "github.com/go-sql-driver/mysql"
@@ -64,12 +69,10 @@ const DefaultScaffoldJSON = `{
     }
   },
   "output": {
-    "settings": "internal/gokit/",
-    "orm": "internal/gokit/orm",
-    "migrate": "internal/gokit/migrate",
-    "factory": "internal/gokit/factory",
-    "seed": "internal/gokit/seed",
-    "docs": "internal/gokit/docs"
+    "migrate": "",
+    "factory": "",
+    "seed": "",
+    "docs": ""
   },
   "migrate": {
     "table": "migrations_gokit"
@@ -94,6 +97,8 @@ const DefaultScaffoldJSON = `{
 
 // Definições de estruturas para carregar o gokit.json
 type Config struct {
+	Language      string                `json:"language,omitempty"`
+	Go            GoConfig              `json:"go,omitempty"`
 	Environment   EnvConfig             `json:"environment"`
 	Connections   map[string]ConnConfig `json:"connections"`
 	Output        OutputConfig          `json:"output"`
@@ -101,6 +106,16 @@ type Config struct {
 	Seed          SeedConfig            `json:"seed"`
 	Factory       FactoryConfig         `json:"factory"`
 	Notifications NotificationsConfig   `json:"notifications"`
+}
+
+type GoConfig struct {
+	Module          string `json:"module,omitempty"`
+	GoKitModule     string `json:"gokit_module,omitempty"`
+	GoKitVersion    string `json:"gokit_version,omitempty"`
+	GoKitLocal      string `json:"gokit_local,omitempty"`
+	Execution       string `json:"execution,omitempty"`
+	DockerService   string `json:"docker_service,omitempty"`
+	DockerAutoStart *bool  `json:"docker_auto_start,omitempty"`
 }
 
 type EnvConfig struct {
@@ -284,18 +299,533 @@ func ExpandEnvWithDefaults(str string) string {
 	return str
 }
 
+// checkFolderEmpty verifica se o projeto está vazio (sem migrations e sem outros códigos Go)
+func checkFolderEmpty() bool {
+	goFilesFound := false
+	_ = filepath.Walk(".", func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return nil
+		}
+		if !info.IsDir() && strings.HasSuffix(info.Name(), ".go") {
+			// Se for main.go na raiz do gokit, ignora
+			if !strings.Contains(path, "internal/gokit") && info.Name() != "main.go" {
+				goFilesFound = true
+			}
+		}
+		return nil
+	})
+
+	if goFilesFound {
+		return false
+	}
+
+	if _, err := os.Stat(filepath.Join("database", "migrations")); err == nil {
+		return false
+	}
+	if _, err := os.Stat(filepath.Join("internal", "gokit", "gokit.json")); err == nil {
+		return false
+	}
+	return true
+}
+
+func createOnboardingScaffold() error {
+	moduleResult, err := gomodule.Ensure(gomodule.Options{
+		Root:        ".",
+		GoKitModule: gomodule.CanonicalGoKitModule,
+		GoKitLocal:  "auto",
+	})
+	if err != nil {
+		return fmt.Errorf("nao foi possivel inicializar o modulo Go: %w", err)
+	}
+
+	r := rand.New(rand.NewSource(time.Now().UnixNano()))
+	mysqlPort := 20000 + r.Intn(10000)
+	postgresPort := 20000 + r.Intn(10000)
+	oraclePort := 20000 + r.Intn(10000)
+	mssqlPort := 20000 + r.Intn(10000)
+
+	envContent := fmt.Sprintf(`# Dialeto ativo do gokit (mysql | postgres | oracle | sqlserver)
+DB_DIALECT=mysql
+APP_ENV=development
+
+# === MySQL (Ativo por padrão) ===
+MYSQL_HOST=127.0.0.1
+MYSQL_PORT=%d
+MYSQL_DATABASE=gokit_onboarding
+MYSQL_USER=gokit_user
+MYSQL_PASSWORD=gokit_password
+MYSQL_ROOT_PASSWORD=gokit_root_password
+MYSQL_SCHEMA=gokit_onboarding
+
+# === Outros dialetos (comentados para fins didáticos) ===
+# POSTGRES_HOST=127.0.0.1
+# POSTGRES_PORT=%d
+# POSTGRES_DB=gokit_onboarding
+# POSTGRES_USER=gokit_user
+# POSTGRES_PASSWORD=gokit_password
+# POSTGRES_SCHEMA=public
+# POSTGRES_SSLMODE=disable
+
+# ORACLE_HOST=127.0.0.1
+# ORACLE_PORT=%d
+# ORACLE_USER=gokit_user
+# ORACLE_PASSWORD=gokit_password
+# ORACLE_SERVICE=FREEPDB1
+# ORACLE_SCHEMA=GOKIT_ONBOARDING
+
+# MSSQL_HOST=127.0.0.1
+# MSSQL_PORT=%d
+# MSSQL_USER=sa
+# MSSQL_DATABASE=gokit_onboarding
+# MSSQL_SA_PASSWORD=Gokit_password123!
+# MSSQL_SCHEMA=dbo
+`, mysqlPort, postgresPort, oraclePort, mssqlPort)
+
+	if err := os.WriteFile(".env", []byte(envContent), 0o644); err != nil {
+		return err
+	}
+
+	if err := os.MkdirAll(filepath.Join("internal", "gokit"), 0o755); err != nil {
+		return err
+	}
+
+	gokitJSON := fmt.Sprintf(`{
+  "language": "pt",
+  "go": {
+    "module": %q,
+    "gokit_module": %q,
+    "gokit_version": %q,
+    "gokit_local": %q,
+    "execution": "docker",
+    "docker_service": "toolchain",
+    "docker_auto_start": true
+  },
+  "environment": {
+    "mapper_env": ".env",
+    "ambient": "APP_ENV",
+    "client": "DB_DIALECT"
+  },
+  "connections": {
+    "mysql": {
+      "dialect": "mysql",
+      "host": "${MYSQL_HOST:-127.0.0.1}",
+      "port": "${MYSQL_PORT:-3306}",
+      "user": "${MYSQL_USER:-root}",
+      "password": "${MYSQL_PASSWORD}",
+      "database": "${MYSQL_DATABASE:-gokit_onboarding}"
+    },
+    "postgres": {
+      "dialect": "postgres",
+      "host": "${POSTGRES_HOST:-127.0.0.1}",
+      "port": "${POSTGRES_PORT:-5432}",
+      "user": "${POSTGRES_USER:-postgres}",
+      "password": "${POSTGRES_PASSWORD}",
+      "database": "${POSTGRES_DB:-gokit_onboarding}",
+      "schema": "${POSTGRES_SCHEMA:-public}"
+    },
+    "oracle": {
+      "dialect": "oracle",
+      "host": "${ORACLE_HOST:-127.0.0.1}",
+      "port": "${ORACLE_PORT:-1521}",
+      "user": "${ORACLE_USER:-system}",
+      "password": "${ORACLE_PASSWORD}",
+      "service": "${ORACLE_SERVICE:-FREEPDB1}",
+      "schema": "${ORACLE_SCHEMA:-GOKIT_ONBOARDING}"
+    },
+    "sqlserver": {
+      "dialect": "sqlserver",
+      "host": "${MSSQL_HOST:-127.0.0.1}",
+      "port": "${MSSQL_PORT:-1433}",
+      "user": "${MSSQL_USER:-sa}",
+      "password": "${MSSQL_SA_PASSWORD}",
+      "database": "${MSSQL_DATABASE:-gokit_onboarding}",
+      "schema": "${MSSQL_SCHEMA:-dbo}"
+    }
+  },
+  "output": {
+    "migrate": "",
+    "factory": "",
+    "seed": "",
+    "docs": ""
+  },
+  "migrate": {
+    "table": "migrations_gokit"
+  },
+  "seed": {
+    "table": "seeders_gokit"
+  },
+  "factory": {
+    "expressions": {
+      "mappers": {
+        "tabela.campo": "gokit.FakeMetodo(index, 0, 1)"
+      }
+    }
+  }
+}`, moduleResult.Module, moduleResult.GoKitModule, moduleResult.GoKitVersion, moduleResult.GoKitLocal)
+	if err := os.WriteFile(filepath.Join("internal", "gokit", "gokit.json"), []byte(gokitJSON), 0o644); err != nil {
+		return err
+	}
+
+	// Gera as configurações do Docker em sincronia com as portas do .env
+	localGoKitVolume := ""
+	if moduleResult.GoKitLocal != "" {
+		localGoKitVolume = fmt.Sprintf("      - %s:/gokit\n", moduleResult.GoKitLocal)
+	}
+	dockerCompose := fmt.Sprintf(`services:
+  toolchain:
+    image: golang:1.26-alpine
+    working_dir: /workspace
+    volumes:
+      - .:/workspace
+      - go_modules:/go/pkg/mod
+%s    profiles: ["tools"]
+
+  # MySQL (Padrão Ativo)
+  mysql:
+    image: mysql:8.4
+    environment:
+      MYSQL_ROOT_PASSWORD: gokit_password
+      MYSQL_DATABASE: gokit_onboarding
+      MYSQL_USER: gokit_user
+      MYSQL_PASSWORD: gokit_password
+    ports:
+      - "%d:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+
+  # PostgreSQL (Descomente para usar)
+  # postgres:
+  #   image: postgres:16-alpine
+  #   environment:
+  #     POSTGRES_USER: postgres
+  #     POSTGRES_PASSWORD: gokit_password
+  #     POSTGRES_DB: gokit_onboarding
+  #   ports:
+  #     - "%d:5432"
+  #   volumes:
+  #     - postgres_data:/var/lib/postgresql/data
+
+  # Oracle DB (Descomente para usar)
+  # oracle:
+  #   image: gvenzl/oracle-free:23.4-slim
+  #   environment:
+  #     ORACLE_PASSWORD: gokit_password
+  #   ports:
+  #     - "%d:1521"
+  #   volumes:
+  #     - oracle_data:/opt/oracle/oradata
+
+  # SQL Server (Descomente para usar)
+  # mssql:
+  #   image: mcr.microsoft.com/mssql/server:2022-latest
+  #   environment:
+  #     ACCEPT_EULA: "Y"
+  #     MSSQL_SA_PASSWORD: "Gokit_password123!"
+  #   ports:
+  #     - "%d:1433"
+
+volumes:
+  go_modules:
+  mysql_data:
+  # postgres_data:
+  # oracle_data:
+`, localGoKitVolume, mysqlPort, postgresPort, oraclePort, mssqlPort)
+	_ = os.WriteFile("docker-compose.yml", []byte(dockerCompose), 0o644)
+
+	dockerIgnore := `.git
+.env
+internal/gokit/gokit_local
+internal/gokit/.state/
+gokit
+gokit_local
+*.log
+`
+	_ = os.WriteFile(".dockerignore", []byte(dockerIgnore), 0o644)
+	gitIgnore := "internal/gokit/.state/\n"
+	if current, err := os.ReadFile(".gitignore"); err == nil {
+		if !strings.Contains(string(current), "internal/gokit/.state/") {
+			_ = os.WriteFile(".gitignore", append(current, []byte("\n"+gitIgnore)...), 0o644)
+		}
+	} else if os.IsNotExist(err) {
+		_ = os.WriteFile(".gitignore", []byte(gitIgnore), 0o644)
+	}
+
+	_ = os.MkdirAll(filepath.Join("internal", "gokit", "migrate", "create_table"), 0o755)
+	_ = os.MkdirAll(filepath.Join("internal", "gokit", "migrate", "add_column"), 0o755)
+	_ = os.MkdirAll(filepath.Join("internal", "gokit", "seed", "users"), 0o755)
+	_ = os.MkdirAll(filepath.Join("internal", "gokit", "factory"), 0o755)
+
+	cidadesMig := `package migrations
+
+import migrate "github.com/PhelipeViana/gokit/migration"
+
+func Migration_2026_08_08_000001_CreateCidadesTable() migrate.Definition {
+	return migrate.Define(
+		migrate.CreateTable("cidades",
+			migrate.Col("id").Integer().PrimaryKey().AutoIncrement(),
+			migrate.Col("nome").Varchar(255).NotNull(),
+		).Alias("cidades"),
+	)
+}
+`
+	_ = os.WriteFile(filepath.Join("internal", "gokit", "migrate", "create_table", "2026_08_08_000001_create_cidades_table.go"), []byte(cidadesMig), 0o644)
+
+	usersMig := `package migrations
+
+import migrate "github.com/PhelipeViana/gokit/migration"
+
+func Migration_2026_08_08_000002_CreateUsersTable() migrate.Definition {
+	return migrate.Define(
+		migrate.CreateTable("users",
+			migrate.Col("id").Integer().PrimaryKey().AutoIncrement(),
+			migrate.Col("nome").Varchar(255).NotNull(),
+			migrate.Col("email").Varchar(255).NotNull().Unique(),
+		).Alias("users"),
+	)
+}
+`
+	_ = os.WriteFile(filepath.Join("internal", "gokit", "migrate", "create_table", "2026_08_08_000002_create_users_table.go"), []byte(usersMig), 0o644)
+
+	fkMig := fmt.Sprintf(`package migrations
+
+import (
+	alias %q
+	migrate "github.com/PhelipeViana/gokit/migration"
+)
+
+func Migration_2026_08_08_000003_AddCidadeToUsers() migrate.Definition {
+	return migrate.Define(
+		migrate.AddColumn(alias.Users,
+			migrate.Col("cidade_id").Integer().Nullable().References("cidades", "id").OnDeleteCascade(),
+		),
+	)
+}
+`, moduleResult.Module+"/internal/gokit/core/migration/alias")
+	_ = os.WriteFile(filepath.Join("internal", "gokit", "migrate", "add_column", "2026_08_08_000003_add_cidade_to_users.go"), []byte(fkMig), 0o644)
+
+	seederContent := `package users
+
+import migrate "github.com/PhelipeViana/gokit/migration"
+
+func Seeder_2026_08_08_000001_Users() migrate.Rows {
+	return migrate.Rows{
+		{"id": 1, "nome": "Phelipe Viana", "email": "phelipe@gokit.io"},
+		{"id": 2, "nome": "Joao Silva", "email": "joao@gokit.io"},
+	}
+}
+`
+	_ = os.WriteFile(filepath.Join("internal", "gokit", "seed", "users", "2026_08_08_000001_users_seeder.go"), []byte(seederContent), 0o644)
+
+	cidadesFact := `package factories
+
+import migrate "github.com/PhelipeViana/gokit/migration"
+
+func CidadesFactory() migrate.Factory {
+	return migrate.Factory{
+		Table: "CIDADES",
+		Ruler: migrate.Ruler{Count: 10, Update: true, Active: true},
+		Data: func(index int) migrate.Fields {
+			return migrate.Fields{
+				"id":   migrate.FakeIntIndex(index, 1, 99999999),
+				"nome": migrate.FakeCityIndexLength(index, 100),
+			}
+		},
+	}
+}
+`
+	_ = os.WriteFile(filepath.Join("internal", "gokit", "factory", "cidades_factory.go"), []byte(cidadesFact), 0o644)
+
+	usersFact := `package factories
+
+import migrate "github.com/PhelipeViana/gokit/migration"
+
+func UsersFactory() migrate.Factory {
+	return migrate.Factory{
+		Table: "USERS",
+		Ruler: migrate.Ruler{Count: 20, Update: true, Active: true},
+		Data: func(index int) migrate.Fields {
+			return migrate.Fields{
+				"id":        migrate.FakeIntIndex(index, 1, 99999999),
+				"nome":      migrate.FakeNameIndexLength(index, 100),
+				"email":     migrate.FakeEmailIndexLength(index, 100),
+				"cidade_id": migrate.Vinculo("CIDADES", "ID"),
+			}
+		},
+	}
+}
+`
+	_ = os.WriteFile(filepath.Join("internal", "gokit", "factory", "users_factory.go"), []byte(usersFact), 0o644)
+
+	// Atualiza o catálogo do Core para gerar o dsl.gen.go contendo os aliases Cidades e Users recém-criados
+	_ = migrationgo.RefreshCatalog(".", filepath.Join("internal", "gokit", "migrate"))
+
+	return nil
+}
+
+func readEnvAndBuildGokitJSON() string {
+	envPath := ".env"
+	if _, err := os.Stat("configs/api.env"); err == nil {
+		envPath = "configs/api.env"
+	}
+
+	mysqlHost := "127.0.0.1"
+	mysqlPort := "3306"
+	mysqlUser := "root"
+	mysqlDatabase := "gokit_onboarding"
+
+	postgresHost := "127.0.0.1"
+	postgresPort := "5432"
+	postgresUser := "postgres"
+	postgresDatabase := "postgres"
+
+	oracleHost := "127.0.0.1"
+	oraclePort := "1521"
+	oracleUser := "system"
+	oracleService := "FREEPDB1"
+
+	mssqlHost := "127.0.0.1"
+	mssqlPort := "1433"
+	mssqlUser := "sa"
+	mssqlDatabase := "master"
+
+	if file, err := os.Open(envPath); err == nil {
+		defer file.Close()
+		scanner := bufio.NewScanner(file)
+		for scanner.Scan() {
+			line := strings.TrimSpace(scanner.Text())
+			if len(line) == 0 || strings.HasPrefix(line, "#") {
+				continue
+			}
+			parts := strings.SplitN(line, "=", 2)
+			if len(parts) == 2 {
+				k := strings.TrimSpace(parts[0])
+				v := strings.TrimSpace(parts[1])
+				if len(v) >= 2 && ((v[0] == '"' && v[len(v)-1] == '"') || (v[0] == '\'' && v[len(v)-1] == '\'')) {
+					v = v[1 : len(v)-1]
+				}
+				switch k {
+				case "MYSQL_HOST", "DB_HOST":
+					mysqlHost = v
+					postgresHost = v
+					oracleHost = v
+					mssqlHost = v
+				case "MYSQL_PORT":
+					mysqlPort = v
+				case "MYSQL_USER", "DB_USER":
+					mysqlUser = v
+					postgresUser = v
+					oracleUser = v
+					mssqlUser = v
+				case "MYSQL_DATABASE", "DB_NAME":
+					mysqlDatabase = v
+					postgresDatabase = v
+					mssqlDatabase = v
+				case "POSTGRES_HOST":
+					postgresHost = v
+				case "POSTGRES_PORT":
+					postgresPort = v
+				case "POSTGRES_USER":
+					postgresUser = v
+				case "POSTGRES_DB":
+					postgresDatabase = v
+				case "ORACLE_HOST":
+					oracleHost = v
+				case "ORACLE_PORT":
+					oraclePort = v
+				case "ORACLE_USER":
+					oracleUser = v
+				case "ORACLE_SERVICE":
+					oracleService = v
+				case "MSSQL_HOST":
+					mssqlHost = v
+				case "MSSQL_PORT":
+					mssqlPort = v
+				case "MSSQL_USER":
+					mssqlUser = v
+				case "MSSQL_DATABASE":
+					mssqlDatabase = v
+				}
+			}
+		}
+	}
+
+	return fmt.Sprintf(`{
+  "language": "pt",
+  "environment": {
+    "mapper_env": "%s",
+    "ambient": "APP_ENV",
+    "client": "DB_DIALECT"
+  },
+  "connections": {
+    "mysql": {
+      "dialect": "mysql",
+      "host": "${MYSQL_HOST:-%s}",
+      "port": "${MYSQL_PORT:-%s}",
+      "user": "${MYSQL_USER:-%s}",
+      "password": "${MYSQL_PASSWORD}",
+      "database": "${MYSQL_DATABASE:-%s}"
+    },
+    "postgres": {
+      "dialect": "postgres",
+      "host": "${POSTGRES_HOST:-%s}",
+      "port": "${POSTGRES_PORT:-%s}",
+      "user": "${POSTGRES_USER:-%s}",
+      "password": "${POSTGRES_PASSWORD}",
+      "database": "${POSTGRES_DB:-%s}",
+      "schema": "${POSTGRES_SCHEMA:-public}"
+    },
+    "oracle": {
+      "dialect": "oracle",
+      "host": "${ORACLE_HOST:-%s}",
+      "port": "${ORACLE_PORT:-%s}",
+      "user": "${ORACLE_USER:-%s}",
+      "password": "${ORACLE_PASSWORD}",
+      "service": "${ORACLE_SERVICE:-%s}",
+      "schema": "${ORACLE_SCHEMA:-PREVCONTAS_TEST}"
+    },
+    "sqlserver": {
+      "dialect": "sqlserver",
+      "host": "${MSSQL_HOST:-%s}",
+      "port": "${MSSQL_PORT:-%s}",
+      "user": "${MSSQL_USER:-%s}",
+      "password": "${MSSQL_SA_PASSWORD}",
+      "database": "${MSSQL_DATABASE:-%s}",
+      "schema": "${MSSQL_SCHEMA:-dbo}"
+    }
+  },
+  "output": {
+    "migrate": "",
+    "factory": "",
+    "seed": "",
+    "docs": ""
+  },
+  "migrate": {
+    "table": "migrations_gokit"
+  },
+  "seed": {
+    "table": "seeders_gokit"
+  },
+  "factory": {
+    "expressions": {
+      "mappers": {
+        "tabela.campo": "gokit.FakeMetodo(index, 0, 1)"
+      }
+    }
+  }
+}`, envPath, mysqlHost, mysqlPort, mysqlUser, mysqlDatabase, postgresHost, postgresPort, postgresUser, postgresDatabase, oracleHost, oraclePort, oracleUser, oracleService, mssqlHost, mssqlPort, mssqlUser, mssqlDatabase)
+}
+
 // EnsureConfigExistsAndLoad lê o gokit.json, criando a pasta/arquivo se não existirem
 func EnsureConfigExistsAndLoad() (*Config, string, []string, error) {
 	configPath := filepath.Join("internal", "gokit", "gokit.json")
 
 	if _, err := os.Stat(configPath); os.IsNotExist(err) {
-		err = os.MkdirAll(filepath.Join("internal", "gokit"), 0o755)
-		if err != nil {
-			return nil, configPath, nil, fmt.Errorf("falha ao criar pasta internal/gokit: %v", err)
-		}
-		err = os.WriteFile(configPath, []byte(DefaultScaffoldJSON), 0o644)
-		if err != nil {
-			return nil, configPath, nil, fmt.Errorf("falha ao gerar gokit.json: %v", err)
+		if checkFolderEmpty() {
+			_ = createOnboardingScaffold()
+		} else {
+			_ = os.MkdirAll(filepath.Join("internal", "gokit"), 0o755)
+			gokitJSON := readEnvAndBuildGokitJSON()
+			_ = os.WriteFile(configPath, []byte(gokitJSON), 0o644)
 		}
 	}
 
@@ -308,6 +838,11 @@ func EnsureConfigExistsAndLoad() (*Config, string, []string, error) {
 	err = json.Unmarshal(data, &rawConfig)
 	if err != nil {
 		return nil, configPath, nil, fmt.Errorf("sintaxe JSON inválida: %v", err)
+	}
+
+	// Inicializa o idioma ativo baseado na configuração
+	if rawConfig.Language != "" {
+		i18n.SetLanguage(rawConfig.Language)
 	}
 
 	// Carrega arquivo .env se mapeado
@@ -334,6 +869,26 @@ func EnsureConfigExistsAndLoad() (*Config, string, []string, error) {
 		}
 	}
 	interpolatedConfig.Notifications.Slack.WebhookURL = ExpandEnvWithDefaults(rawConfig.Notifications.Slack.WebhookURL)
+
+	// Preenche os padrões não-invasivos internos caso o usuário tenha deixado os campos vazios no gokit.json
+	if interpolatedConfig.Output.Settings == "" {
+		interpolatedConfig.Output.Settings = "internal/gokit/gokit.json"
+	}
+	if interpolatedConfig.Output.ORM == "" {
+		interpolatedConfig.Output.ORM = "internal/gokit/core/orm"
+	}
+	if interpolatedConfig.Output.Migrate == "" {
+		interpolatedConfig.Output.Migrate = "internal/gokit/migrate"
+	}
+	if interpolatedConfig.Output.Factory == "" {
+		interpolatedConfig.Output.Factory = "internal/gokit/factory"
+	}
+	if interpolatedConfig.Output.Seed == "" {
+		interpolatedConfig.Output.Seed = "internal/gokit/seed"
+	}
+	if interpolatedConfig.Output.Docs == "" {
+		interpolatedConfig.Output.Docs = "internal/gokit/docs"
+	}
 
 	return &interpolatedConfig, configPath, envWarnings, nil
 }
@@ -412,15 +967,22 @@ func RunConfigChecks() ConfigState {
 	if envKey == "" {
 		envKey = "APP_ENV"
 	}
-	activeEnv := os.Getenv(envKey)
-	if activeEnv == "" {
+	activeEnvRaw := strings.TrimSpace(os.Getenv(envKey))
+	if activeEnvRaw == "" {
 		for _, altKey := range []string{"APP_ENV", "ENV", "ENVIRONMENT"} {
-			if val := os.Getenv(altKey); val != "" {
-				activeEnv = val
+			if val := strings.TrimSpace(os.Getenv(altKey)); val != "" {
+				activeEnvRaw = val
 				break
 			}
 		}
-		if activeEnv == "" {
+	}
+
+	// Regra de segurança: se começar com 'd' ou 'D', é development.
+	// Se começar com 'p' ou 'P', ou se for vazio/desconhecido, assume 'production'.
+	activeEnv := "production"
+	if activeEnvRaw != "" {
+		firstChar := strings.ToLower(activeEnvRaw[:1])
+		if firstChar == "d" {
 			activeEnv = "development"
 		}
 	}
@@ -496,7 +1058,7 @@ func RunConfigChecks() ConfigState {
 	// Atualiza com os valores reais encontrados
 	state.ActiveClient = matchedKey
 	state.ActiveDialect = conn.Dialect
-	
+
 	activeURL := conn.BuildURL()
 	state.ActiveURL = activeURL
 

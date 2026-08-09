@@ -15,10 +15,10 @@ import (
 	"strings"
 	"time"
 
-	"gokit/internal/cliui"
-	"gokit/internal/config"
-	"gokit/internal/migrationgo"
-	"gokit/migration/acao"
+	"github.com/PhelipeViana/gokit/internal/cliui"
+	"github.com/PhelipeViana/gokit/internal/config"
+	"github.com/PhelipeViana/gokit/internal/migrationgo"
+	"github.com/PhelipeViana/gokit/migration/acao"
 )
 
 // Os seeds vivem fora das migrations, em uma pasta por tabela:
@@ -560,22 +560,26 @@ func CreateSeedFile(root string, state config.ConfigState, target string) (strin
 	if !primeiro {
 		titulo = "Atualização de " + shape.Table + " — aplicada por: gokit seed run"
 	}
+	declarationName := dynamicDeclarationName("Seeder", name)
 	content := fmt.Sprintf(`package seeds
 
 import (
-	migrate "gokit/migration"
+	migrate "github.com/PhelipeViana/gokit/migration"
 )
 
 // %s
-func Seeder() migrate.Rows {
+func %s() migrate.Rows {
 	return migrate.Rows{
 %s
 	}
 }
-`, titulo, strings.Join(literals, "\n"))
+`, titulo, declarationName, strings.Join(literals, "\n"))
 
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		return "", 0, err
+	}
+	if err := recordGeneratedFile(root, shape.Table, "seeder", path); err != nil {
+		return "", 0, fmt.Errorf("registrar seeder gerado: %w", err)
 	}
 	relative, _ := filepath.Rel(root, path)
 	if primeiro && len(literals) > 0 && !strings.Contains(literals[0], "//") {
@@ -645,7 +649,6 @@ func snapshotRows(state config.ConfigState, shape acao.Operacao, columns []strin
 
 // SeedValidate confere todos os seeders sem tocar no banco.
 func SeedValidate(root string, state config.ConfigState) error {
-	cliui.PrintTitle("GoKit · Seed Validate")
 	seeds, err := loadSeeds(root, state)
 	var loadErr *LoadError
 	if errors.As(err, &loadErr) {

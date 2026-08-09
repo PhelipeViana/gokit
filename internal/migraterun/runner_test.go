@@ -5,8 +5,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"gokit/internal/config"
-	"gokit/internal/migrationgo"
+	"github.com/PhelipeViana/gokit/internal/config"
+	"github.com/PhelipeViana/gokit/internal/migrationgo"
 )
 
 func TestCreateScaffoldMigrationAllMethods(t *testing.T) {
@@ -43,7 +43,7 @@ func TestCreateScaffoldMigrationAllMethods(t *testing.T) {
 		t.Fatalf("falha ao criar pasta de catálogo de aliases: %v", err)
 	}
 	dslGenContent := `package alias
-import migrate "gokit/migration"
+import migrate "github.com/PhelipeViana/gokit/migration"
 var Users = migrate.Table("users")
 `
 	if err := os.WriteFile(filepath.Join(aliasDir, "dsl.gen.go"), []byte(dslGenContent), 0644); err != nil {
@@ -56,7 +56,7 @@ var Users = migrate.Table("users")
 		t.Fatalf("falha ao criar pasta de catálogo de views: %v", err)
 	}
 	viewGenContent := `package view
-import migrate "gokit/migration"
+import migrate "github.com/PhelipeViana/gokit/migration"
 var VwUsers = migrate.RegisteredView("vw_users")
 `
 	if err := os.WriteFile(filepath.Join(viewDir, "dsl.gen.go"), []byte(viewGenContent), 0644); err != nil {
@@ -114,7 +114,7 @@ func TestLoadCatalogTablesAndViews(t *testing.T) {
 		t.Fatalf("falha ao criar pasta de catálogo de aliases: %v", err)
 	}
 	dslGenContent := `package alias
-import migrate "gokit/migration"
+import migrate "github.com/PhelipeViana/gokit/migration"
 var Roles = migrate.Table("roles")
 var Users = migrate.Table("users")
 `
@@ -128,7 +128,7 @@ var Users = migrate.Table("users")
 		t.Fatalf("falha ao criar pasta de catálogo de views: %v", err)
 	}
 	viewGenContent := `package view
-import migrate "gokit/migration"
+import migrate "github.com/PhelipeViana/gokit/migration"
 var VwUsers = migrate.RegisteredView("vw_users")
 var VwReports = migrate.RegisteredView("vw_reports")
 `
