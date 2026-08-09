@@ -230,6 +230,12 @@ func Run(root string, state config.ConfigState) error {
 	if err := SeedRun(root, state, true); err != nil {
 		return err
 	}
+	if err := GenerateDocumentation(root, state); err != nil {
+		return cliui.NewUserError(
+			"As migrations foram aplicadas, mas a documentação não pôde ser atualizada.",
+			err.Error(),
+		)
+	}
 
 	fmt.Println("\n" + cliui.Success("✓ Migrations atualizadas na conexão padrão."))
 	return nil

@@ -112,6 +112,7 @@ func InitReloadPipeline() ReloadPipeline {
 		},
 		Group3: []ReloadStep{
 			{Name: "refresh_catalog", Description: "Reconstruir catálogo de autocomplete do Core (dsl.gen.go)"},
+			{Name: "generate_docs", Description: "Gerar documentação automática do banco e das migrations"},
 		},
 	}
 }
@@ -141,6 +142,8 @@ func executeStep(step *ReloadStep, state config.ConfigState) error {
 		err = executeFactories(step, state)
 	case "refresh_catalog":
 		err = refreshCoreCatalog(step, state)
+	case "generate_docs":
+		err = generateDocumentation(step, state)
 	case "align_directories":
 		err = alignDirectories(step, state)
 	case "normalize_declarations":
@@ -526,6 +529,15 @@ func refreshCoreCatalog(step *ReloadStep, state config.ConfigState) error {
 		return err
 	}
 	step.Message = "Autocompletes do Core gerados."
+	return nil
+}
+
+func generateDocumentation(step *ReloadStep, state config.ConfigState) error {
+	if err := GenerateDocumentation(".", state); err != nil {
+		step.Message = fmt.Sprintf("Falha ao gerar documentação: %v", err)
+		return err
+	}
+	step.Message = "database.md e migrations.md atualizados."
 	return nil
 }
 
