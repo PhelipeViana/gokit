@@ -518,17 +518,35 @@ MYSQL_SCHEMA=gokit_onboarding
   # SQL Server (Descomente para usar)
   # mssql:
   #   image: mcr.microsoft.com/mssql/server:2022-latest
+  #   platform: linux/amd64
+  #   ulimits:
+  #     memlock:
+  #       soft: -1
+  #       hard: -1
+  #     nofile:
+  #       soft: 65536
+  #       hard: 65536
   #   environment:
   #     ACCEPT_EULA: "Y"
+  #     MSSQL_PID: Developer
   #     MSSQL_SA_PASSWORD: "Gokit_password123!"
   #   ports:
   #     - "%d:1433"
+  #   volumes:
+  #     - mssql_data:/var/opt/mssql
+  #   healthcheck:
+  #     test: ["CMD-SHELL", "/opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P \"$${MSSQL_SA_PASSWORD}\" -C -Q \"SELECT 1\" || /opt/mssql-tools/bin/sqlcmd -S localhost -U sa -P \"$${MSSQL_SA_PASSWORD}\" -Q \"SELECT 1\""]
+  #     interval: 10s
+  #     timeout: 5s
+  #     retries: 30
+  #     start_period: 60s
 
 volumes:
   go_modules:
   mysql_data:
   # postgres_data:
   # oracle_data:
+  # mssql_data:
 `, localGoKitVolume, mysqlPort, postgresPort, oraclePort, mssqlPort)
 	_ = os.WriteFile("docker-compose.yml", []byte(dockerCompose), 0o644)
 

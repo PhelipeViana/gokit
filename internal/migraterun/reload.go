@@ -111,6 +111,7 @@ func InitReloadPipeline() ReloadPipeline {
 			{Name: "run_factories", Description: "Verificar e rodar factories ativas"},
 		},
 		Group3: []ReloadStep{
+			{Name: "generate_orm", Description: "Gerar mapeamentos ORM a partir das migrations"},
 			{Name: "refresh_catalog", Description: "Reconstruir catálogo de autocomplete do Core (dsl.gen.go)"},
 			{Name: "generate_docs", Description: "Gerar documentação automática do banco e das migrations"},
 		},
@@ -142,6 +143,8 @@ func executeStep(step *ReloadStep, state config.ConfigState) error {
 		err = executeFactories(step, state)
 	case "refresh_catalog":
 		err = refreshCoreCatalog(step, state)
+	case "generate_orm":
+		err = generateORM(step, state)
 	case "generate_docs":
 		err = generateDocumentation(step, state)
 	case "align_directories":
@@ -520,6 +523,16 @@ func executeFactories(step *ReloadStep, state config.ConfigState) error {
 // ==========================================
 // GRUPO 3: METADADOS
 // ==========================================
+
+func generateORM(step *ReloadStep, state config.ConfigState) error {
+	count, err := GenerateORM(".", state)
+	if err != nil {
+		step.Message = fmt.Sprintf("Falha ao gerar ORM: %v", err)
+		return err
+	}
+	step.Message = fmt.Sprintf("%d entidade(s) mapeada(s) em fields.gen.go.", count)
+	return nil
+}
 
 func refreshCoreCatalog(step *ReloadStep, state config.ConfigState) error {
 	folder := filepath.Join(".", filepath.FromSlash(state.Config.Output.Migrate))
