@@ -96,7 +96,7 @@ func lastLines(text string, limit int) string {
 		return strings.Join(lines, "\n")
 	}
 	hidden := len(lines) - limit
-	return fmt.Sprintf("... (%d linha(s) acima omitidas)\n%s", hidden, strings.Join(lines[hidden:], "\n"))
+	return i18n.Tf("tui_lines_omitted", hidden, strings.Join(lines[hidden:], "\n"))
 }
 
 type model struct {
@@ -323,11 +323,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case "enter", "y":
 				m.state = stateUpdateRunning
 				m.migrationOutput, m.migrationError = captureOutput(func() error {
-					fmt.Printf("Baixando GoKit %s...\n", m.updateStatus.Remote)
+					fmt.Printf(i18n.T("tui_downloading"), m.updateStatus.Remote)
 					if err := updater.RunSelfUpdate(); err != nil {
 						return err
 					}
-					fmt.Println("Atualização instalada. Reiniciando o GoKit...")
+					fmt.Println(i18n.T("tui_update_installed"))
 					return updater.RestartProcess()
 				})
 				if m.migrationError == nil {
@@ -471,7 +471,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					return m, nil
 				case "alter_view", "drop_view":
 					if len(views) == 0 {
-						m.migrationError = fmt.Errorf("nenhuma view disponível no catálogo. Crie uma view primeiro")
+						m.migrationError = i18n.Errf("tui_no_view_available")
 						m.state = stateMigrationCreating
 						return m, tea.ClearScreen
 					}
@@ -480,7 +480,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					return m, nil
 				default:
 					if len(tables) == 0 {
-						m.migrationError = fmt.Errorf("nenhuma tabela disponível no catálogo. Crie uma tabela usando CreateTable primeiro")
+						m.migrationError = i18n.Errf("tui_no_table_available")
 						m.state = stateMigrationCreating
 						return m, tea.ClearScreen
 					}
@@ -786,14 +786,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						return err
 					}
 					fmt.Printf("Tabela:  %s\n", table)
-					fmt.Printf("Origem:  %s (%s)\n", m.configData.ActiveClient, m.configData.ActiveDialect)
-					fmt.Printf("Arquivo: %s\n", path)
+					fmt.Printf(i18n.T("tui_source"), m.configData.ActiveClient, m.configData.ActiveDialect)
+					fmt.Printf(i18n.T("tui_file"), path)
 					if total == 0 {
-						fmt.Println("\nEsqueleto criado — preencha os valores.")
+						fmt.Println("\n" + i18n.T("tui_skeleton_created"))
 					} else {
-						fmt.Printf("Linhas:  %d (retrato do banco)\n", total)
+						fmt.Printf(i18n.T("tui_rows"), total)
 					}
-					fmt.Println("Depois: gokit seed validate  e  gokit seed run")
+					fmt.Println(i18n.T("tui_seed_next_steps"))
 					return nil
 				})
 				return m, tea.ClearScreen
@@ -854,7 +854,7 @@ func (m model) renderActionResult(successTitle, failureTitle string) string {
 		if errors.As(m.migrationError, &userError) {
 			body.WriteString("\n" + lipgloss.NewStyle().Foreground(lipgloss.Color("#FF5555")).Render("❌ "+userError.Message) + "\n")
 			if solution := strings.TrimSpace(userError.Solution); solution != "" {
-				body.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("#FFB86C")).Render("⚠️ Possíveis soluções:") + "\n")
+				body.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("#FFB86C")).Render(i18n.T("tui_solutions")) + "\n")
 				for _, line := range strings.Split(solution, "\n") {
 					body.WriteString("   • " + line + "\n")
 				}
@@ -863,7 +863,7 @@ func (m model) renderActionResult(successTitle, failureTitle string) string {
 			body.WriteString("\n" + lipgloss.NewStyle().Foreground(lipgloss.Color("#FF5555")).Render("❌ "+m.migrationError.Error()) + "\n")
 		}
 	}
-	body.WriteString("\nPressione " + lipgloss.NewStyle().Bold(true).Render("[Enter]") + " para voltar.")
+	body.WriteString("\n" + i18n.Tf("tui_back_hint", lipgloss.NewStyle().Bold(true).Render("[Enter]")))
 
 	return body.String() + "\n"
 }
@@ -887,9 +887,9 @@ func getDialectIcon(dialect string) string {
 func getEnvLabel(env string) string {
 	e := strings.ToLower(strings.TrimSpace(env))
 	if e == "production" || e == "prod" {
-		return lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#FF5555")).Render("🚨 PRODUÇÃO (production)")
+		return lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#FF5555")).Render(i18n.T("tui_env_production"))
 	}
-	return lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#50FA7B")).Render("💻 LOCAL (development)")
+	return lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#50FA7B")).Render(i18n.T("tui_env_local"))
 }
 
 func (m model) statusColor() lipgloss.Color {
@@ -923,7 +923,7 @@ func renderScrollableList(items []string, cursor, limit int) string {
 	start, end := visibleRange(len(items), cursor, limit)
 	var output strings.Builder
 	if start > 0 {
-		output.WriteString(itemStyle.Render("  ↑ mais opções") + "\n")
+		output.WriteString(itemStyle.Render(i18n.T("tui_more_above")) + "\n")
 	}
 	for index := start; index < end; index++ {
 		if index == cursor {
@@ -933,7 +933,7 @@ func renderScrollableList(items []string, cursor, limit int) string {
 		}
 	}
 	if end < len(items) {
-		output.WriteString(itemStyle.Render("  ↓ mais opções") + "\n")
+		output.WriteString(itemStyle.Render(i18n.T("tui_more_below")) + "\n")
 	}
 	return output.String()
 }
@@ -959,15 +959,15 @@ func (m model) renderHeader() string {
 	} else if strings.HasPrefix(environment, "PROD") {
 		environment = "PROD"
 	}
-	database := "💾 banco não configurado"
+	database := i18n.T("tui_db_unset")
 	if m.configData.Config != nil {
 		if connection, ok := m.configData.Config.Connections[m.configData.ActiveClient]; ok {
 			database = getDialectIcon(connection.Dialect)
 		}
 	}
-	connectionStatus := "✅ sucesso"
+	connectionStatus := i18n.T("tui_status_ok")
 	if !m.configData.ConnSuccess {
-		connectionStatus = "❌ falha"
+		connectionStatus = i18n.T("tui_status_fail")
 	}
 	line := fmt.Sprintf("%s  │  %s  │  %s", environment, database, connectionStatus)
 	if m.updateStatus.Available {
@@ -989,9 +989,9 @@ func doctorCheck(ok bool, success, failure string) string {
 func (m model) renderDoctorList() string {
 	state, report := m.configData, m.doctorReport
 	var output strings.Builder
-	output.WriteString(lipgloss.NewStyle().Bold(true).Render("🔍 Doctor · checklist") + "\n\n")
+	output.WriteString(lipgloss.NewStyle().Bold(true).Render(i18n.T("tui_doctor_checklist")) + "\n\n")
 	output.WriteString(doctorCheck(state.ConfigFileError == nil && state.Config != nil,
-		"gokit.json carregado", fmt.Sprintf("gokit.json inválido: %v", state.ConfigFileError)) + "\n")
+		i18n.T("tui_cfg_loaded"), i18n.Tf("tui_cfg_invalid", state.ConfigFileError)) + "\n")
 
 	envOK := false
 	envPath := ".env"
@@ -1000,29 +1000,29 @@ func (m model) renderDoctorList() string {
 		_, err := os.Stat(envPath)
 		envOK = err == nil && len(state.EnvWarnings) == 0
 	}
-	envFailure := "arquivo de ambiente ausente ou inválido: " + envPath
+	envFailure := i18n.T("tui_env_invalid") + envPath
 	if len(state.EnvWarnings) > 0 {
-		envFailure = "variáveis duplicadas: " + strings.Join(state.EnvWarnings, ", ")
+		envFailure = i18n.T("tui_env_duplicates") + strings.Join(state.EnvWarnings, ", ")
 	}
-	output.WriteString(doctorCheck(envOK, "ambiente carregado: "+envPath, envFailure) + "\n")
+	output.WriteString(doctorCheck(envOK, i18n.T("tui_env_loaded")+envPath, envFailure) + "\n")
 	output.WriteString(doctorCheck(report.ConnSuccess,
-		"conexão com o banco estabelecida", fmt.Sprintf("falha na conexão: %v", report.ConnError)) + "\n")
+		i18n.T("tui_db_connected"), i18n.Tf("tui_conn_failed", report.ConnError)) + "\n")
 	if report.ConnSuccess {
 		output.WriteString(doctorCheck(report.VersionOK,
-			"versão compatível: "+report.Version, "versão incompatível: "+report.VersionWarning) + "\n")
+			i18n.T("tui_version_ok")+report.Version, i18n.T("tui_version_bad")+report.VersionWarning) + "\n")
 		output.WriteString(doctorCheck(report.DDLSuccess,
-			"permissões CREATE/DROP disponíveis", fmt.Sprintf("permissões DDL falharam: %v", report.DDLError)) + "\n")
+			i18n.T("tui_ddl_ok"), i18n.Tf("tui_ddl_fail", report.DDLError)) + "\n")
 	} else {
-		output.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("#6272A4")).Render("⚠️ versão e permissões não verificadas sem conexão") + "\n")
+		output.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("#6272A4")).Render(i18n.T("tui_no_conn_skipped")) + "\n")
 	}
 	if m.updateStatus.Error != nil {
-		output.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("#F1FA8C")).Render("⚠️ não foi possível consultar atualizações no Git") + "\n")
+		output.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("#F1FA8C")).Render(i18n.T("tui_update_check_failed")) + "\n")
 	} else if m.updateStatus.Available {
-		output.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("#F1FA8C")).Render("⚠️ atualização do exec disponível: "+m.updateStatus.Remote) + "\n")
+		output.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("#F1FA8C")).Render(i18n.T("tui_update_exec_available")+m.updateStatus.Remote) + "\n")
 	} else {
-		output.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("#50FA7B")).Render("✅ exec atualizado") + "\n")
+		output.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("#50FA7B")).Render(i18n.T("tui_exec_current")) + "\n")
 	}
-	output.WriteString("\n" + footerStyle.Render("[Enter] Voltar ao menu principal"))
+	output.WriteString("\n" + footerStyle.Render(i18n.T("tui_nav_back_main")))
 	return output.String()
 }
 
@@ -1043,7 +1043,7 @@ func (m model) View() string {
 		}
 
 	case stateMigrationsMenu:
-		s.WriteString("  " + lipgloss.NewStyle().Bold(true).Render("Opções de Migração:") + "\n\n")
+		s.WriteString("  " + lipgloss.NewStyle().Bold(true).Render(i18n.T("tui_mig_options")) + "\n\n")
 		for i, choice := range m.migrationsChoices {
 			if m.cursor == i {
 				s.WriteString(selectedItemStyle.Render("➔ "+choice) + "\n")
@@ -1054,13 +1054,13 @@ func (m model) View() string {
 
 	case stateMigrationInputName:
 		method := m.methodsChoices[m.methodCursor]
-		s.WriteString("  " + lipgloss.NewStyle().Bold(true).Render(fmt.Sprintf("Scaffold Migration (%s)", method)) + "\n\n")
+		s.WriteString("  " + lipgloss.NewStyle().Bold(true).Render(fmt.Sprintf(i18n.T("tui_scaffold_migration"), method)) + "\n\n")
 
 		if m.selectedTableOrView != "" {
-			s.WriteString(fmt.Sprintf("  Tabela selecionada: %s\n\n", lipgloss.NewStyle().Foreground(lipgloss.Color("#50FA7B")).Render("alias."+m.selectedTableOrView)))
-			s.WriteString("  Digite o nome descritivo do campo/constraint (ex: email ou chk_users_age):\n")
+			s.WriteString(fmt.Sprintf(i18n.T("tui_selected_table"), lipgloss.NewStyle().Foreground(lipgloss.Color("#50FA7B")).Render("alias."+m.selectedTableOrView)))
+			s.WriteString(i18n.T("tui_prompt_field_name"))
 		} else {
-			s.WriteString("  Digite o nome descritivo da nova estrutura (ex: users ou active_users):\n")
+			s.WriteString(i18n.T("tui_prompt_struct_name"))
 		}
 
 		inputBoxStyle := lipgloss.NewStyle().
@@ -1071,38 +1071,38 @@ func (m model) View() string {
 
 		inputText := m.migrationNameInput
 		if inputText == "" {
-			inputText = lipgloss.NewStyle().Foreground(lipgloss.Color("#6272A4")).Render("digite aqui...")
+			inputText = lipgloss.NewStyle().Foreground(lipgloss.Color("#6272A4")).Render(i18n.T("tui_input_placeholder"))
 		}
 		s.WriteString("  " + inputBoxStyle.Render(inputText) + "\n\n")
-		s.WriteString("  [Enter] Confirmar e Gerar  ·  [Esc] Voltar\n")
+		s.WriteString(i18n.T("tui_nav_confirm_generate"))
 
 	case stateMigrationSelectMethod:
-		s.WriteString("  " + lipgloss.NewStyle().Bold(true).Render("Selecione o Tipo de Operação:") + "\n\n")
+		s.WriteString("  " + lipgloss.NewStyle().Bold(true).Render(i18n.T("tui_pick_operation")) + "\n\n")
 		s.WriteString(renderScrollableList(m.methodsChoices, m.methodCursor, m.navigationListLimit()))
-		s.WriteString(footerStyle.Render(fmt.Sprintf("%d de %d", m.methodCursor+1, len(m.methodsChoices))) + "\n")
-		s.WriteString("\n  [Enter] Avançar  ·  [Esc] Voltar para Opções\n")
+		s.WriteString(footerStyle.Render(i18n.Tf("tui_counter", m.methodCursor+1, len(m.methodsChoices))) + "\n")
+		s.WriteString(i18n.T("tui_nav_next_options"))
 
 	case stateMigrationSelectTable:
-		s.WriteString("  " + lipgloss.NewStyle().Bold(true).Render("Selecione a Tabela no Catálogo:") + "\n\n")
+		s.WriteString("  " + lipgloss.NewStyle().Bold(true).Render(i18n.T("tui_pick_table")) + "\n\n")
 
 		if len(m.availableTables) == 0 {
-			s.WriteString("  " + lipgloss.NewStyle().Foreground(lipgloss.Color("#FF5555")).Render("Nenhuma tabela encontrada no catálogo.") + "\n")
+			s.WriteString("  " + lipgloss.NewStyle().Foreground(lipgloss.Color("#FF5555")).Render(i18n.T("tui_no_tables")) + "\n")
 		} else {
 			s.WriteString(renderScrollableList(m.availableTables, m.tableCursor, 12))
-			s.WriteString(footerStyle.Render(fmt.Sprintf("%d de %d", m.tableCursor+1, len(m.availableTables))) + "\n")
+			s.WriteString(footerStyle.Render(i18n.Tf("tui_counter", m.tableCursor+1, len(m.availableTables))) + "\n")
 		}
-		s.WriteString("\n  [Enter] Avançar  ·  [Esc] Voltar para Ações\n")
+		s.WriteString(i18n.T("tui_nav_next_actions"))
 
 	case stateMigrationSelectView:
-		s.WriteString("  " + lipgloss.NewStyle().Bold(true).Render("Selecione a View no Catálogo:") + "\n\n")
+		s.WriteString("  " + lipgloss.NewStyle().Bold(true).Render(i18n.T("tui_pick_view")) + "\n\n")
 
 		if len(m.availableViews) == 0 {
-			s.WriteString("  " + lipgloss.NewStyle().Foreground(lipgloss.Color("#FF5555")).Render("Nenhuma view encontrada no catálogo.") + "\n")
+			s.WriteString("  " + lipgloss.NewStyle().Foreground(lipgloss.Color("#FF5555")).Render(i18n.T("tui_no_views")) + "\n")
 		} else {
 			s.WriteString(renderScrollableList(m.availableViews, m.viewCursor, 12))
-			s.WriteString(footerStyle.Render(fmt.Sprintf("%d de %d", m.viewCursor+1, len(m.availableViews))) + "\n")
+			s.WriteString(footerStyle.Render(i18n.Tf("tui_counter", m.viewCursor+1, len(m.availableViews))) + "\n")
 		}
-		s.WriteString("\n  [Enter] Confirmar e Gerar  ·  [Esc] Voltar para Ações\n")
+		s.WriteString(i18n.T("tui_nav_confirm_actions"))
 
 	case stateMigrationCreating:
 		var content string
@@ -1110,58 +1110,54 @@ func (m model) View() string {
 		if m.migrationError != nil {
 			borderCol = "#FF5555" // Vermelho
 			content = fmt.Sprintf(
-				"%s Erro ao criar migration:\n\n"+
-					"%s\n\n"+
-					"Pressione %s para voltar.",
-				lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#FF5555")).Render("[Erro]"),
+				i18n.T("tui_mig_create_error")+i18n.T("tui_back_hint"),
+				lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#FF5555")).Render(i18n.T("tui_tag_error")),
 				lipgloss.NewStyle().Foreground(lipgloss.Color("#FF5555")).Render(m.migrationError.Error()),
 				lipgloss.NewStyle().Bold(true).Render("[Enter]"),
 			)
 		} else {
 			content = fmt.Sprintf(
-				"%s Criando nova estrutura de migration...\n\n"+
-					"%s\n\n"+
-					"Pressione %s para voltar.",
-				lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#00F0FF")).Render("[Ação]"),
-				lipgloss.NewStyle().Foreground(lipgloss.Color("#50FA7B")).Render(fmt.Sprintf("✔ Migration criada com sucesso: %s", m.migrationOutput)),
+				i18n.T("tui_mig_creating")+i18n.T("tui_back_hint"),
+				lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#00F0FF")).Render(i18n.T("tui_tag_action")),
+				lipgloss.NewStyle().Foreground(lipgloss.Color("#50FA7B")).Render(i18n.Tf("tui_mig_created", m.migrationOutput)),
 				lipgloss.NewStyle().Bold(true).Render("[Enter]"),
 			)
 		}
 		s.WriteString(actionBoxStyle.Copy().BorderForeground(lipgloss.Color(borderCol)).Render(content) + "\n")
 
 	case stateMigrationRunning:
-		s.WriteString(m.renderActionResult("Migrations aplicadas.", "Erro ao executar migrações:"))
+		s.WriteString(m.renderActionResult(i18n.T("tui_migrations_applied"), i18n.T("tui_migrate_failed")))
 
 	case stateMigrationRollingBack:
-		s.WriteString(m.renderActionResult("Arquivos removidos e banco reconstruído.", "Rollback de desenvolvimento falhou:"))
+		s.WriteString(m.renderActionResult(i18n.T("tui_rollback_done"), i18n.T("tui_rollback_failed")))
 
 	case stateMigrationRollbackConfirmDelete:
 		plan, err := migraterun.PlanDevelopmentRollback(".")
 		if err != nil {
-			s.WriteString(actionBoxStyle.Copy().BorderForeground(lipgloss.Color("#FF5555")).Render("Não foi possível preparar o rollback:\n\n"+err.Error()+"\n\n[Esc] Voltar") + "\n")
+			s.WriteString(actionBoxStyle.Copy().BorderForeground(lipgloss.Color("#FF5555")).Render(i18n.T("tui_rollback_prepare_failed")+err.Error()+"\n\n[Esc] Voltar") + "\n")
 			break
 		}
 		var files strings.Builder
 		for _, path := range plan.Files {
 			files.WriteString("  - " + path + "\n")
 		}
-		s.WriteString(actionBoxStyle.Copy().BorderForeground(lipgloss.Color("#FFB86C")).Render("Confirmação 1/2 · Excluir arquivos não comitados\n\n"+files.String()+"\n[Enter/Y] Confirmar  ·  [Esc/N] Cancelar") + "\n")
+		s.WriteString(actionBoxStyle.Copy().BorderForeground(lipgloss.Color("#FFB86C")).Render(i18n.T("tui_confirm_delete_files")+files.String()+"\n[Enter/Y] Confirmar  ·  [Esc/N] Cancelar") + "\n")
 
 	case stateMigrationRollbackConfirmFresh:
-		s.WriteString(actionBoxStyle.Copy().BorderForeground(lipgloss.Color("#FF5555")).Render("Confirmação 2/2 · Reconstruir banco development\n\nAs tabelas administradas pelo GoKit serão removidas e recriadas.\n\n[Enter/Y] Confirmar  ·  [Esc/N] Cancelar") + "\n")
+		s.WriteString(actionBoxStyle.Copy().BorderForeground(lipgloss.Color("#FF5555")).Render(i18n.T("tui_confirm_rebuild_db")) + "\n")
 
 	case stateUpdateConfirm:
-		content := fmt.Sprintf("Atualização disponível\n\nVersão atual: %s\nNova versão:  %s\n\nO executável será substituído e reiniciado.\n\n[Enter/Y] Atualizar  ·  [Esc/N] Agora não", m.updateStatus.Local, m.updateStatus.Remote)
+		content := fmt.Sprintf(i18n.T("tui_update_available"), m.updateStatus.Local, m.updateStatus.Remote)
 		s.WriteString(actionBoxStyle.Copy().BorderForeground(lipgloss.Color("#F1FA8C")).Render(content) + "\n")
 
 	case stateUpdateRunning:
-		s.WriteString(m.renderActionResult("GoKit atualizado.", "Não foi possível atualizar o GoKit:"))
+		s.WriteString(m.renderActionResult(i18n.T("tui_update_done"), i18n.T("tui_update_failed")))
 
 	case stateMigrationValidating:
-		s.WriteString(m.renderActionResult("Corpus válido.", "A pré-validação encontrou problemas:"))
+		s.WriteString(m.renderActionResult(i18n.T("tui_corpus_valid"), i18n.T("tui_prevalidation_failed")))
 
 	case stateSeedMenu:
-		s.WriteString("  " + lipgloss.NewStyle().Bold(true).Render("Opções de Seed:") + "\n\n")
+		s.WriteString("  " + lipgloss.NewStyle().Bold(true).Render(i18n.T("tui_seed_options")) + "\n\n")
 		for i, choice := range m.seedChoices {
 			if m.cursor == i {
 				s.WriteString(selectedItemStyle.Render("➔ "+choice) + "\n")
@@ -1170,16 +1166,16 @@ func (m model) View() string {
 			}
 		}
 		s.WriteString("\n" + footerStyle.Render(fmt.Sprintf(
-			"O seed fixo é lido de %s (%s) e gravado na migration que cria a tabela.",
+			i18n.T("tui_seed_from_db_hint"),
 			m.configData.ActiveClient, m.configData.ActiveDialect)) + "\n")
 
 	case stateSeedSelectTable:
-		s.WriteString("  " + lipgloss.NewStyle().Bold(true).Render("Gerar Seed a partir do banco") + "\n\n")
+		s.WriteString("  " + lipgloss.NewStyle().Bold(true).Render(i18n.T("tui_seed_from_db")) + "\n\n")
 		if len(m.seedTables) == 0 {
-			s.WriteString("  Nenhuma tabela com chave primária declarada.\n\n  [Enter] Voltar\n")
+			s.WriteString(i18n.T("tui_no_pk_table"))
 			break
 		}
-		s.WriteString(footerStyle.Render(fmt.Sprintf("Lendo de: %s (%s)",
+		s.WriteString(footerStyle.Render(fmt.Sprintf(i18n.T("tui_reading_from"),
 			m.configData.ActiveClient, m.configData.ActiveDialect)) + "\n\n")
 
 		// Janela de 12 itens em volta do cursor: a lista tem centenas de tabelas.
@@ -1207,14 +1203,14 @@ func (m model) View() string {
 		if end < len(m.seedTables) {
 			s.WriteString(itemStyle.Render("↓ ...") + "\n")
 		}
-		s.WriteString("\n" + footerStyle.Render(fmt.Sprintf("%d de %d  ·  [Enter] Gerar  ·  [q] Sair",
+		s.WriteString("\n" + footerStyle.Render(i18n.Tf("tui_footer_seed",
 			m.seedCursor+1, len(m.seedTables))) + "\n")
 
 	case stateSeedCreating:
-		s.WriteString(m.renderActionResult("Concluído.", "A operação de seed falhou:"))
+		s.WriteString(m.renderActionResult(i18n.T("tui_done"), i18n.T("tui_seed_failed")))
 
 	case stateFactoryMenu:
-		s.WriteString("  " + lipgloss.NewStyle().Bold(true).Render("Opções de Factory:") + "\n\n")
+		s.WriteString("  " + lipgloss.NewStyle().Bold(true).Render(i18n.T("tui_fact_options")) + "\n\n")
 		for i, choice := range m.factoryChoices {
 			if m.cursor == i {
 				s.WriteString(selectedItemStyle.Render("➔ "+choice) + "\n")
@@ -1223,16 +1219,16 @@ func (m model) View() string {
 			}
 		}
 		s.WriteString("\n" + footerStyle.Render(fmt.Sprintf(
-			"Popular limpa a tabela antes de inserir. Destino: %s (%s).",
+			i18n.T("tui_factory_truncates"),
 			m.configData.ActiveClient, m.configData.ActiveDialect)) + "\n")
 
 	case stateFactorySelectTable:
-		s.WriteString("  " + lipgloss.NewStyle().Bold(true).Render("Popular uma tabela") + "\n\n")
+		s.WriteString("  " + lipgloss.NewStyle().Bold(true).Render(i18n.T("tui_populate_one")) + "\n\n")
 		if len(m.factoryTables) == 0 {
-			s.WriteString("  Nenhuma factory encontrada.\n\n  [Enter] Voltar\n")
+			s.WriteString(i18n.T("tui_no_factory"))
 			break
 		}
-		s.WriteString(footerStyle.Render("As tabelas de que ela depende entram junto, na ordem certa.") + "\n\n")
+		s.WriteString(footerStyle.Render(i18n.T("tui_factory_deps")) + "\n\n")
 
 		// Janela de 12 itens em volta do cursor: a lista tem centenas de tabelas.
 		start := m.factoryCursor - 6
@@ -1259,20 +1255,20 @@ func (m model) View() string {
 		if end < len(m.factoryTables) {
 			s.WriteString(itemStyle.Render("↓ ...") + "\n")
 		}
-		s.WriteString("\n" + footerStyle.Render(fmt.Sprintf("%d de %d  ·  [Enter] Popular  ·  [q] Sair",
+		s.WriteString("\n" + footerStyle.Render(i18n.Tf("tui_footer_factory",
 			m.factoryCursor+1, len(m.factoryTables))) + "\n")
 
 	case stateFactoryRunning:
-		s.WriteString(m.renderActionResult("Concluído.", "A operação de factory falhou:"))
+		s.WriteString(m.renderActionResult(i18n.T("tui_done"), i18n.T("tui_factory_failed")))
 
 	case stateReloadRunning:
 		if m.actionRunning {
 			frames := []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
 			frame := frames[m.spinnerFrame%len(frames)]
-			s.WriteString(lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#F1FA8C")).Render(frame+" Reload em andamento...") + "\n")
-			s.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("#6272A4")).Render("  Preparando ambiente, banco, migrations e catálogos. Aguarde.") + "\n")
+			s.WriteString(lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#F1FA8C")).Render(frame+i18n.T("tui_reload_running")) + "\n")
+			s.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("#6272A4")).Render(i18n.T("tui_reload_wait")) + "\n")
 		} else {
-			s.WriteString(m.renderActionResult("Reload concluído com sucesso.", "A operação de reload falhou:"))
+			s.WriteString(m.renderActionResult(i18n.T("tui_reload_done"), i18n.T("tui_reload_failed")))
 		}
 
 	case stateConfigScreen:

@@ -39,7 +39,7 @@ func (f *fakeRunner) QueryRowContext(ctx context.Context, query string, args ...
 func TestGetWithCompilaComDialetoDaConexao(t *testing.T) {
 	m, f := testModel()
 	fr := &fakeRunner{dialect: orm.Postgres, schema: "public"}
-	_, err := m.Where(f.Nome.Igual("silva")).GetWith(context.Background(), fr)
+	_, err := m.Where(f.Nome.Equal("silva")).GetWith(context.Background(), fr)
 	if !errors.Is(err, errBoom) {
 		t.Fatalf("esperava o erro do runner, veio: %v", err)
 	}
@@ -54,7 +54,7 @@ func TestGetWithCompilaComDialetoDaConexao(t *testing.T) {
 
 func TestSemConexaoRetornaErro(t *testing.T) {
 	m, f := testModel()
-	if _, err := m.Where(f.Id.Igual(1)).Get(context.Background()); !errors.Is(err, orm.ErrSemConexao) {
-		t.Fatalf("esperava ErrSemConexao, veio: %v", err)
+	if _, err := m.Where(f.Id.Equal(1)).Get(context.Background()); !errors.Is(err, orm.ErrNoConnection) {
+		t.Fatalf("esperava ErrNoConnection, veio: %v", err)
 	}
 }

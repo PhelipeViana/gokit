@@ -310,8 +310,8 @@ func HasMany[P any, C any](
 	return nil
 }
 
-// campoPorColuna acha o Field de uma coluna na entidade (case-insensitive).
-func campoPorColuna(e EntityFields, coluna string) (Field, bool) {
+// fieldByColumn acha o Field de uma coluna na entidade (case-insensitive).
+func fieldByColumn(e EntityFields, coluna string) (Field, bool) {
 	for _, f := range e.Fields {
 		if strings.EqualFold(f.Column, coluna) {
 			return f, true
@@ -320,8 +320,8 @@ func campoPorColuna(e EntityFields, coluna string) (Field, bool) {
 	return Field{}, false
 }
 
-// comChave garante a coluna de junção na projeção do nó.
-func comChave(cols []Field, chave Field) []Field {
+// withKey garante a coluna de junção na projeção do nó.
+func withKey(cols []Field, chave Field) []Field {
 	for _, c := range cols {
 		if strings.EqualFold(c.Column, chave.Column) {
 			return cols
@@ -354,7 +354,7 @@ func loadChildren[C any](ctx context.Context, r Runner, child Model[C], keyField
 		if end > len(ids) {
 			end = len(ids)
 		}
-		q := child.Where(keyField.Em(ids[start:end]...))
+		q := child.Where(keyField.In(ids[start:end]...))
 		if len(rel.wheres) > 0 {
 			q = q.Where(rel.wheres...)
 		}
@@ -366,10 +366,10 @@ func loadChildren[C any](ctx context.Context, r Runner, child Model[C], keyField
 			//  - a que liga este nó ao PAI (keyField);
 			//  - a que liga este nó a cada FILHO aninhado (parentCol do filho) —
 			//    sem ela, projetar o nó apagaria as relações de dentro dele.
-			cols := comChave(rel.selects, keyField.Field)
+			cols := withKey(rel.selects, keyField.Field)
 			for _, filho := range rel.nested {
-				if f, ok := campoPorColuna(child.Entity, filho.parentCol); ok {
-					cols = comChave(cols, f)
+				if f, ok := fieldByColumn(child.Entity, filho.parentCol); ok {
+					cols = withKey(cols, f)
 				}
 			}
 			q = q.selectFields(cols)

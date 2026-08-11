@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/PhelipeViana/gokit/internal/config"
+	"github.com/PhelipeViana/gokit/internal/i18n"
 	"github.com/PhelipeViana/gokit/migration/acao"
 )
 
@@ -29,7 +30,7 @@ type migrationDocumentationMeta struct {
 // das migrations. Pode ser chamado por migrate, reload e futuros processos.
 func GenerateDocumentation(root string, state config.ConfigState) error {
 	if state.Config == nil {
-		return fmt.Errorf("gokit.json não carregado")
+		return i18n.Errf("dcs_config_missing")
 	}
 	files, err := loadPlans(filepath.Join(root, filepath.FromSlash(state.Config.Output.Migrate)))
 	if err != nil {
@@ -37,7 +38,7 @@ func GenerateDocumentation(root string, state config.ConfigState) error {
 	}
 	docsDir := filepath.Join(root, filepath.FromSlash(state.Config.Output.Docs))
 	if err := os.MkdirAll(docsDir, 0o755); err != nil {
-		return fmt.Errorf("criar diretório de documentação: %w", err)
+		return i18n.Errf("dcs_mkdir_failed", err)
 	}
 
 	generatedAt := time.Now()
@@ -54,11 +55,11 @@ func GenerateDocumentation(root string, state config.ConfigState) error {
 func writeGeneratedDocument(path, content string) error {
 	temporary := path + ".tmp"
 	if err := os.WriteFile(temporary, []byte(content), 0o644); err != nil {
-		return fmt.Errorf("gerar %s: %w", filepath.Base(path), err)
+		return i18n.Errf("dcs_generate_failed", filepath.Base(path), err)
 	}
 	if err := os.Rename(temporary, path); err != nil {
 		_ = os.Remove(temporary)
-		return fmt.Errorf("publicar %s: %w", filepath.Base(path), err)
+		return i18n.Errf("dcs_publish_failed", filepath.Base(path), err)
 	}
 	return nil
 }
@@ -72,14 +73,14 @@ func renderDatabaseDocumentation(files []migrationFile, generatedAt time.Time) s
 	sort.Strings(names)
 
 	var out strings.Builder
-	out.WriteString("# 🗄️ Documentação do Schema de Banco de Dados\n\n")
-	out.WriteString("> [!NOTE]\n> Documento gerado automaticamente a partir das migrations Go. Não edite manualmente.\n>\n")
-	out.WriteString("> 🕒 **Última atualização:** `" + generatedAt.Format("02/01/2006 às 15:04:05") + "`\n\n---\n")
+	out.WriteString(i18n.T("dcs_schema_title"))
+	out.WriteString(i18n.T("dcs_schema_note"))
+	out.WriteString(i18n.T("dcs_updated_at") + generatedAt.Format("02/01/2006 às 15:04:05") + "`\n\n---\n")
 	for _, name := range names {
 		table := tables[name]
-		out.WriteString(fmt.Sprintf("\n## 📋 Tabela: `%s`\n\n", table.Name))
-		out.WriteString(fmt.Sprintf("> 📊 **Resumo:** %d colunas | %d restrições\n\n", len(table.Columns), len(table.Constraints)))
-		out.WriteString("### 📌 Colunas\n\n| Nº | Campo | Descrição | Obrigatório | Tipo de dado | Chave |\n|---:|:---|:---|:---:|:---|:---:|\n")
+		out.WriteString(i18n.Tf("dcs_table_heading", table.Name))
+		out.WriteString(i18n.Tf("dcs_table_summary", len(table.Columns), len(table.Constraints)))
+		out.WriteString(i18n.T("dcs_columns_header"))
 		for index, column := range table.Columns {
 			required := "✅ SIM"
 			if column.Nullable {
@@ -97,7 +98,7 @@ func renderDatabaseDocumentation(files []migrationFile, generatedAt time.Time) s
 			out.WriteString(fmt.Sprintf("| %d | `%s` | %s | %s | `%s` | %s |\n", index+1, column.Name, humanizeName(column.Name), required, documentedType(column), key))
 		}
 		if len(table.Constraints) > 0 {
-			out.WriteString("\n### 🔒 Restrições\n\n")
+			out.WriteString(i18n.T("dcs_constraints_header"))
 			for _, constraint := range table.Constraints {
 				out.WriteString("- " + constraint + "\n")
 			}
@@ -266,7 +267,7 @@ func loadMigrationDocumentationMeta(root, docsDir string, files []migrationFile)
 	if output, err := exec.Command("git", "-C", root, "rev-parse", "--show-toplevel").Output(); err == nil {
 		projectRoot = strings.TrimSpace(string(output))
 	}
-	fallbackAuthor := "Não identificado"
+	fallbackAuthor := i18n.T("dcs_unidentified")
 	if output, err := exec.Command("git", "config", "user.name").Output(); err == nil && strings.TrimSpace(string(output)) != "" {
 		fallbackAuthor = strings.TrimSpace(string(output))
 	}
@@ -305,18 +306,18 @@ func renderMigrationsDocumentation(files []migrationFile, metadata map[string]mi
 	ordered := append([]migrationFile(nil), files...)
 	sort.SliceStable(ordered, func(i, j int) bool { return ordered[i].ID > ordered[j].ID })
 	var out strings.Builder
-	out.WriteString("# ⚙️ Histórico de Migrations\n\n")
-	out.WriteString("> [!NOTE]\n> Documento gerado automaticamente. As migrations estão em ordem decrescente de criação.\n>\n")
-	out.WriteString("> 🕒 **Última atualização:** `" + generatedAt.Format("02/01/2006 às 15:04:05") + "`\n\n")
+	out.WriteString(i18n.T("dcs_history_title"))
+	out.WriteString(i18n.T("dcs_history_note"))
+	out.WriteString(i18n.T("dcs_updated_at") + generatedAt.Format("02/01/2006 às 15:04:05") + "`\n\n")
 	for _, file := range ordered {
 		meta := metadata[file.ID]
 		author := meta.Author
 		if meta.Uncommitted {
-			author += " · não commitada"
+			author += i18n.T("dcs_not_committed")
 		}
 		out.WriteString(fmt.Sprintf("- [`%s`](%s)\n", file.Name, meta.Link))
-		out.WriteString(fmt.Sprintf("  - **Criada por:** %s\n  - **Criada em:** `%s`\n  - **ID:** `%s`\n  - **Checksum:** `%s`\n", author, file.Plan.CreatedAt.Format("02/01/2006 15:04:05"), file.ID, file.Checksum))
-		out.WriteString("  - **Operações:**\n")
+		out.WriteString(i18n.Tf("dcs_migration_meta", author, file.Plan.CreatedAt.Format("02/01/2006 15:04:05"), file.ID, file.Checksum))
+		out.WriteString(i18n.T("dcs_operations_label"))
 		for _, op := range file.Plan.Operations {
 			target := op.Table
 			if target == "" {
@@ -324,10 +325,10 @@ func renderMigrationsDocumentation(files []migrationFile, metadata map[string]mi
 			}
 			out.WriteString(fmt.Sprintf("    - `%s` em `%s`", op.Kind, target))
 			if op.Column != nil {
-				out.WriteString(fmt.Sprintf(" — coluna `%s`", op.Column.Name))
+				out.WriteString(i18n.Tf("dcs_op_column", op.Column.Name))
 			}
 			if len(op.Columns) > 0 {
-				out.WriteString(fmt.Sprintf(" — %d coluna(s)", len(op.Columns)))
+				out.WriteString(i18n.Tf("dcs_op_columns", len(op.Columns)))
 			}
 			out.WriteString("\n")
 		}

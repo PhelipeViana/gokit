@@ -2,7 +2,6 @@ package migraterun
 
 import (
 	"encoding/json"
-	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -12,6 +11,7 @@ import (
 	"time"
 
 	"github.com/PhelipeViana/gokit/internal/config"
+	"github.com/PhelipeViana/gokit/internal/i18n"
 )
 
 type generationEntry struct {
@@ -43,7 +43,7 @@ func recordGeneratedFile(root, target, kind, path string) error {
 	absPath, _ := filepath.Abs(path)
 	relative, err := filepath.Rel(absRoot, absPath)
 	if err != nil || strings.HasPrefix(relative, "..") {
-		return fmt.Errorf("arquivo gerado fora do projeto: %s", path)
+		return i18n.Errf("gen_outside_project", path)
 	}
 	journal, _ := loadGenerationJournal(root)
 	journal.Entries = append(journal.Entries, generationEntry{
@@ -104,7 +104,7 @@ func PlanDevelopmentRollback(root string) (DevelopmentRollbackPlan, error) {
 		return DevelopmentRollbackPlan{}, err
 	}
 	if len(journal.Entries) == 0 {
-		return DevelopmentRollbackPlan{}, fmt.Errorf("nenhum arquivo gerado foi registrado")
+		return DevelopmentRollbackPlan{}, i18n.Errf("gen_nothing_registered")
 	}
 	target := journal.Entries[len(journal.Entries)-1].Target
 	plan := DevelopmentRollbackPlan{Target: target}
@@ -120,7 +120,7 @@ func PlanDevelopmentRollback(root string) (DevelopmentRollbackPlan, error) {
 			continue
 		}
 		if gitTracks(root, entry.Path) {
-			plan.Blocked = append(plan.Blocked, entry.Path+" (já rastreado pelo Git)")
+			plan.Blocked = append(plan.Blocked, entry.Path+i18n.T("gen_already_tracked"))
 			continue
 		}
 		plan.Files = append(plan.Files, entry.Path)
@@ -142,7 +142,7 @@ func removeRollbackFiles(root string, plan DevelopmentRollbackPlan) error {
 		path := filepath.Join(absRoot, filepath.FromSlash(relative))
 		resolved, err := filepath.Abs(path)
 		if err != nil || (resolved != absRoot && !strings.HasPrefix(resolved, absRoot+string(filepath.Separator))) {
-			return fmt.Errorf("caminho inseguro no diário: %s", relative)
+			return i18n.Errf("gen_unsafe_path", relative)
 		}
 		if err := os.Remove(resolved); err != nil && !os.IsNotExist(err) {
 			return err

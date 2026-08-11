@@ -1,0 +1,100 @@
+{
+  "[go]": {
+    "editor.defaultFormatter": "golang.go",
+    "editor.formatOnSave": true,
+    "editor.insertSpaces": false
+  },
+  "[markdown]": {
+    "editor.wordWrap": "on"
+  },
+  "files.associations": {
+    "*.http": "http"
+  },
+  "files.eol": "\n",
+  "todo-tree.filtering.excludeGlobs": [
+    "**/*.gen.go",
+    "**/vendor/**",
+    "**/node_modules/**",
+    "**/internal/gokit/.state/**",
+    "**/internal/gokit/gokit_local/**"
+  ],
+  "todo-tree.general.tagGroups": {
+    "FIXME": [
+      "FIXME",
+      "CORRIGIR",
+      "CORREGIR"
+    ],
+    "HACK": [
+      "HACK",
+      "GAMBIARRA",
+      "APAÑO"
+    ],
+    "NOTE": [
+      "NOTE",
+      "NOTA"
+    ],
+    "TODO": [
+      "TODO",
+      "TAREFA",
+      "PENDENTE",
+      "TAREA",
+      "PENDIENTE"
+    ],
+    "WARN": [
+      "WARN",
+      "ATENCAO",
+      "ATENÇÃO",
+      "ATENCION",
+      "ATENCIÓN"
+    ]
+  },
+  "todo-tree.general.tags": [
+    "TODO",
+    "TAREFA",
+    "PENDENTE",
+    "TAREA",
+    "PENDIENTE",
+    "FIXME",
+    "CORRIGIR",
+    "CORREGIR",
+    "NOTE",
+    "NOTA",
+    "WARN",
+    "ATENCAO",
+    "ATENÇÃO",
+    "ATENCION",
+    "ATENCIÓN",
+    "HACK",
+    "GAMBIARRA",
+    "APAÑO",
+    "GOKIT"
+  ],
+  "todo-tree.highlights.customHighlight": {
+    "FIXME": {
+      "foreground": "#FF5555",
+      "type": "tag"
+    },
+    "GOKIT": {
+      "foreground": "#50FA7B",
+      "type": "tag"
+    },
+    "HACK": {
+      "foreground": "#BD93F9",
+      "type": "tag"
+    },
+    "NOTE": {
+      "foreground": "#8BE9FD",
+      "type": "tag"
+    },
+    "TODO": {
+      "foreground": "#F1FA8C",
+      "type": "tag"
+    },
+    "WARN": {
+      "foreground": "#FFB86C",
+      "type": "tag"
+    }
+  },
+  "todo-tree.tree.groupedByTag": true,
+  "todo-tree.tree.showCountsInTree": true
+}

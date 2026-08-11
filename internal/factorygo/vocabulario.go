@@ -10,10 +10,10 @@ package factorygo
 // aqui.
 
 import (
-	"fmt"
 	"sort"
 	"strings"
 
+	"github.com/PhelipeViana/gokit/internal/i18n"
 	migrate "github.com/PhelipeViana/gokit/migration"
 )
 
@@ -265,7 +265,7 @@ func variadicos(f func(...string) any) chamadaFake {
 func inteiroVariadicos(f func(int, ...string) any) chamadaFake {
 	return func(args []any) (any, error) {
 		if len(args) < 1 {
-			return nil, fmt.Errorf("exige ao menos o índice")
+			return nil, i18n.Errf("fcp_needs_index")
 		}
 		primeiro, err := inteiroEm(args, 0)
 		if err != nil {
@@ -282,7 +282,7 @@ func inteiroVariadicos(f func(int, ...string) any) chamadaFake {
 func doisInteirosVariadicos(f func(int, int, ...string) any) chamadaFake {
 	return func(args []any) (any, error) {
 		if len(args) < 2 {
-			return nil, fmt.Errorf("exige ao menos índice e tamanho")
+			return nil, i18n.Errf("fcp_needs_index_size")
 		}
 		primeiro, err := inteiroEm(args, 0)
 		if err != nil {
@@ -302,7 +302,7 @@ func doisInteirosVariadicos(f func(int, int, ...string) any) chamadaFake {
 
 func exigeQuantidade(args []any, esperado int) error {
 	if len(args) != esperado {
-		return fmt.Errorf("exige %d argumento(s), recebeu %d", esperado, len(args))
+		return i18n.Errf("fcp_needs_n_got", esperado, len(args))
 	}
 	return nil
 }
@@ -314,14 +314,14 @@ func inteiroEm(args []any, posicao int) (int, error) {
 	case int:
 		return valor, nil
 	}
-	return 0, fmt.Errorf("o argumento %d precisa ser um número inteiro, veio %T", posicao+1, args[posicao])
+	return 0, i18n.Errf("fcp_arg_int", posicao+1, args[posicao])
 }
 
 func textoEm(args []any, posicao int) (string, error) {
 	if texto, ok := args[posicao].(string); ok {
 		return texto, nil
 	}
-	return "", fmt.Errorf("o argumento %d precisa ser um texto entre aspas, veio %T", posicao+1, args[posicao])
+	return "", i18n.Errf("fcp_arg_text", posicao+1, args[posicao])
 }
 
 func textosDe(args []any, inicio int) ([]string, error) {

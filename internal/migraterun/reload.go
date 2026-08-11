@@ -14,7 +14,7 @@ import (
 	"time"
 
 	"github.com/PhelipeViana/gokit/internal/config"
-	"github.com/PhelipeViana/gokit/internal/gomodule"
+	"github.com/PhelipeViana/gokit/internal/i18n"
 	"github.com/PhelipeViana/gokit/internal/migrationgo"
 )
 
@@ -39,55 +39,55 @@ type ReloadPipeline struct {
 func RunReload(state config.ConfigState) error {
 	pipeline := InitReloadPipeline()
 
-	fmt.Println("\nAmbiente & infraestrutura")
+	fmt.Println(i18n.T("rel_group_env"))
 	for i := range pipeline.Group1 {
 		step := &pipeline.Group1[i]
 		fmt.Printf("  → %s... ", step.Description)
 		err := executeStep(step, state)
 		if err != nil {
 			fmt.Printf("\033[31m✗ FALHA\033[0m\n")
-			fmt.Printf("\n  \033[31mErro:\033[0m %s\n", step.Message)
+			fmt.Printf(i18n.T("rel_error_line"), step.Message)
 			if step.Suggestion != "" {
-				fmt.Printf("  \033[36mSugestão:\033[0m %s\n\n", step.Suggestion)
+				fmt.Printf(i18n.T("rel_hint_line"), step.Suggestion)
 			}
-			return fmt.Errorf("reload abortado no Grupo 1: %w", err)
+			return i18n.Errf("rel_aborted_g1", err)
 		}
 		fmt.Printf("\033[32m✓ OK\033[0m\n")
 	}
 
-	fmt.Println("\nOperações & execução")
+	fmt.Println(i18n.T("rel_group_exec"))
 	for i := range pipeline.Group2 {
 		step := &pipeline.Group2[i]
 		fmt.Printf("  → %s... ", step.Description)
 		err := executeStep(step, state)
 		if err != nil {
 			fmt.Printf("\033[31m✗ FALHA\033[0m\n")
-			fmt.Printf("\n  \033[31mErro:\033[0m %s\n", step.Message)
+			fmt.Printf(i18n.T("rel_error_line"), step.Message)
 			if step.Suggestion != "" {
-				fmt.Printf("  \033[36mSugestão:\033[0m %s\n\n", step.Suggestion)
+				fmt.Printf(i18n.T("rel_hint_line"), step.Suggestion)
 			}
-			return fmt.Errorf("reload abortado no Grupo 2: %w", err)
+			return i18n.Errf("rel_aborted_g2", err)
 		}
 		fmt.Printf("\033[32m✓ OK\033[0m (%s)\n", step.Message)
 	}
 
-	fmt.Println("\nGeração & catálogos")
+	fmt.Println(i18n.T("rel_group_gen"))
 	for i := range pipeline.Group3 {
 		step := &pipeline.Group3[i]
 		fmt.Printf("  → %s... ", step.Description)
 		err := executeStep(step, state)
 		if err != nil {
 			fmt.Printf("\033[31m✗ FALHA\033[0m\n")
-			fmt.Printf("\n  \033[31mErro:\033[0m %s\n", step.Message)
+			fmt.Printf(i18n.T("rel_error_line"), step.Message)
 			if step.Suggestion != "" {
-				fmt.Printf("  \033[36mSugestão:\033[0m %s\n\n", step.Suggestion)
+				fmt.Printf(i18n.T("rel_hint_line"), step.Suggestion)
 			}
-			return fmt.Errorf("reload abortado no Grupo 3: %w", err)
+			return i18n.Errf("rel_aborted_g3", err)
 		}
 		fmt.Printf("\033[32m✓ OK\033[0m\n")
 	}
 
-	fmt.Println("\n\033[32m✔ Projeto redefinido e alinhado com sucesso!\033[0m")
+	fmt.Println(i18n.T("rel_success"))
 	fmt.Println()
 	return nil
 }
@@ -96,24 +96,25 @@ func RunReload(state config.ConfigState) error {
 func InitReloadPipeline() ReloadPipeline {
 	return ReloadPipeline{
 		Group1: []ReloadStep{
-			{Name: "check_docker", Description: "Verificar estado e daemon do Docker"},
-			{Name: "check_go", Description: "Verificar o toolchain Golang configurado"},
-			{Name: "check_config", Description: "Validar gokit.json e .env"},
-			{Name: "align_directories", Description: "Alinhar diretórios físicos com o gokit.json"},
-			{Name: "normalize_declarations", Description: "Normalizar nomes dinâmicos de migrations e seeders"},
-			{Name: "go_tidy", Description: "Atualizar dependências (go mod tidy)"},
-			{Name: "start_database", Description: "Iniciar o banco ativo pelo Docker Compose"},
-			{Name: "check_conn", Description: "Ping físico com o Banco de Dados"},
+			{Name: "check_docker", Description: i18n.T("rel_step_docker")},
+			{Name: "check_go", Description: i18n.T("rel_step_toolchain")},
+			{Name: "check_config", Description: i18n.T("rel_step_config")},
+			{Name: "align_directories", Description: i18n.T("rel_step_dirs")},
+			{Name: "normalize_declarations", Description: i18n.T("rel_step_names")},
+			{Name: "go_tidy", Description: i18n.T("rel_step_tidy")},
+			{Name: "start_database", Description: i18n.T("rel_step_compose")},
+			{Name: "check_conn", Description: i18n.T("rel_step_ping")},
 		},
 		Group2: []ReloadStep{
-			{Name: "run_migrations", Description: "Verificar e executar migrations pendentes"},
-			{Name: "run_seeds", Description: "Verificar e executar seeders pendentes"},
-			{Name: "run_factories", Description: "Verificar e rodar factories ativas"},
+			{Name: "run_migrations", Description: i18n.T("rel_step_migrations")},
+			{Name: "run_seeds", Description: i18n.T("rel_step_seeders")},
+			{Name: "run_factories", Description: i18n.T("rel_step_factories")},
 		},
 		Group3: []ReloadStep{
-			{Name: "generate_orm", Description: "Gerar mapeamentos ORM a partir das migrations"},
-			{Name: "refresh_catalog", Description: "Reconstruir catálogo de autocomplete do Core (dsl.gen.go)"},
-			{Name: "generate_docs", Description: "Gerar documentação automática do banco e das migrations"},
+			{Name: "generate_orm", Description: i18n.T("rel_step_orm")},
+			{Name: "refresh_catalog", Description: i18n.T("rel_step_dsl")},
+			{Name: "generate_docs", Description: i18n.T("rel_step_docs")},
+			{Name: "generate_editors", Description: i18n.T("rel_step_editors")},
 		},
 	}
 }
@@ -147,12 +148,14 @@ func executeStep(step *ReloadStep, state config.ConfigState) error {
 		err = generateORM(step, state)
 	case "generate_docs":
 		err = generateDocumentation(step, state)
+	case "generate_editors":
+		err = generateEditorSettings(step)
 	case "align_directories":
 		err = alignDirectories(step, state)
 	case "normalize_declarations":
 		var changed int
 		changed, err = normalizeLegacyDeclarations(".", state)
-		step.Message = fmt.Sprintf("%d declaração(ões) normalizada(s)", changed)
+		step.Message = i18n.Tf("rel_names_normalized", changed)
 	}
 
 	if err != nil {
@@ -186,8 +189,8 @@ func checkGoInstallation(step *ReloadStep, state config.ConfigState) error {
 	cmd := goCommand(state, "version")
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		step.Message = fmt.Sprintf("Toolchain Go não pôde ser executado: %s", strings.TrimSpace(string(out)))
-		step.Suggestion = "Verifique go.execution e go.docker_service no gokit.json ou instale o Go no PATH para execução host."
+		step.Message = i18n.Tf("rel_toolchain_failed", strings.TrimSpace(string(out)))
+		step.Suggestion = i18n.T("rel_toolchain_failed_fix")
 		return err
 	}
 	step.Message = strings.TrimSpace(string(out))
@@ -196,16 +199,16 @@ func checkGoInstallation(step *ReloadStep, state config.ConfigState) error {
 
 func checkConfigStructure(step *ReloadStep, state config.ConfigState) error {
 	if state.ConfigFileError != nil {
-		step.Message = fmt.Sprintf("Arquivo gokit.json ou .env inválido: %v", state.ConfigFileError)
-		step.Suggestion = "Verifique o formato JSON do internal/gokit/gokit.json ou remova-o para gerar o scaffold de onboarding."
+		step.Message = i18n.Tf("rel_config_invalid", state.ConfigFileError)
+		step.Suggestion = i18n.T("rel_config_invalid_fix")
 		return state.ConfigFileError
 	}
 	if state.Config == nil {
-		step.Message = "Configuração do GoKit vazia ou nula."
-		step.Suggestion = "Execute o GoKit na pasta para criar o gokit.json."
+		step.Message = i18n.T("rel_config_empty")
+		step.Suggestion = i18n.T("rel_config_empty_fix")
 		return errors.New("config nula")
 	}
-	step.Message = "gokit.json e .env válidos."
+	step.Message = i18n.T("rel_config_ok")
 	return nil
 }
 
@@ -214,11 +217,11 @@ func startActiveDatabase(step *ReloadStep, state config.ConfigState) error {
 		return errors.New("config nula")
 	}
 	if state.Config.Go.DockerAutoStart != nil && !*state.Config.Go.DockerAutoStart {
-		step.Message = "Inicialização automática desativada no gokit.json."
+		step.Message = i18n.T("rel_autostart_off")
 		return nil
 	}
 	if err := config.TestDatabaseConnection(state.ActiveDialect, state.ActiveURL); err == nil {
-		step.Message = "Banco já estava em execução."
+		step.Message = i18n.T("rel_db_already_up")
 		return nil
 	}
 
@@ -230,9 +233,9 @@ func startActiveDatabase(step *ReloadStep, state config.ConfigState) error {
 		}
 	}
 	if composeFile == "" {
-		step.Message = "Arquivo Docker Compose não encontrado na raiz do projeto."
-		step.Suggestion = "Crie o serviço do banco ou defina go.docker_auto_start como false para usar um banco externo."
-		return errors.New("docker compose ausente")
+		step.Message = i18n.T("rel_compose_missing")
+		step.Suggestion = i18n.T("rel_compose_missing_fix")
+		return errors.New(i18n.T("rel_compose_missing_err"))
 	}
 
 	serviceByDialect := map[string]string{
@@ -245,25 +248,25 @@ func startActiveDatabase(step *ReloadStep, state config.ConfigState) error {
 	}
 	service := serviceByDialect[strings.ToLower(strings.TrimSpace(state.ActiveDialect))]
 	if service == "" {
-		step.Message = fmt.Sprintf("Não há serviço Docker conhecido para o dialeto %q.", state.ActiveDialect)
-		return fmt.Errorf("dialeto sem servico docker: %s", state.ActiveDialect)
+		step.Message = i18n.Tf("rel_no_service_for_dialect", state.ActiveDialect)
+		return i18n.Errf("rel_no_service_for_dialect_err", state.ActiveDialect)
 	}
 
 	servicesCmd := exec.Command("docker", "compose", "-f", composeFile, "config", "--services")
 	servicesOut, err := servicesCmd.CombinedOutput()
 	if err != nil || !containsComposeService(string(servicesOut), service) {
-		step.Message = fmt.Sprintf("O serviço %q não está ativo no %s.", service, composeFile)
-		step.Suggestion = fmt.Sprintf("Descomente ou adicione o serviço %q no Docker Compose para o dialeto %s.", service, state.ActiveDialect)
+		step.Message = i18n.Tf("rel_service_inactive", service, composeFile)
+		step.Suggestion = i18n.Tf("rel_service_inactive_fix", service, state.ActiveDialect)
 		if err != nil {
 			return err
 		}
-		return fmt.Errorf("servico docker %s ausente", service)
+		return i18n.Errf("rel_service_inactive_err", service)
 	}
 
 	upCmd := exec.Command("docker", "compose", "-f", composeFile, "up", "-d", service)
 	if out, err := upCmd.CombinedOutput(); err != nil {
-		step.Message = fmt.Sprintf("Falha ao iniciar o serviço %s: %s", service, strings.TrimSpace(string(out)))
-		step.Suggestion = fmt.Sprintf("Execute 'docker compose up -d %s' para inspecionar o erro.", service)
+		step.Message = i18n.Tf("rel_service_start_failed", service, strings.TrimSpace(string(out)))
+		step.Suggestion = i18n.Tf("rel_service_start_failed_fix", service)
 		return err
 	}
 
@@ -272,13 +275,13 @@ func startActiveDatabase(step *ReloadStep, state config.ConfigState) error {
 	for time.Now().Before(deadline) {
 		lastErr = config.TestDatabaseConnection(state.ActiveDialect, state.ActiveURL)
 		if lastErr == nil {
-			step.Message = fmt.Sprintf("Serviço %s iniciado e banco pronto.", service)
+			step.Message = i18n.Tf("rel_service_ready", service)
 			return nil
 		}
 		time.Sleep(2 * time.Second)
 	}
-	step.Message = fmt.Sprintf("O serviço %s iniciou, mas o banco não ficou pronto: %v", service, lastErr)
-	step.Suggestion = fmt.Sprintf("Inspecione os logs com 'docker compose logs %s'.", service)
+	step.Message = i18n.Tf("rel_service_not_ready", service, lastErr)
+	step.Suggestion = i18n.Tf("rel_service_not_ready_fix", service)
 	return lastErr
 }
 
@@ -293,25 +296,25 @@ func containsComposeService(output, expected string) bool {
 
 func checkConnection(step *ReloadStep, state config.ConfigState) error {
 	if state.ActiveDialect == "" || state.ActiveURL == "" {
-		step.Message = "Sem conexão ativa configurada."
-		step.Suggestion = "Verifique se a variável DB_DIALECT no .env está preenchida corretamente."
+		step.Message = i18n.T("rel_no_active_conn")
+		step.Suggestion = i18n.T("rel_no_active_conn_fix")
 		return errors.New("sem conexão")
 	}
 	err := config.TestDatabaseConnection(state.ActiveDialect, state.ActiveURL)
 	if err != nil {
-		step.Message = fmt.Sprintf("Falha ao se conectar ao banco %s: %v", state.ActiveDialect, err)
-		step.Suggestion = "Certifique-se de que o container do banco de dados está rodando e a porta está correta no .env."
+		step.Message = i18n.Tf("rel_conn_failed", state.ActiveDialect, err)
+		step.Suggestion = i18n.T("rel_conn_failed_fix")
 		return err
 	}
-	step.Message = "Banco de dados respondendo ao Ping."
+	step.Message = i18n.T("rel_ping_ok")
 	return nil
 }
 
 func checkDockerState(step *ReloadStep) error {
 	// 1. Checa se o CLI do Docker está instalado no sistema
 	if _, err := exec.LookPath("docker"); err != nil {
-		step.Message = "CLI do Docker não foi localizado no PATH do sistema."
-		step.Suggestion = "Instale o Docker Desktop em https://www.docker.com/products/docker-desktop/ ou ative a CLI do Docker no seu ambiente."
+		step.Message = i18n.T("rel_docker_cli_missing")
+		step.Suggestion = i18n.T("rel_docker_cli_missing_fix")
 		return err
 	}
 
@@ -319,7 +322,7 @@ func checkDockerState(step *ReloadStep) error {
 	infoCmd := exec.Command("docker", "info")
 	infoCmd.Stderr = io.Discard
 	if err := infoCmd.Run(); err == nil {
-		step.Message = "Daemon Docker ativo e comunicando."
+		step.Message = i18n.T("rel_docker_ok")
 		return nil
 	}
 
@@ -343,14 +346,14 @@ func checkDockerState(step *ReloadStep) error {
 		infoRetry := exec.Command("docker", "info")
 		infoRetry.Stderr = io.Discard
 		if err := infoRetry.Run(); err == nil {
-			step.Message = "Daemon Docker estava inativo, mas foi iniciado automaticamente com sucesso."
+			step.Message = i18n.T("rel_docker_autostarted")
 			return nil
 		}
 	}
 
-	step.Message = "Docker Daemon inativo (não foi possível estabelecer comunicação com o socket do Docker)."
-	step.Suggestion = "Inicie o aplicativo Docker Desktop ou o serviço do Docker (ex: 'colima start' ou 'systemctl start docker')."
-	return errors.New("docker daemon offline")
+	step.Message = i18n.T("rel_docker_offline")
+	step.Suggestion = i18n.T("rel_docker_offline_fix")
+	return errors.New(i18n.T("rel_docker_offline_err"))
 }
 
 func runGoModTidy(step *ReloadStep, state config.ConfigState) error {
@@ -358,31 +361,31 @@ func runGoModTidy(step *ReloadStep, state config.ConfigState) error {
 	if state.Config != nil {
 		goConfig = state.Config.Go
 	}
-	result, err := gomodule.Ensure(gomodule.Options{
-		Root:         ".",
-		Module:       goConfig.Module,
-		GoKitModule:  goConfig.GoKitModule,
-		GoKitVersion: goConfig.GoKitVersion,
-		GoKitLocal:   goConfig.GoKitLocal,
-	})
+	// AplicarModo em vez de montar as opções aqui: a política de go.mod e
+	// go.work é do modo declarado, e ter uma segunda montagem neste arquivo foi
+	// justamente o que deixou o replace entrar sem ninguém pedir.
+	result, err := config.AplicarModo(".", state.Config)
 	if err != nil {
-		step.Message = fmt.Sprintf("Não foi possível alinhar o go.mod: %v", err)
-		step.Suggestion = "Revise a seção go do internal/gokit/gokit.json, especialmente module e gokit_local."
+		step.Message = i18n.Tf("rel_gomod_failed", err)
+		step.Suggestion = i18n.T("rel_gomod_failed_fix")
 		return err
 	}
 
 	cmd := goCommand(state, "mod", "tidy")
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		step.Message = fmt.Sprintf("Falha ao executar 'go mod tidy': %s", strings.TrimSpace(string(out)))
-		step.Suggestion = "Verifique a sintaxe dos arquivos .go ou remova caminhos de 'replace' inválidos no seu go.mod."
+		step.Message = i18n.Tf("rel_tidy_failed", strings.TrimSpace(string(out)))
+		step.Suggestion = i18n.T("rel_tidy_failed_fix")
 		return err
 	}
-	mode := "host"
+	execucao := "host"
 	if strings.EqualFold(goConfig.Execution, "docker") {
-		mode = "docker"
+		execucao = "docker"
 	}
-	step.Message = fmt.Sprintf("Módulo %s alinhado com %s via %s.", result.Module, result.GoKitModule, mode)
+	// O modo entra na linha de resultado de propósito: é a informação que diz se
+	// este projeto está compilando contra o gokit local ou contra a versão
+	// publicada, e é o que o usuário precisa ver sem abrir arquivo nenhum.
+	step.Message = i18n.Tf("rel_module_aligned_mode", result.Module, result.GoKitModule, result.Mode, execucao)
 	return nil
 }
 
@@ -394,13 +397,13 @@ func executePendingMigrations(step *ReloadStep, state config.ConfigState) error 
 	folder := filepath.Join(".", filepath.FromSlash(state.Config.Output.Migrate))
 	files, err := loadPlans(folder)
 	if err != nil {
-		step.Message = fmt.Sprintf("Erro ao carregar migrations locais: %v", err)
+		step.Message = i18n.Tf("rel_load_migrations_failed", err)
 		return err
 	}
 
 	db, err := sql.Open(getDriverName(state.ActiveDialect), state.ActiveURL)
 	if err != nil {
-		step.Message = fmt.Sprintf("Erro ao abrir banco: %v", err)
+		step.Message = i18n.Tf("rel_open_db_failed", err)
 		return err
 	}
 	defer db.Close()
@@ -436,12 +439,12 @@ func executePendingMigrations(step *ReloadStep, state config.ConfigState) error 
 		// Roda as migrations automaticamente
 		err = Run(".", state)
 		if err != nil {
-			step.Message = fmt.Sprintf("%d migration(s) pendente(s) não foram aplicadas; veja o diagnóstico e as soluções abaixo.", pendingCount)
+			step.Message = i18n.Tf("rel_migrations_pending", pendingCount)
 			return err
 		}
-		step.Message = fmt.Sprintf("%d aplicadas", pendingCount)
+		step.Message = i18n.Tf("rel_applied_n", pendingCount)
 	} else {
-		step.Message = "Nenhuma pendente"
+		step.Message = i18n.T("rel_none_pending_f")
 	}
 	return nil
 }
@@ -450,7 +453,7 @@ func executePendingSeeds(step *ReloadStep, state config.ConfigState) error {
 	// Checa se há seeders locais
 	tables, err := SeedableTables(".", state)
 	if err != nil {
-		step.Message = "Nenhum seeder pendente"
+		step.Message = i18n.T("rel_no_seeder_pending")
 		return nil
 	}
 
@@ -494,12 +497,12 @@ func executePendingSeeds(step *ReloadStep, state config.ConfigState) error {
 	if pendingCount > 0 {
 		err = SeedRun(".", state, false)
 		if err != nil {
-			step.Message = fmt.Sprintf("Erro ao rodar seeders: %v", err)
+			step.Message = i18n.Tf("rel_seeders_failed", err)
 			return err
 		}
-		step.Message = fmt.Sprintf("%d aplicados", pendingCount)
+		step.Message = i18n.Tf("rel_applied_n_m", pendingCount)
 	} else {
-		step.Message = "Nenhum pendente"
+		step.Message = i18n.T("rel_none_pending_m")
 	}
 	return nil
 }
@@ -507,16 +510,16 @@ func executePendingSeeds(step *ReloadStep, state config.ConfigState) error {
 func executeFactories(step *ReloadStep, state config.ConfigState) error {
 	tables, err := FactoryTables(".", state)
 	if err != nil || len(tables) == 0 {
-		step.Message = "Nenhuma ativa"
+		step.Message = i18n.T("rel_none_active")
 		return nil
 	}
 	// Roda as factories (cria 10 linhas em cada tabela configurada)
 	err = FactoryRun(".", state, nil)
 	if err != nil {
-		step.Message = fmt.Sprintf("Falha ao popular factories: %v", err)
+		step.Message = i18n.Tf("rel_factories_failed", err)
 		return err
 	}
-	step.Message = fmt.Sprintf("%d tabelas populadas", len(tables))
+	step.Message = i18n.Tf("rel_tables_populated", len(tables))
 	return nil
 }
 
@@ -527,10 +530,10 @@ func executeFactories(step *ReloadStep, state config.ConfigState) error {
 func generateORM(step *ReloadStep, state config.ConfigState) error {
 	count, err := GenerateORM(".", state)
 	if err != nil {
-		step.Message = fmt.Sprintf("Falha ao gerar ORM: %v", err)
+		step.Message = i18n.Tf("rel_orm_failed", err)
 		return err
 	}
-	step.Message = fmt.Sprintf("%d entidade(s) mapeada(s) em fields.gen.go.", count)
+	step.Message = i18n.Tf("rel_orm_done", count)
 	return nil
 }
 
@@ -538,19 +541,37 @@ func refreshCoreCatalog(step *ReloadStep, state config.ConfigState) error {
 	folder := filepath.Join(".", filepath.FromSlash(state.Config.Output.Migrate))
 	err := migrationgo.RefreshCatalog(".", folder)
 	if err != nil {
-		step.Message = fmt.Sprintf("Falha ao reconstruir catálogo: %v", err)
+		step.Message = i18n.Tf("rel_catalog_failed", err)
 		return err
 	}
-	step.Message = "Autocompletes do Core gerados."
+	step.Message = i18n.T("rel_catalog_done")
 	return nil
 }
 
 func generateDocumentation(step *ReloadStep, state config.ConfigState) error {
 	if err := GenerateDocumentation(".", state); err != nil {
-		step.Message = fmt.Sprintf("Falha ao gerar documentação: %v", err)
+		step.Message = i18n.Tf("rel_docs_failed", err)
 		return err
 	}
-	step.Message = "database.md e migrations.md atualizados."
+	step.Message = i18n.T("rel_docs_done")
+	return nil
+}
+
+// generateEditorSettings mantém a configuração de editor em dia sem passar por
+// cima de escolha do usuário: arquivo existente fica como está, e o
+// settings.json só recebe as chaves que faltam.
+func generateEditorSettings(step *ReloadStep) error {
+	escritos, aviso, err := config.EscreverConfigEditores(".")
+	if err != nil {
+		step.Message = err.Error()
+		return err
+	}
+	step.Suggestion = aviso
+	if len(escritos) == 0 {
+		step.Message = i18n.T("edt_already_current")
+		return nil
+	}
+	step.Message = i18n.Tf("edt_written", len(escritos))
 	return nil
 }
 
@@ -616,7 +637,7 @@ func alignDirectories(step *ReloadStep, state config.ConfigState) error {
 			if dirExistsAndNotEmpty(alternatePath) && !dirExistsAndNotEmpty(configuredPath) {
 				err := moveFiles(alternatePath, configuredPath)
 				if err != nil {
-					step.Message = fmt.Sprintf("Erro ao migrar pasta %s para %s: %v", alternatePath, configuredPath, err)
+					step.Message = i18n.Tf("rel_dir_move_failed", alternatePath, configuredPath, err)
 					return err
 				}
 				migratedCount++
@@ -625,9 +646,9 @@ func alignDirectories(step *ReloadStep, state config.ConfigState) error {
 	}
 
 	if migratedCount > 0 {
-		step.Message = fmt.Sprintf("%d diretórios alinhados", migratedCount)
+		step.Message = i18n.Tf("rel_dirs_aligned_n", migratedCount)
 	} else {
-		step.Message = "Diretórios já alinhados"
+		step.Message = i18n.T("rel_dirs_already")
 	}
 	return nil
 }

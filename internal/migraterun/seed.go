@@ -17,6 +17,7 @@ import (
 
 	"github.com/PhelipeViana/gokit/internal/cliui"
 	"github.com/PhelipeViana/gokit/internal/config"
+	"github.com/PhelipeViana/gokit/internal/i18n"
 	"github.com/PhelipeViana/gokit/internal/migrationgo"
 	"github.com/PhelipeViana/gokit/migration/acao"
 )
@@ -196,7 +197,7 @@ func loadSeeds(root string, state config.ConfigState) ([]seedFile, error) {
 			continue
 		}
 		if !known {
-			failures.add(entry.Name(), "não existe CreateTable para a tabela %q; a pasta do seed precisa ter o nome físico da tabela", table)
+			failures.add(entry.Name(), i18n.T("sed_no_createtable_for"), table)
 			continue
 		}
 		sort.Strings(stamps)
@@ -284,11 +285,11 @@ func validateSeeds(seeds []seedFile, failures *LoadError) {
 	for _, seed := range seeds {
 		display := filepath.ToSlash(filepath.Join(seed.Table, filepath.Base(seed.Path)))
 		if len(seed.Keys) == 0 {
-			failures.add(display, "a tabela %s não declara chave primária no CreateTable; sem chave não há como distinguir inserir de editar", seed.Table)
+			failures.add(display, i18n.T("sed_no_primary_key"), seed.Table)
 			continue
 		}
 		if len(seed.Rows) == 0 {
-			failures.add(display, "Seeder() está vazio; remova o arquivo se não há dados")
+			failures.add(display, "%s", i18n.T("sed_empty"))
 			continue
 		}
 		if fixos[seed.Table] == nil {
@@ -305,7 +306,7 @@ func validateSeeds(seeds []seedFile, failures *LoadError) {
 			}
 
 			if seed.First && !informou {
-				failures.add(display, "linha %d não informa %s; o seed inicial exige ID fixo em todas as linhas",
+				failures.add(display, i18n.T("sed_row_without_id"),
 					index+1, strings.Join(seed.Keys, ", "))
 				continue
 			}
@@ -399,7 +400,7 @@ func SeedRun(root string, state config.ConfigState, onlyFirst bool) error {
 	}
 	if len(seeds) == 0 {
 		if !onlyFirst {
-			fmt.Println(cliui.Muted("Nenhum seeder encontrado."))
+			fmt.Println(cliui.Muted(i18n.T("sed_none_found")))
 		}
 		return nil
 	}
@@ -408,7 +409,7 @@ func SeedRun(root string, state config.ConfigState, onlyFirst bool) error {
 	connection := state.Config.Connections[state.ActiveClient]
 	driver := map[string]string{"oracle": "oracle", "postgres": "pgx", "mysql": "mysql", "sqlserver": "sqlserver"}[dialect]
 	if driver == "" {
-		return fmt.Errorf("dialeto não suportado: %s", dialect)
+		return i18n.Errf("run_dialect_unsupported", dialect)
 	}
 	db, err := sql.Open(driver, connection.BuildURL())
 	if err != nil {
@@ -423,7 +424,7 @@ func SeedRun(root string, state config.ConfigState, onlyFirst bool) error {
 
 	historyTable := seedHistoryTable(state)
 	if err := ensureSeedHistory(ctx, db, dialect, connection.Schema, historyTable); err != nil {
-		return fmt.Errorf("criar %s: %w", historyTable, err)
+		return i18n.Errf("sed_create_failed", historyTable, err)
 	}
 	history, err := loadSeedHistory(ctx, db, dialect, connection.Schema, historyTable)
 	if err != nil {
@@ -435,8 +436,8 @@ func SeedRun(root string, state config.ConfigState, onlyFirst bool) error {
 		if checksum, exists := history[seed.ID]; exists {
 			if checksum != seed.Checksum {
 				return cliui.NewUserError(
-					fmt.Sprintf("O seeder %s foi alterado depois de aplicado.", seed.ID),
-					"Seeder aplicado é imutável, como migration. Crie um seeder novo para corrigir: gokit seed create "+seed.Table,
+					i18n.Tf("sed_changed", seed.ID),
+					i18n.Tf("sed_changed_fix", seed.Table),
 				)
 			}
 			skipped++
@@ -450,13 +451,13 @@ func SeedRun(root string, state config.ConfigState, onlyFirst bool) error {
 			return fmt.Errorf("%s: %w", seed.ID, err)
 		}
 		if err := insertSeedHistory(ctx, db, dialect, connection.Schema, historyTable, seed); err != nil {
-			return fmt.Errorf("registrar %s: %w", seed.ID, err)
+			return i18n.Errf("sed_register_failed", seed.ID, err)
 		}
 		applied++
 	}
 
 	if applied > 0 || !onlyFirst {
-		fmt.Printf("  %s %d seeder(s) aplicado(s), %d já executado(s)\n", cliui.Success("✓ OK"), applied, skipped)
+		fmt.Printf(i18n.T("sed_applied_summary"), cliui.Success("✓ OK"), applied, skipped)
 	}
 	return nil
 }
@@ -495,8 +496,8 @@ func CreateSeedFile(root string, state config.ConfigState, target string) (strin
 	}
 	if !known {
 		return "", 0, cliui.NewUserError(
-			fmt.Sprintf("Não encontrei um CreateTable para %q.", target),
-			"O seeder precisa de uma tabela declarada. Confira o nome físico ou o alias.",
+			i18n.Tf("sed_no_createtable", target),
+			i18n.T("sed_no_createtable_fix"),
 		)
 	}
 
@@ -510,8 +511,8 @@ func CreateSeedFile(root string, state config.ConfigState, target string) (strin
 	}
 	if !hasKey {
 		return "", 0, cliui.NewUserError(
-			fmt.Sprintf("A tabela %s não declara chave primária no CreateTable.", shape.Table),
-			"Sem chave não há como distinguir inserir de editar. Marque a coluna com .PrimaryKey().",
+			i18n.Tf("sed_no_pk", shape.Table),
+			i18n.T("sed_no_pk_fix"),
 		)
 	}
 
@@ -538,10 +539,9 @@ func CreateSeedFile(root string, state config.ConfigState, target string) (strin
 		}
 	}
 	if len(literals) == 0 {
-		comentario := "// Esqueleto gerado: ajuste os valores e duplique a linha conforme precisar."
+		comentario := i18n.T("sed_gen_skeleton")
 		if !primeiro {
-			comentario = "// Edição: só linhas com ID fixo (declarado em seeder anterior) podem ser alteradas.\n\t\t" +
-				"// Linha sem o ID é inserção, e o banco gera a chave."
+			comentario = i18n.T("sed_gen_update_note")
 		}
 		literals = []string{
 			"\t\t" + comentario,
@@ -556,9 +556,9 @@ func CreateSeedFile(root string, state config.ConfigState, target string) (strin
 	}
 	path := filepath.Join(folder, name)
 
-	titulo := "Seed inicial de " + shape.Table + " — roda junto com o migrate run."
+	titulo := i18n.Tf("sed_gen_title_initial", shape.Table)
 	if !primeiro {
-		titulo = "Atualização de " + shape.Table + " — aplicada por: gokit seed run"
+		titulo = i18n.Tf("sed_gen_title_update", shape.Table)
 	}
 	declarationName := dynamicDeclarationName("Seeder", name)
 	content := fmt.Sprintf(`package seeds
@@ -579,7 +579,7 @@ func %s() migrate.Rows {
 		return "", 0, err
 	}
 	if err := recordGeneratedFile(root, shape.Table, "seeder", path); err != nil {
-		return "", 0, fmt.Errorf("registrar seeder gerado: %w", err)
+		return "", 0, i18n.Errf("sed_gen_register_failed", err)
 	}
 	relative, _ := filepath.Rel(root, path)
 	if primeiro && len(literals) > 0 && !strings.Contains(literals[0], "//") {
@@ -595,7 +595,7 @@ func snapshotRows(state config.ConfigState, shape acao.Operacao, columns []strin
 	connection := state.Config.Connections[state.ActiveClient]
 	driver := map[string]string{"oracle": "oracle", "postgres": "pgx", "mysql": "mysql", "sqlserver": "sqlserver"}[dialect]
 	if driver == "" {
-		return nil, fmt.Errorf("dialeto não suportado: %s", dialect)
+		return nil, i18n.Errf("run_dialect_unsupported", dialect)
 	}
 	db, err := sql.Open(driver, connection.BuildURL())
 	if err != nil {
@@ -652,30 +652,30 @@ func SeedValidate(root string, state config.ConfigState) error {
 	seeds, err := loadSeeds(root, state)
 	var loadErr *LoadError
 	if errors.As(err, &loadErr) {
-		fmt.Printf("%s %d problema(s):\n", cliui.Failure("✗"), len(loadErr.Issues))
+		fmt.Printf(i18n.T("sed_problems"), cliui.Failure("✗"), len(loadErr.Issues))
 		for _, issue := range loadErr.Issues {
 			fmt.Printf("  %s %s\n      %s\n", cliui.Failure("•"), issue.File, issue.Detail)
 		}
-		return cliui.NewUserError("Há seeders inválidos.", "Corrija os arquivos acima e rode de novo.")
+		return cliui.NewUserError(i18n.T("sed_invalid"), i18n.T("sed_invalid_fix"))
 	}
 	if err != nil {
 		return err
 	}
 	if len(seeds) == 0 {
-		fmt.Println(cliui.Muted("Nenhum seeder encontrado."))
+		fmt.Println(cliui.Muted(i18n.T("sed_none_found")))
 		return nil
 	}
 	rows := 0
 	for _, seed := range seeds {
 		rows += len(seed.Rows)
 	}
-	fmt.Printf("%s %d seeder(s), %d linha(s)\n", cliui.Success("✓ OK"), len(seeds), rows)
+	fmt.Printf(i18n.T("sed_validate_summary"), cliui.Success("✓ OK"), len(seeds), rows)
 	for _, seed := range seeds {
 		marca := "atualização"
 		if seed.First {
 			marca = "inicial"
 		}
-		fmt.Printf("  %s %-34s %4d linha(s)  %s\n", cliui.Muted("·"), seed.ID, len(seed.Rows), marca)
+		fmt.Printf(i18n.T("sed_validate_line"), cliui.Muted("·"), seed.ID, len(seed.Rows), marca)
 	}
 	return nil
 }

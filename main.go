@@ -6,6 +6,8 @@ import (
 
 	"github.com/PhelipeViana/gokit/internal/cliui"
 	"github.com/PhelipeViana/gokit/internal/config"
+	"github.com/PhelipeViana/gokit/internal/gomodule"
+	"github.com/PhelipeViana/gokit/internal/i18n"
 	"github.com/PhelipeViana/gokit/internal/migraterun"
 	"github.com/PhelipeViana/gokit/internal/tui"
 	"github.com/PhelipeViana/gokit/internal/updater"
@@ -161,6 +163,33 @@ func main() {
 				fmt.Printf("Erro: %v\n", err)
 				os.Exit(1)
 			}
+			os.Exit(0)
+		}
+		// gokit mode — mostra ou troca o modo de consumo do gokit.
+		//
+		// Sem argumento apenas informa, porque trocar de modo reescreve go.mod e
+		// go.work: é o tipo de comando que não deve fazer nada por engano.
+		if os.Args[1] == "mode" || os.Args[1] == "modo" {
+			if len(os.Args) < 3 {
+				atual := config.ModoDoProjeto(".", state.Config)
+				fmt.Printf(i18n.T("cli_mode_current"), atual)
+				fmt.Println()
+				fmt.Println(i18n.T("cli_mode_usage"))
+				os.Exit(0)
+			}
+			resultado, err := config.DefinirModo(".", os.Args[2])
+			if err != nil {
+				fmt.Printf("%s\n", err)
+				os.Exit(1)
+			}
+			fmt.Printf(i18n.T("cli_mode_changed"), resultado.Mode)
+			fmt.Println()
+			if resultado.Mode == gomodule.ModoDev {
+				fmt.Printf(i18n.T("cli_mode_dev_detail"), resultado.GoKitLocal)
+			} else {
+				fmt.Printf(i18n.T("cli_mode_prod_detail"), resultado.GoKitModule, resultado.GoKitVersion)
+			}
+			fmt.Println()
 			os.Exit(0)
 		}
 		if os.Args[1] == "doctor" || os.Args[1] == "check" {

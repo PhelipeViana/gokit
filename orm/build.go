@@ -18,7 +18,7 @@ func When(cond bool, expr Expression) Expression {
 	return expr
 }
 
-// Filtro monta um filtro a partir de um valor CRU (ex.: uma query string). É o
+// Filter monta um filtro a partir de um valor CRU (ex.: uma query string). É o
 // atalho para pesquisa dinâmica: se raw vier vazio, o filtro é IGNORADO (não
 // entra no WHERE) — acaba o "if campo-a-campo". O valor é convertido para o tipo
 // da coluna (Field.DataType); conversão inválida também é ignorada. Ops de texto
@@ -26,10 +26,10 @@ func When(cond bool, expr Expression) Expression {
 // por vírgula.
 //
 //	q.Where(
-//	    orm.Filtro(f.Nome,     orm.Contains, qp.Get("nome")),
-//	    orm.Filtro(f.CidadeId, orm.Equal,    qp.Get("cidade_id")),
+//	    orm.Filter(f.Nome,     orm.Contains, qp.Get("nome")),
+//	    orm.Filter(f.CidadeId, orm.Equal,    qp.Get("cidade_id")),
 //	)
-func Filtro(col Column, op Operator, raw string) Expression {
+func Filter(col Column, op Operator, raw string) Expression {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
 		return Group{}
@@ -46,7 +46,7 @@ func Filtro(col Column, op Operator, raw string) Expression {
 			if p = strings.TrimSpace(p); p == "" {
 				continue
 			}
-			v, ok := coerceValor(f.DataType, p)
+			v, ok := coerceValue(f.DataType, p)
 			if !ok {
 				return Group{}
 			}
@@ -58,7 +58,7 @@ func Filtro(col Column, op Operator, raw string) Expression {
 		return condition(f, In, vals...)
 
 	default:
-		v, ok := coerceValor(f.DataType, raw)
+		v, ok := coerceValue(f.DataType, raw)
 		if !ok {
 			return Group{}
 		}
@@ -66,9 +66,9 @@ func Filtro(col Column, op Operator, raw string) Expression {
 	}
 }
 
-// coerceValor converte a string crua para o tipo Go da coluna. ok=false quando
-// a conversão falha (o Filtro então ignora a condição).
-func coerceValor(dataType, raw string) (any, bool) {
+// coerceValue converte a string crua para o tipo Go da coluna. ok=false quando
+// a conversão falha (o Filter então ignora a condição).
+func coerceValue(dataType, raw string) (any, bool) {
 	switch strings.ToLower(dataType) {
 	case "integer", "int":
 		n, err := strconv.ParseInt(raw, 10, 64)
@@ -80,7 +80,7 @@ func coerceValor(dataType, raw string) (any, bool) {
 		b, err := strconv.ParseBool(raw)
 		return b, err == nil
 	case "date", "datetime", "timestamp":
-		if t, ok := parseData(raw); ok {
+		if t, ok := parseDate(raw); ok {
 			return t, true
 		}
 		return nil, false
@@ -89,18 +89,18 @@ func coerceValor(dataType, raw string) (any, bool) {
 	}
 }
 
-// formatosData são os layouts aceitos num valor cru de data (query string, form).
+// dateLayouts são os layouts aceitos num valor cru de data (query string, form).
 // Convertemos para time.Time em vez de repassar a string: assim o driver manda o
 // tipo certo e a pesquisa não depende de conversão implícita do banco.
-var formatosData = []string{
+var dateLayouts = []string{
 	"2006-01-02",
 	"2006-01-02 15:04:05",
 	"2006-01-02T15:04:05",
 	time.RFC3339,
 }
 
-func parseData(raw string) (time.Time, bool) {
-	for _, layout := range formatosData {
+func parseDate(raw string) (time.Time, bool) {
+	for _, layout := range dateLayouts {
 		if t, err := time.Parse(layout, raw); err == nil {
 			return t, true
 		}
@@ -108,12 +108,12 @@ func parseData(raw string) (time.Time, bool) {
 	return time.Time{}, false
 }
 
-// ValorData é o tratamento genérico de data usado por TODOS os filtros de data:
+// DateValue é o tratamento genérico de data usado por TODOS os filtros de data:
 // converte para time.Time o que for convertível (string em formato conhecido,
-// *time.Time, Valor) e devolve o resto intacto. Assim o driver recebe o tipo
+// *time.Time, Value) e devolve o resto intacto. Assim o driver recebe o tipo
 // certo e a pesquisa não depende de conversão implícita do banco — que é onde
 // Oracle e SQL Server divergem do MySQL.
-func ValorData(v any) any {
+func DateValue(v any) any {
 	switch t := v.(type) {
 	case nil:
 		return nil
@@ -124,10 +124,10 @@ func ValorData(v any) any {
 			return nil
 		}
 		return *t
-	case Valor:
-		return ValorData(t.Bruto())
+	case Value:
+		return DateValue(t.Raw())
 	case string:
-		if d, ok := parseData(t); ok {
+		if d, ok := parseDate(t); ok {
 			return d
 		}
 		return t // deixa passar: pode ser expressão que o chamador quis mesmo
@@ -136,11 +136,11 @@ func ValorData(v any) any {
 	}
 }
 
-// valoresData aplica ValorData a uma lista (Em, Entre).
-func valoresData(vs []any) []any {
+// dateValues aplica DateValue a uma lista (In, Between).
+func dateValues(vs []any) []any {
 	out := make([]any, len(vs))
 	for i, v := range vs {
-		out[i] = ValorData(v)
+		out[i] = DateValue(v)
 	}
 	return out
 }

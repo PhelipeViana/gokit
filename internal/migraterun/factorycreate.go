@@ -20,6 +20,7 @@ import (
 	"github.com/PhelipeViana/gokit/internal/cliui"
 	"github.com/PhelipeViana/gokit/internal/config"
 	"github.com/PhelipeViana/gokit/internal/factorygo"
+	"github.com/PhelipeViana/gokit/internal/i18n"
 	migrate "github.com/PhelipeViana/gokit/migration"
 	"github.com/PhelipeViana/gokit/migration/acao"
 )
@@ -33,8 +34,8 @@ func FactoryCreate(root string, state config.ConfigState, table string) error {
 	}
 	if len(formas) == 0 {
 		return cliui.NewUserError(
-			"Nenhuma tabela encontrada nas migrations.",
-			"Rode `gokit migrate create` para declarar a tabela antes de gerar a factory.",
+			i18n.T("fac_no_tables"),
+			i18n.T("fac_no_tables_fix"),
 		)
 	}
 
@@ -48,8 +49,8 @@ func FactoryCreate(root string, state config.ConfigState, table string) error {
 		chave := strings.ToLower(table)
 		if _, existe := formas[chave]; !existe {
 			return cliui.NewUserError(
-				fmt.Sprintf("A tabela %s não é criada por nenhuma migration.", table),
-				"Confira o nome ou declare a tabela primeiro com `gokit migrate create`.",
+				i18n.Tf("fac_table_unknown", table),
+				i18n.T("fac_table_unknown_fix"),
 			)
 		}
 		alvos = []string{chave}
@@ -104,7 +105,7 @@ func FactoryCreate(root string, state config.ConfigState, table string) error {
 				return err
 			}
 			if err := recordGeneratedFile(root, nome, "factory", caminho); err != nil {
-				return fmt.Errorf("registrar factory gerada: %w", err)
+				return i18n.Errf("fac_register_failed", err)
 			}
 			fmt.Printf("  %s %s\n", cliui.Success("+"), filepath.Base(caminho))
 			criadas++
@@ -121,7 +122,7 @@ func FactoryCreate(root string, state config.ConfigState, table string) error {
 		atualizadas++
 	}
 
-	fmt.Printf("\n  %s %d criada(s), %d atualizada(s), %d preservada(s)\n",
+	fmt.Printf(i18n.T("fac_create_summary"),
 		cliui.Success("✓ OK"), criadas, atualizadas, preservadas)
 	return nil
 }
@@ -230,7 +231,7 @@ func renderizaFactory(forma acao.Operacao, checks map[string][]string, state con
 	var texto strings.Builder
 	texto.WriteString("package factories\n\n")
 	texto.WriteString("import migrate \"github.com/PhelipeViana/gokit/migration\"\n\n")
-	fmt.Fprintf(&texto, "// %s gera dados fake para a tabela %s.\n", nomeDaFuncao(forma.Table), tabela)
+	fmt.Fprintf(&texto, i18n.T("fac_gen_doc"), nomeDaFuncao(forma.Table), tabela)
 	fmt.Fprintf(&texto, "func %s() migrate.Factory {\n", nomeDaFuncao(forma.Table))
 	texto.WriteString("\treturn migrate.Factory{\n")
 	fmt.Fprintf(&texto, "\t\tTable: %q,\n", tabela)

@@ -19,6 +19,7 @@ import (
 	"strings"
 
 	"github.com/PhelipeViana/gokit/internal/astparser"
+	"github.com/PhelipeViana/gokit/internal/i18n"
 	migrate "github.com/PhelipeViana/gokit/migration"
 )
 
@@ -55,7 +56,7 @@ func (arquivo Arquivo) Linha(index int) (map[string]any, error) {
 		}
 		valor, err := campo.Valor(index)
 		if err != nil {
-			return nil, fmt.Errorf("coluna %s: %w", campo.Coluna, err)
+			return nil, i18n.Errf("fcp_column_wrap", campo.Coluna, err)
 		}
 		valores[campo.Coluna] = valor
 	}
@@ -117,7 +118,7 @@ func CarregarPasta(pasta string) ([]Arquivo, error) {
 
 	sort.Slice(arquivos, func(i, j int) bool { return arquivos[i].Tabela < arquivos[j].Tabela })
 	if len(problemas) > 0 {
-		return arquivos, fmt.Errorf("%d factory(ies) com problema:\n  - %s", len(problemas), strings.Join(problemas, "\n  - "))
+		return arquivos, i18n.Errf("fcp_problems", len(problemas), strings.Join(problemas, "\n  - "))
 	}
 	return arquivos, nil
 }
@@ -147,7 +148,7 @@ func ParseArquivo(caminho string) (Arquivo, error) {
 		arquivo.Funcao = funcao.Name.Name
 		return arquivo, nil
 	}
-	return Arquivo{}, fmt.Errorf("nenhuma func ...Factory() migrate.Factory encontrada")
+	return Arquivo{}, i18n.Errf("fcp_no_func")
 }
 
 // retornoComposto extrai o migrate.Factory{...} do return da função.
@@ -180,7 +181,7 @@ func lerFactory(set *token.FileSet, literal *ast.CompositeLit) (Arquivo, error) 
 		case "Table":
 			tabela, err := astparser.StringLiteral(par.Value)
 			if err != nil {
-				return arquivo, fmt.Errorf("Table precisa ser um texto entre aspas")
+				return arquivo, i18n.Errf("fcp_table_quoted")
 			}
 			arquivo.Tabela = tabela
 		case "Ruler":
@@ -200,13 +201,13 @@ func lerFactory(set *token.FileSet, literal *ast.CompositeLit) (Arquivo, error) 
 	}
 
 	if arquivo.Tabela == "" {
-		return arquivo, fmt.Errorf("a factory não declara Table")
+		return arquivo, i18n.Errf("fcp_no_table")
 	}
 	if !campoVisto {
-		return arquivo, fmt.Errorf("a factory não declara Data")
+		return arquivo, i18n.Errf("fcp_no_data")
 	}
 	if len(arquivo.Campos) == 0 {
-		return arquivo, fmt.Errorf("o Data da factory está vazio")
+		return arquivo, i18n.Errf("fcp_empty_data")
 	}
 	return arquivo, nil
 }
@@ -215,7 +216,7 @@ func lerRuler(expressao ast.Expr) (migrate.Ruler, error) {
 	ruler := migrate.Ruler{Count: 10, Update: true, Active: true}
 	literal, ok := expressao.(*ast.CompositeLit)
 	if !ok {
-		return ruler, fmt.Errorf("Ruler precisa ser migrate.Ruler{...}")
+		return ruler, i18n.Errf("fcp_ruler_shape")
 	}
 	for _, elemento := range literal.Elts {
 		par, ok := elemento.(*ast.KeyValueExpr)
@@ -227,13 +228,13 @@ func lerRuler(expressao ast.Expr) (migrate.Ruler, error) {
 		case "Count":
 			quantidade, err := astparser.IntLiteral(par.Value)
 			if err != nil {
-				return ruler, fmt.Errorf("Ruler.Count precisa ser um número inteiro")
+				return ruler, i18n.Errf("fcp_ruler_count")
 			}
 			ruler.Count = quantidade
 		case "Update", "Active":
 			valor := astparser.IdentName(par.Value)
 			if valor != "true" && valor != "false" {
-				return ruler, fmt.Errorf("Ruler.%s precisa ser true ou false", nome)
+				return ruler, i18n.Errf("fcp_ruler_bool", nome)
 			}
 			if nome == "Update" {
 				ruler.Update = valor == "true"
@@ -256,12 +257,12 @@ func lerRuler(expressao ast.Expr) (migrate.Ruler, error) {
 func lerData(set *token.FileSet, expressao ast.Expr) ([]Campo, error) {
 	closure, ok := expressao.(*ast.FuncLit)
 	if !ok {
-		return nil, fmt.Errorf("Data precisa ser func(index int) migrate.Fields { return migrate.Fields{...} }")
+		return nil, i18n.Errf("fcp_data_signature")
 	}
 
 	nomeIndice := parametroDoIndice(closure)
 	if nomeIndice == "" {
-		return nil, fmt.Errorf("Data precisa receber o índice da linha: func(index int) migrate.Fields")
+		return nil, i18n.Errf("fcp_data_needs_index")
 	}
 
 	// Acessores de localidade declarados antes do return, do tipo
@@ -279,20 +280,20 @@ func lerData(set *token.FileSet, expressao ast.Expr) ([]Campo, error) {
 			acessores[nome] = true
 		case *ast.ReturnStmt:
 			if len(tipo.Results) != 1 {
-				return nil, fmt.Errorf("o return de Data precisa devolver um único migrate.Fields{...}")
+				return nil, i18n.Errf("fcp_data_one_return")
 			}
 			literal, ok := tipo.Results[0].(*ast.CompositeLit)
 			if !ok {
-				return nil, fmt.Errorf("o return de Data precisa ser migrate.Fields{...}")
+				return nil, i18n.Errf("fcp_data_return_shape")
 			}
 			retorno = literal
 		default:
-			return nil, fmt.Errorf("%s: só `nome := migrate.FakeLocation()` e o return são aceitos dentro de Data", posicao(set, statement.Pos()))
+			return nil, i18n.Errf("fcp_data_only_location", posicao(set, statement.Pos()))
 		}
 	}
 
 	if retorno == nil {
-		return nil, fmt.Errorf("Data não tem return")
+		return nil, i18n.Errf("fcp_data_no_return")
 	}
 
 	ambiente := ambienteDeAvaliacao{indice: nomeIndice, acessores: acessores, set: set}
@@ -302,20 +303,20 @@ func lerData(set *token.FileSet, expressao ast.Expr) ([]Campo, error) {
 	for _, elemento := range retorno.Elts {
 		par, ok := elemento.(*ast.KeyValueExpr)
 		if !ok {
-			return nil, fmt.Errorf("%s: cada linha de Data precisa ser \"COLUNA\": valor", posicao(set, elemento.Pos()))
+			return nil, i18n.Errf("fcp_data_line_shape", posicao(set, elemento.Pos()))
 		}
 		coluna, err := astparser.StringLiteral(par.Key)
 		if err != nil {
-			return nil, fmt.Errorf("%s: o nome da coluna precisa estar entre aspas", posicao(set, par.Key.Pos()))
+			return nil, i18n.Errf("fcp_data_column_quoted", posicao(set, par.Key.Pos()))
 		}
 		if vistas[strings.ToUpper(coluna)] {
-			return nil, fmt.Errorf("a coluna %s aparece duas vezes em Data", coluna)
+			return nil, i18n.Errf("fcp_data_dup_column", coluna)
 		}
 		vistas[strings.ToUpper(coluna)] = true
 
 		campo, err := ambiente.campo(coluna, par.Value)
 		if err != nil {
-			return nil, fmt.Errorf("%s: coluna %s: %w", posicao(set, par.Value.Pos()), coluna, err)
+			return nil, i18n.Errf("fcp_data_column_wrap", posicao(set, par.Value.Pos()), coluna, err)
 		}
 		campos = append(campos, campo)
 	}
@@ -339,7 +340,7 @@ func parametroDoIndice(closure *ast.FuncLit) string {
 
 // lerAcessorDeLocalidade valida `nome := migrate.FakeLocation()`.
 func lerAcessorDeLocalidade(set *token.FileSet, atribuicao *ast.AssignStmt) (string, error) {
-	erro := fmt.Errorf("%s: a única atribuição aceita dentro de Data é `nome := migrate.FakeLocation()`", posicao(set, atribuicao.Pos()))
+	erro := i18n.Errf("fcp_data_only_assign", posicao(set, atribuicao.Pos()))
 	if len(atribuicao.Lhs) != 1 || len(atribuicao.Rhs) != 1 {
 		return "", erro
 	}
@@ -394,15 +395,15 @@ func (ambiente ambienteDeAvaliacao) campo(coluna string, expressao ast.Expr) (Ca
 
 func (ambiente ambienteDeAvaliacao) vinculo(chamada *ast.CallExpr) (*migrate.Link, error) {
 	if len(chamada.Args) != 2 {
-		return nil, fmt.Errorf("Vinculo exige a tabela e a coluna: Vinculo(\"TABELA\", \"COLUNA\")")
+		return nil, i18n.Errf("fcp_link_args")
 	}
 	tabela, err := astparser.StringLiteral(chamada.Args[0])
 	if err != nil {
-		return nil, fmt.Errorf("o primeiro argumento de Vinculo precisa ser o nome da tabela entre aspas")
+		return nil, i18n.Errf("fcp_link_table_quoted")
 	}
 	coluna, err := astparser.StringLiteral(chamada.Args[1])
 	if err != nil {
-		return nil, fmt.Errorf("o segundo argumento de Vinculo precisa ser o nome da coluna entre aspas")
+		return nil, i18n.Errf("fcp_link_column_quoted")
 	}
 	link := migrate.Vinculo(tabela, coluna)
 	return &link, nil
@@ -420,7 +421,7 @@ func (ambiente ambienteDeAvaliacao) avaliar(expressao ast.Expr, index int) (any,
 		case token.FLOAT:
 			return strconv.ParseFloat(valor.Value, 64)
 		}
-		return nil, fmt.Errorf("literal não suportado: %s", valor.Value)
+		return nil, i18n.Errf("fcp_literal_unsupported", valor.Value)
 
 	case *ast.Ident:
 		switch valor.Name {
@@ -433,11 +434,11 @@ func (ambiente ambienteDeAvaliacao) avaliar(expressao ast.Expr, index int) (any,
 		case ambiente.indice:
 			return index, nil
 		}
-		return nil, fmt.Errorf("%s não existe aqui; use um literal, %s ou uma função migrate.Fake*", valor.Name, ambiente.indice)
+		return nil, i18n.Errf("fcp_ident_unsupported", valor.Name, ambiente.indice)
 
 	case *ast.UnaryExpr:
 		if valor.Op != token.SUB {
-			return nil, fmt.Errorf("operador não suportado em valor de factory")
+			return nil, i18n.Errf("fcp_operator_unsupported")
 		}
 		interno, err := ambiente.avaliar(valor.X, index)
 		if err != nil {
@@ -451,12 +452,12 @@ func (ambiente ambienteDeAvaliacao) avaliar(expressao ast.Expr, index int) (any,
 		case float64:
 			return -numero, nil
 		}
-		return nil, fmt.Errorf("o sinal negativo só vale para números")
+		return nil, i18n.Errf("fcp_negative_numbers_only")
 
 	case *ast.CallExpr:
 		return ambiente.chamar(valor, index)
 	}
-	return nil, fmt.Errorf("expressão não suportada; use um literal ou uma função migrate.Fake*")
+	return nil, i18n.Errf("fcp_expr_unsupported")
 }
 
 func (ambiente ambienteDeAvaliacao) chamar(chamada *ast.CallExpr, index int) (any, error) {
@@ -472,27 +473,27 @@ func (ambiente ambienteDeAvaliacao) chamar(chamada *ast.CallExpr, index int) (an
 	// Acessor de localidade: local(index, "uf", 2).
 	if nome := astparser.IdentName(chamada.Fun); nome != "" {
 		if !ambiente.acessores[nome] {
-			return nil, fmt.Errorf("%s não foi declarado; use `%s := migrate.FakeLocation()` antes do return", nome, nome)
+			return nil, i18n.Errf("fcp_undeclared_location", nome, nome)
 		}
 		return chamarLocalidade(argumentos)
 	}
 
 	seletor, ok := chamada.Fun.(*ast.SelectorExpr)
 	if !ok {
-		return nil, fmt.Errorf("chamada não reconhecida")
+		return nil, i18n.Errf("fcp_call_unknown")
 	}
 	nome := seletor.Sel.Name
 
 	if nome == "FakeLocation" {
-		return nil, fmt.Errorf("FakeLocation() precisa ser guardada antes do return: `local := migrate.FakeLocation()` e depois `local(%s, \"uf\", 2)`", ambiente.indice)
+		return nil, i18n.Errf("fcp_location_must_bind", ambiente.indice)
 	}
 
 	funcao, conhecida := vocabulario[nome]
 	if !conhecida {
 		if sugestao := sugestaoDeNome(nome); sugestao != "" {
-			return nil, fmt.Errorf("%s não existe no vocabulário das factories; você quis dizer %s?", nome, sugestao)
+			return nil, i18n.Errf("fcp_not_in_vocabulary_hint", nome, sugestao)
 		}
-		return nil, fmt.Errorf("%s não existe no vocabulário das factories", nome)
+		return nil, i18n.Errf("fcp_not_in_vocabulary", nome)
 	}
 
 	resultado, err := funcao(argumentos)
@@ -505,7 +506,7 @@ func (ambiente ambienteDeAvaliacao) chamar(chamada *ast.CallExpr, index int) (an
 // chamarLocalidade executa o acessor devolvido por FakeLocation.
 func chamarLocalidade(argumentos []any) (any, error) {
 	if len(argumentos) < 2 || len(argumentos) > 3 {
-		return nil, fmt.Errorf("o acessor de localidade exige (índice, campo) e aceita um tamanho: local(index, \"cidade\", 60)")
+		return nil, i18n.Errf("fcp_location_accessor")
 	}
 	indice, err := inteiroEm(argumentos, 0)
 	if err != nil {

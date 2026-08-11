@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/PhelipeViana/gokit/internal/config"
+	"github.com/PhelipeViana/gokit/internal/i18n"
 )
 
 // DoctorReport agrupa o diagnóstico completo de uma conexão ativa
@@ -90,7 +91,7 @@ func checkDBVersion(ctx context.Context, db *sql.DB, dialect string) (string, bo
 			if major >= 12 {
 				return versionStr, true, ""
 			}
-			return versionStr, false, "O PostgreSQL deve ser versão 12 ou superior."
+			return versionStr, false, i18n.T("doc_min_postgres")
 		}
 
 	case "mysql":
@@ -100,7 +101,7 @@ func checkDBVersion(ctx context.Context, db *sql.DB, dialect string) (string, bo
 			if major >= 8 {
 				return versionStr, true, ""
 			}
-			return versionStr, false, "O MySQL deve ser versão 8.0 ou superior."
+			return versionStr, false, i18n.T("doc_min_mysql")
 		}
 
 	case "oracle":
@@ -117,7 +118,7 @@ func checkDBVersion(ctx context.Context, db *sql.DB, dialect string) (string, bo
 			if major >= 19 {
 				return versionStr, true, ""
 			}
-			return versionStr, false, "O Oracle Database deve ser versão 19c ou superior."
+			return versionStr, false, i18n.T("doc_min_oracle")
 		}
 
 	case "sqlserver":
@@ -127,12 +128,12 @@ func checkDBVersion(ctx context.Context, db *sql.DB, dialect string) (string, bo
 			if major >= 14 { // 14.x é SQL Server 2017
 				return versionStr, true, ""
 			}
-			return versionStr, false, "O SQL Server deve ser versão 2017 (14.x) ou superior."
+			return versionStr, false, i18n.T("doc_min_sqlserver")
 		}
 	}
 
 	if err != nil {
-		return "Desconhecida (Falha ao consultar versão: " + err.Error() + ")", true, ""
+		return i18n.T("doc_version_unknown") + err.Error() + ")", true, ""
 	}
 	return "Desconhecida", true, ""
 }

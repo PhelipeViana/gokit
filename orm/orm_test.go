@@ -44,7 +44,7 @@ func mustCompile(t *testing.T, q orm.Query[orm.Record], op orm.Operation) orm.Co
 
 func TestCompileEqualParametriza(t *testing.T) {
 	m, f := testModel()
-	c := mustCompile(t, m.Where(f.Nome.Igual("silva")), orm.Select)
+	c := mustCompile(t, m.Where(f.Nome.Equal("silva")), orm.Select)
 	want := `SELECT "ID", "NOME", "IDADE", "ATIVO" FROM "USERS" WHERE "NOME" = :1`
 	if c.SQL != want {
 		t.Fatalf("SQL:\n got %q\nwant %q", c.SQL, want)
@@ -57,10 +57,10 @@ func TestCompileEqualParametriza(t *testing.T) {
 func TestCompileComparadoresEBetweenEIn(t *testing.T) {
 	m, f := testModel()
 	q := m.Where(
-		f.Idade.MaiorIgual(18),
-		f.Idade.Menor(65),
-		f.Id.Em(1, 2, 3),
-		f.Idade.Entre(20, 30),
+		f.Idade.GreaterOrEqual(18),
+		f.Idade.LessThan(65),
+		f.Id.In(1, 2, 3),
+		f.Idade.Between(20, 30),
 	)
 	c := mustCompile(t, q, orm.Count)
 	want := `SELECT COUNT(*) FROM "USERS" WHERE "IDADE" >= :1 AND "IDADE" < :2 AND "ID" IN (:3, :4, :5) AND "IDADE" BETWEEN :6 AND :7`
@@ -74,7 +74,7 @@ func TestCompileComparadoresEBetweenEIn(t *testing.T) {
 
 func TestCompileLikeVariantes(t *testing.T) {
 	m, f := testModel()
-	c := mustCompile(t, m.Where(f.Nome.Contem("a"), f.Nome.ComecaCom("b"), f.Nome.TerminaCom("c")), orm.Select)
+	c := mustCompile(t, m.Where(f.Nome.Contains("a"), f.Nome.StartsWith("b"), f.Nome.EndsWith("c")), orm.Select)
 	if want := `WHERE "NOME" LIKE :1 AND "NOME" LIKE :2 AND "NOME" LIKE :3`; !contains(c.SQL, want) {
 		t.Fatalf("SQL sem %q:\n%s", want, c.SQL)
 	}
@@ -86,7 +86,7 @@ func TestCompileLikeVariantes(t *testing.T) {
 func TestCombinadorOrDentroDeWhere(t *testing.T) {
 	m, f := testModel()
 	// Where(a, Or(b, c)) => a AND (b OR c), com parênteses explícitos.
-	q := m.Where(f.Nome.Igual("silva"), orm.Or(f.Id.Igual(1), f.Ativo.Verdadeiro()))
+	q := m.Where(f.Nome.Equal("silva"), orm.Or(f.Id.Equal(1), f.Ativo.IsTrue()))
 	c := mustCompile(t, q, orm.Select)
 	want := `WHERE "NOME" = :1 AND ("ID" = :2 OR "ATIVO" = :3)`
 	if !contains(c.SQL, want) {
@@ -100,7 +100,7 @@ func TestCombinadorOrDentroDeWhere(t *testing.T) {
 func TestCombinadoresAninhados(t *testing.T) {
 	m, f := testModel()
 	// And(a, Or(b, c)) aninhado dentro de Where.
-	q := m.Where(orm.And(f.Ativo.Verdadeiro(), orm.Or(f.Idade.Menor(18), f.Idade.Maior(65))))
+	q := m.Where(orm.And(f.Ativo.IsTrue(), orm.Or(f.Idade.LessThan(18), f.Idade.GreaterThan(65))))
 	c := mustCompile(t, q, orm.Select)
 	want := `WHERE ("ATIVO" = :1 AND ("IDADE" < :2 OR "IDADE" > :3))`
 	if !contains(c.SQL, want) {
@@ -110,8 +110,8 @@ func TestCombinadoresAninhados(t *testing.T) {
 
 func TestFiltroInativoEhIgnorado(t *testing.T) {
 	m, f := testModel()
-	// Em() sem valores => inativo => não gera WHERE.
-	c := mustCompile(t, m.Where(f.Nome.Em()), orm.Select)
+	// In() sem valores => inativo => não gera WHERE.
+	c := mustCompile(t, m.Where(f.Nome.In()), orm.Select)
 	if contains(c.SQL, "WHERE") {
 		t.Fatalf("filtro vazio não deveria gerar WHERE: %s", c.SQL)
 	}
@@ -122,7 +122,7 @@ func TestFiltroInativoEhIgnorado(t *testing.T) {
 
 func TestNulosEOrdenacaoEPaginacao(t *testing.T) {
 	m, f := testModel()
-	q := m.Where(f.Nome.NaoNulo()).OrderByDesc(f.Id).OrderBy(f.Nome).Offset(40).Limit(20)
+	q := m.Where(f.Nome.IsNotNull()).OrderByDesc(f.Id).OrderBy(f.Nome).Offset(40).Limit(20)
 	c := mustCompile(t, q, orm.Select)
 	want := `SELECT "ID", "NOME", "IDADE", "ATIVO" FROM "USERS" WHERE "NOME" IS NOT NULL ORDER BY "ID" DESC, "NOME" ASC OFFSET 40 ROWS FETCH NEXT 20 ROWS ONLY`
 	if c.SQL != want {
@@ -133,11 +133,11 @@ func TestNulosEOrdenacaoEPaginacao(t *testing.T) {
 func TestFiltroDinamico(t *testing.T) {
 	m, f := testModel()
 	q := m.Where(
-		orm.Filtro(f.Nome, orm.Contains, ""),       // vazio → ignorado
-		orm.Filtro(f.Nome, orm.Contains, "silva"),  // LIKE (texto)
-		orm.Filtro(f.Idade, orm.GreaterThan, "18"), // integer convertido
-		orm.Filtro(f.Id, orm.In, "1, 2 ,3"),        // IN por vírgula (com espaços)
-		orm.Filtro(f.Idade, orm.Equal, "abc"),      // parse inválido → ignorado
+		orm.Filter(f.Nome, orm.Contains, ""),       // vazio → ignorado
+		orm.Filter(f.Nome, orm.Contains, "silva"),  // LIKE (texto)
+		orm.Filter(f.Idade, orm.GreaterThan, "18"), // integer convertido
+		orm.Filter(f.Id, orm.In, "1, 2 ,3"),        // IN por vírgula (com espaços)
+		orm.Filter(f.Idade, orm.Equal, "abc"),      // parse inválido → ignorado
 	)
 	c := mustCompile(t, q, orm.Select)
 	want := `WHERE "NOME" LIKE :1 AND "IDADE" > :2 AND "ID" IN (:3, :4, :5)`
@@ -152,9 +152,9 @@ func TestFiltroDinamico(t *testing.T) {
 func TestWhenCondicional(t *testing.T) {
 	m, f := testModel()
 	c := mustCompile(t, m.Where(
-		f.Ativo.Verdadeiro(),
-		orm.When(false, f.Id.Igual(9)),    // ignorado
-		orm.When(true, f.Nome.Igual("x")), // incluído
+		f.Ativo.IsTrue(),
+		orm.When(false, f.Id.Equal(9)),    // ignorado
+		orm.When(true, f.Nome.Equal("x")), // incluído
 	), orm.Select)
 	want := `WHERE "ATIVO" = :1 AND "NOME" = :2`
 	if !contains(c.SQL, want) {
@@ -167,13 +167,13 @@ func TestWhenCondicional(t *testing.T) {
 
 func TestSelectProjetaColunas(t *testing.T) {
 	m, f := testModel()
-	c := mustCompile(t, m.Select(f.Id, f.Nome).Where(f.Ativo.Verdadeiro()), orm.Select)
+	c := mustCompile(t, m.Select(f.Id, f.Nome).Where(f.Ativo.IsTrue()), orm.Select)
 	want := `SELECT "ID", "NOME" FROM "USERS" WHERE "ATIVO" = :1`
 	if c.SQL != want {
 		t.Fatalf("SQL:\n got %q\nwant %q", c.SQL, want)
 	}
 	// Sem Select => todas as colunas.
-	full := mustCompile(t, m.Where(f.Ativo.Verdadeiro()), orm.Select)
+	full := mustCompile(t, m.Where(f.Ativo.IsTrue()), orm.Select)
 	if !contains(full.SQL, `"ID", "NOME", "IDADE", "ATIVO"`) {
 		t.Fatalf("sem Select deveria trazer todas as colunas: %s", full.SQL)
 	}
@@ -181,7 +181,7 @@ func TestSelectProjetaColunas(t *testing.T) {
 
 func TestExistsFetchFirst(t *testing.T) {
 	m, f := testModel()
-	c := mustCompile(t, m.Where(f.Id.Igual(7)), orm.Exists)
+	c := mustCompile(t, m.Where(f.Id.Equal(7)), orm.Exists)
 	want := `SELECT 1 FROM "USERS" WHERE "ID" = :1 FETCH FIRST 1 ROWS ONLY`
 	if c.SQL != want {
 		t.Fatalf("SQL:\n got %q\nwant %q", c.SQL, want)
@@ -190,8 +190,8 @@ func TestExistsFetchFirst(t *testing.T) {
 
 func TestImutabilidadeDaQueryBase(t *testing.T) {
 	m, f := testModel()
-	base := m.Where(f.Ativo.Verdadeiro())
-	_ = base.Where(f.Idade.Maior(18)).Limit(5)
+	base := m.Where(f.Ativo.IsTrue())
+	_ = base.Where(f.Idade.GreaterThan(18)).Limit(5)
 	// base não pode ter sido afetada pelo encadeamento acima.
 	c := mustCompile(t, base, orm.Select)
 	want := `SELECT "ID", "NOME", "IDADE", "ATIVO" FROM "USERS" WHERE "ATIVO" = :1`
@@ -202,7 +202,7 @@ func TestImutabilidadeDaQueryBase(t *testing.T) {
 
 func TestDialetoNaoSuportado(t *testing.T) {
 	m, f := testModel()
-	_, err := m.Where(f.Id.Igual(1)).Compile(orm.Select, orm.CompileOptions{Dialect: orm.Dialect("sqlite")})
+	_, err := m.Where(f.Id.Equal(1)).Compile(orm.Select, orm.CompileOptions{Dialect: orm.Dialect("sqlite")})
 	if err == nil {
 		t.Fatal("esperava erro para dialeto não suportado")
 	}
@@ -212,7 +212,7 @@ func TestDialetoNaoSuportado(t *testing.T) {
 // para a MESMA pesquisa, cobrindo a divergência que já mordeu no motor.
 func TestPlaceholderEQuotePorDialeto(t *testing.T) {
 	m, f := testModel()
-	q := m.Where(f.Nome.Igual("silva"), f.Idade.Maior(18))
+	q := m.Where(f.Nome.Equal("silva"), f.Idade.GreaterThan(18))
 	casos := map[orm.Dialect]string{
 		orm.Oracle:    `SELECT "ID", "NOME", "IDADE", "ATIVO" FROM "USERS" WHERE "NOME" = :1 AND "IDADE" > :2`,
 		orm.Postgres:  `SELECT "id", "nome", "idade", "ativo" FROM "users" WHERE "nome" = $1 AND "idade" > $2`,
@@ -239,7 +239,7 @@ func TestPlaceholderEQuotePorDialeto(t *testing.T) {
 func TestPaginacaoPorDialeto(t *testing.T) {
 	m, f := testModel()
 
-	comOffset := m.Where(f.Ativo.Verdadeiro()).OrderByDesc(f.Id).Offset(40).Limit(20)
+	comOffset := m.Where(f.Ativo.IsTrue()).OrderByDesc(f.Id).Offset(40).Limit(20)
 	wantOffset := map[orm.Dialect]string{
 		orm.Oracle:    `SELECT "ID", "NOME", "IDADE", "ATIVO" FROM "USERS" WHERE "ATIVO" = :1 ORDER BY "ID" DESC OFFSET 40 ROWS FETCH NEXT 20 ROWS ONLY`,
 		orm.Postgres:  `SELECT "id", "nome", "idade", "ativo" FROM "users" WHERE "ativo" = $1 ORDER BY "id" DESC LIMIT 20 OFFSET 40`,
@@ -272,7 +272,7 @@ func TestPaginacaoPorDialeto(t *testing.T) {
 // TestExistsPorDialeto cobre a variação do "limitar a 1" no exists.
 func TestExistsPorDialeto(t *testing.T) {
 	m, f := testModel()
-	q := m.Where(f.Id.Igual(7))
+	q := m.Where(f.Id.Equal(7))
 	casos := map[orm.Dialect]string{
 		orm.Oracle:    `SELECT 1 FROM "USERS" WHERE "ID" = :1 FETCH FIRST 1 ROWS ONLY`,
 		orm.Postgres:  `SELECT 1 FROM "users" WHERE "id" = $1 LIMIT 1`,
@@ -290,7 +290,7 @@ func TestExistsPorDialeto(t *testing.T) {
 // TestSchemaQualificado: Oracle/PG/SQL Server qualificam com schema; MySQL não.
 func TestSchemaQualificado(t *testing.T) {
 	m, f := testModel()
-	q := m.Where(f.Id.Igual(1))
+	q := m.Where(f.Id.Equal(1))
 	casos := map[orm.Dialect]string{
 		orm.Oracle:    `"APP"."USERS"`,
 		orm.Postgres:  `"app"."users"`,
@@ -326,7 +326,7 @@ func TestFiltroDataEIntervalo(t *testing.T) {
 	// intervalo fechado com time.Time
 	ini := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
 	fim := time.Date(2024, 12, 31, 0, 0, 0, 0, time.UTC)
-	c, err := m.Where(d.Entre(ini, fim)).Compile(orm.Select, orm.CompileOptions{Dialect: orm.Oracle})
+	c, err := m.Where(d.Between(ini, fim)).Compile(orm.Select, orm.CompileOptions{Dialect: orm.Oracle})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -338,7 +338,7 @@ func TestFiltroDataEIntervalo(t *testing.T) {
 	}
 
 	// valor CRU (query string) convertido para time.Time, não string
-	c2, _ := m.Where(orm.Filtro(d, orm.GreaterOrEqual, "2024-06-15")).Compile(orm.Select, orm.CompileOptions{Dialect: orm.Oracle})
+	c2, _ := m.Where(orm.Filter(d, orm.GreaterOrEqual, "2024-06-15")).Compile(orm.Select, orm.CompileOptions{Dialect: orm.Oracle})
 	if len(c2.Args) != 1 {
 		t.Fatalf("esperava 1 arg: %#v", c2.Args)
 	}
@@ -346,7 +346,7 @@ func TestFiltroDataEIntervalo(t *testing.T) {
 		t.Fatalf("arg deveria ser time.Time, veio %T", c2.Args[0])
 	}
 	// data inválida é ignorada (filtro dinâmico)
-	c3, _ := m.Where(orm.Filtro(d, orm.Equal, "não-é-data")).Compile(orm.Select, orm.CompileOptions{Dialect: orm.Oracle})
+	c3, _ := m.Where(orm.Filter(d, orm.Equal, "não-é-data")).Compile(orm.Select, orm.CompileOptions{Dialect: orm.Oracle})
 	if contains(c3.SQL, "WHERE") {
 		t.Fatalf("data inválida não deveria filtrar: %s", c3.SQL)
 	}

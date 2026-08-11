@@ -9,21 +9,22 @@ import (
 	"time"
 
 	"github.com/PhelipeViana/gokit/internal/config"
+	"github.com/PhelipeViana/gokit/internal/i18n"
 )
 
 func ensureDevelopmentResetAllowed(state config.ConfigState) error {
 	if state.ActiveEnv != "development" {
-		return fmt.Errorf("fresh reload bloqueado: APP_ENV precisa ser development")
+		return i18n.Errf("frs_blocked_env")
 	}
 	if state.Config == nil {
-		return fmt.Errorf("configuração ausente")
+		return i18n.Errf("frs_config_missing")
 	}
 	connection, ok := state.Config.Connections[state.ActiveClient]
 	if !ok {
-		return fmt.Errorf("conexão ativa %q não encontrada", state.ActiveClient)
+		return i18n.Errf("frs_conn_not_found", state.ActiveClient)
 	}
 	if !isLocalHost(connectionHost(connection)) {
-		return fmt.Errorf("fresh reload bloqueado para host não local: %s", connectionHost(connection))
+		return i18n.Errf("frs_blocked_remote", connectionHost(connection))
 	}
 	return nil
 }
@@ -57,7 +58,7 @@ func resetDevelopmentDatabase(state config.ConfigState, files []migrationFile) e
 	}
 	if exists {
 		if _, err := db.ExecContext(ctx, dropTableSQL(dialect, connection.Schema, seedHistory)); err != nil {
-			return fmt.Errorf("remover histórico de seeders %s: %w", seedHistory, err)
+			return i18n.Errf("frs_seed_history_failed", seedHistory, err)
 		}
 	}
 	return nil
@@ -65,7 +66,7 @@ func resetDevelopmentDatabase(state config.ConfigState, files []migrationFile) e
 
 func RunFreshReload(root string, state config.ConfigState) error {
 	if state.Config == nil {
-		return fmt.Errorf("configuração ausente")
+		return i18n.Errf("frs_config_missing")
 	}
 	files, err := loadPlans(filepathJoin(root, state.Config.Output.Migrate))
 	if err != nil {
@@ -85,7 +86,7 @@ func RunDevelopmentRollback(root string, state config.ConfigState, confirmDelete
 	if err != nil {
 		return err
 	}
-	fmt.Printf("Geração mais recente: %s\n", plan.Target)
+	fmt.Printf(i18n.T("frs_latest_generation"), plan.Target)
 	for _, path := range plan.Files {
 		fmt.Printf("  - %s\n", path)
 	}
@@ -93,10 +94,10 @@ func RunDevelopmentRollback(root string, state config.ConfigState, confirmDelete
 		fmt.Printf("  ! %s\n", path)
 	}
 	if len(plan.Files) == 0 {
-		return fmt.Errorf("nenhum arquivo removível encontrado")
+		return i18n.Errf("frs_nothing_removable")
 	}
 	if !confirmDelete || !confirmFresh {
-		fmt.Println("\nPreview concluído. Para executar use --confirm-delete --confirm-fresh.")
+		fmt.Println(i18n.T("frs_preview_done"))
 		return nil
 	}
 

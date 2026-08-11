@@ -2,7 +2,6 @@ package updater
 
 import (
 	"context"
-	"fmt"
 	"io"
 	"net/http"
 	"os"
@@ -10,6 +9,8 @@ import (
 	"runtime"
 	"strings"
 	"time"
+
+	"github.com/PhelipeViana/gokit/internal/i18n"
 )
 
 type Status struct {
@@ -102,7 +103,7 @@ func fetchLatestRemoteCommit() (string, error) {
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("não foi possível obter a versão remota (status %d)", resp.StatusCode)
+		return "", i18n.Errf("upd_remote_version_failed", resp.StatusCode)
 	}
 
 	bodyBytes, err := io.ReadAll(resp.Body)
@@ -141,7 +142,7 @@ func RunSelfUpdate() error {
 
 	currentExec, err := os.Executable()
 	if err != nil {
-		return fmt.Errorf("não foi possível identificar o executável: %v", err)
+		return i18n.Errf("upd_exec_unknown", err)
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -156,12 +157,12 @@ func RunSelfUpdate() error {
 	client := &http.Client{}
 	resp, err := client.Do(req)
 	if err != nil {
-		return fmt.Errorf("falha na conexão de rede: %v", err)
+		return i18n.Errf("upd_network_failed", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("servidor retornou erro (status %d)", resp.StatusCode)
+		return i18n.Errf("upd_server_error", resp.StatusCode)
 	}
 
 	newExec := currentExec + ".new"
@@ -169,44 +170,44 @@ func RunSelfUpdate() error {
 	_ = os.Remove(newExec)
 	out, err := os.OpenFile(newExec, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o755)
 	if err != nil {
-		return fmt.Errorf("falha ao preparar download: %v", err)
+		return i18n.Errf("upd_prepare_failed", err)
 	}
 	written, copyErr := io.Copy(out, resp.Body)
 	closeErr := out.Close()
 	if copyErr != nil || closeErr != nil {
 		_ = os.Remove(newExec)
 		if copyErr != nil {
-			return fmt.Errorf("falha ao gravar atualização: %v", copyErr)
+			return i18n.Errf("upd_write_failed", copyErr)
 		}
-		return fmt.Errorf("falha ao finalizar atualização: %v", closeErr)
+		return i18n.Errf("upd_finish_failed", closeErr)
 	}
 	if written < 1024 {
 		_ = os.Remove(newExec)
-		return fmt.Errorf("download inválido: executável recebido tem apenas %d bytes", written)
+		return i18n.Errf("upd_download_too_small", written)
 	}
 	if err := os.Chmod(newExec, 0o755); err != nil {
 		_ = os.Remove(newExec)
-		return fmt.Errorf("falha ao tornar atualização executável: %v", err)
+		return i18n.Errf("upd_chmod_failed", err)
 	}
 
 	_ = os.Remove(oldExec)
 	if err := os.Rename(currentExec, oldExec); err != nil {
 		_ = os.Remove(newExec)
-		return fmt.Errorf("falha ao preservar executável atual: %v", err)
+		return i18n.Errf("upd_backup_failed", err)
 	}
 	if err := os.Rename(newExec, currentExec); err != nil {
 		_ = os.Rename(oldExec, currentExec)
 		_ = os.Remove(newExec)
-		return fmt.Errorf("falha ao instalar atualização: %v", err)
+		return i18n.Errf("upd_install_failed", err)
 	}
 	if _, err := os.Stat(currentExec); err != nil {
 		_ = os.Rename(oldExec, currentExec)
-		return fmt.Errorf("falha ao gravar atualização: %v", err)
+		return i18n.Errf("upd_write_failed", err)
 	}
 	if err := prepareExecutable(currentExec); err != nil {
 		_ = os.Remove(currentExec)
 		_ = os.Rename(oldExec, currentExec)
-		return fmt.Errorf("falha ao validar atualização no macOS: %v", err)
+		return i18n.Errf("upd_macos_validate_failed", err)
 	}
 	return nil
 }
@@ -220,7 +221,7 @@ func prepareExecutable(path string) error {
 	}
 	output, err := exec.Command("codesign", "--force", "--sign", "-", path).CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("codesign: %s: %w", strings.TrimSpace(string(output)), err)
+		return i18n.Errf("upd_codesign", strings.TrimSpace(string(output)), err)
 	}
 	return nil
 }

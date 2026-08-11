@@ -47,13 +47,29 @@ func TestCreateOnboardingScaffoldInitializesGoModule(t *testing.T) {
 			}
 		}
 	}
+	// Com o gokit na pasta irmã, a criação escolhe dev — mas o go.mod continua
+	// commitável: require de versão publicada e nenhum replace. O desvio para a
+	// pasta local vive no go.work, que não vai para o Git.
 	assertFileContains("go.mod",
 		"module projeto-vazio",
-		"require "+gomodule.CanonicalGoKitModule+" v0.0.0",
-		"replace "+gomodule.CanonicalGoKitModule+" => ../gokit",
+		"require "+gomodule.CanonicalGoKitModule+" "+gomodule.VersaoFixada,
+	)
+	goMod, err := os.ReadFile("go.mod")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(goMod), "replace") {
+		t.Errorf("go.mod não deveria ter replace:\n%s", goMod)
+	}
+	assertFileContains("go.work",
+		"../gokit",
+	)
+	assertFileContains(".gitignore",
+		"go.work",
 	)
 	assertFileContains(filepath.Join("internal", "gokit", "gokit.json"),
 		`"module": "projeto-vazio"`,
+		`"mode": "dev"`,
 		`"execution": "docker"`,
 		`"docker_auto_start": true`,
 		`"gokit_local": "../gokit"`,

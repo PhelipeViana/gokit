@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/PhelipeViana/gokit/internal/astparser"
+	"github.com/PhelipeViana/gokit/internal/i18n"
 	"github.com/PhelipeViana/gokit/migration/acao"
 )
 
@@ -58,9 +59,7 @@ func ParseFile(path string) ([]acao.Operacao, error) {
 			// Seed não mora mais dentro da migration: uma migration aplicada é
 			// imutável, então corrigir o dado exigiria mexer no passado.
 			if function.Name != nil && strings.HasPrefix(function.Name.Name, "Seeder") {
-				return nil, fmt.Errorf(
-					"func Seeder() não pertence a uma migration; mova as linhas para %s/<tabela>/<timestamp>_seeder.go (veja: gokit seed create <tabela>)",
-					"database/seeds")
+				return nil, i18n.Errf("mgp_seeder_wrong_place", "database/seeds")
 			}
 			found, err := evalDefinitionFunction(set, function, catalog, views, path)
 			if err != nil {
@@ -95,14 +94,14 @@ func ParseFile(path string) ([]acao.Operacao, error) {
 	}
 
 	if len(operations) == 0 {
-		return nil, fmt.Errorf("nenhuma operação migrate.* encontrada")
+		return nil, i18n.Errf("mgp_no_operation")
 	}
 	for index := range operations {
 		if operations[index].Kind == string(acao.CreateTable) && operations[index].AliasName == "" {
 			if strings.HasSuffix(filepath.Base(path), "_migration.go") {
 				operations[index].AliasName = tableIdentifier(operations[index].Table)
 			} else {
-				return nil, fmt.Errorf("CreateTable exige .Alias(\"apelido\")")
+				return nil, i18n.Errf("mgp_createtable_needs_alias")
 			}
 		}
 	}
@@ -115,39 +114,39 @@ func evalSeederFunction(set *token.FileSet, function *ast.FuncDecl) ([]acao.Linh
 		return nil, positionError(set, node, fmt.Errorf(format, arguments...))
 	}
 	if function.Body == nil || len(function.Body.List) != 1 {
-		return fail(function, "Seeder() deve conter apenas `return migrate.Rows{...}`")
+		return fail(function, "%s", i18n.T("mgp_seeder_body"))
 	}
 	statement, ok := function.Body.List[0].(*ast.ReturnStmt)
 	if !ok || len(statement.Results) != 1 {
-		return fail(function, "Seeder() deve retornar exatamente uma lista migrate.Rows")
+		return fail(function, "%s", i18n.T("mgp_seeder_one_list"))
 	}
 	literal, ok := statement.Results[0].(*ast.CompositeLit)
 	if !ok {
-		return fail(statement, "Seeder() deve retornar um literal migrate.Rows{...}")
+		return fail(statement, "%s", i18n.T("mgp_seeder_literal"))
 	}
 
 	rows := make([]acao.Linha, 0, len(literal.Elts))
 	for index, element := range literal.Elts {
 		rowLiteral, ok := element.(*ast.CompositeLit)
 		if !ok {
-			return fail(element, "a linha %d deve ser um literal {\"coluna\": valor, ...}", index+1)
+			return fail(element, i18n.T("mgp_row_literal"), index+1)
 		}
 		row := acao.Linha{}
 		for _, field := range rowLiteral.Elts {
 			pair, ok := field.(*ast.KeyValueExpr)
 			if !ok {
-				return fail(field, "a linha %d deve usar o formato \"coluna\": valor", index+1)
+				return fail(field, i18n.T("mgp_row_format"), index+1)
 			}
 			column, err := astparser.StringLiteral(pair.Key)
 			if err != nil {
-				return fail(pair.Key, "a linha %d tem um nome de coluna inválido; use \"coluna\": valor", index+1)
+				return fail(pair.Key, i18n.T("mgp_row_bad_column"), index+1)
 			}
 			if _, repeated := row[column]; repeated {
-				return fail(pair.Key, "a linha %d repete a coluna %q", index+1, column)
+				return fail(pair.Key, i18n.T("mgp_row_dup_column"), index+1, column)
 			}
 			value, err := seedLiteral(pair.Value)
 			if err != nil {
-				return fail(pair.Value, "linha %d, coluna %q: %v", index+1, column, err)
+				return fail(pair.Value, i18n.T("mgp_row_column_detail"), index+1, column, err)
 			}
 			row[column] = value
 		}
@@ -182,18 +181,18 @@ func seedLiteral(expression ast.Expr) (any, error) {
 		// Única chamada aceita num valor de seed: migrate.Time("...").
 		selector, ok := value.Fun.(*ast.SelectorExpr)
 		if !ok || astparser.IdentName(selector.X) != "migrate" || selector.Sel.Name != "Time" {
-			return nil, fmt.Errorf("só migrate.Time(\"...\") é aceito como chamada em valor de seed")
+			return nil, i18n.Errf("mgp_only_time_call")
 		}
 		if len(value.Args) != 1 {
-			return nil, fmt.Errorf("migrate.Time exige exatamente um texto")
+			return nil, i18n.Errf("mgp_time_one_text")
 		}
 		text, err := astparser.StringLiteral(value.Args[0])
 		if err != nil {
-			return nil, fmt.Errorf("migrate.Time exige um texto entre aspas")
+			return nil, i18n.Errf("mgp_time_quoted")
 		}
 		parsed, err := time.Parse(seedTimeLayout, text)
 		if err != nil {
-			return nil, fmt.Errorf("migrate.Time(%q) fora do formato %s", text, seedTimeLayout)
+			return nil, i18n.Errf("mgp_time_format", text, seedTimeLayout)
 		}
 		return parsed, nil
 	case *ast.UnaryExpr:
@@ -210,7 +209,7 @@ func seedLiteral(expression ast.Expr) (any, error) {
 			}
 		}
 	}
-	return nil, fmt.Errorf("valor inválido; use texto, número, true, false ou nil")
+	return nil, i18n.Errf("mgp_bad_value")
 }
 
 // seedTimeLayouts são os formatos aceitos num valor de data/hora. O primeiro é
@@ -247,7 +246,7 @@ func coerceSeedRows(rows []acao.Linha, columns []acao.ColunaDefinicao) error {
 		for name, value := range row {
 			coerced, err := coerceSeedValue(value, kinds[strings.ToLower(name)])
 			if err != nil {
-				return fmt.Errorf("linha %d, coluna %q: %w", index+1, name, err)
+				return i18n.Errf("mgp_row_column_wrap", index+1, name, err)
 			}
 			row[name] = coerced
 		}
@@ -270,7 +269,7 @@ func coerceSeedValue(value any, kind string) (any, error) {
 				return parsed, nil
 			}
 		}
-		return nil, fmt.Errorf("%q não é uma data válida; use o formato %s", text, seedTimeLayout)
+		return nil, i18n.Errf("mgp_bad_date", text, seedTimeLayout)
 
 	case "string", "char", "text":
 		// Número em coluna de texto: o pgx recusa, os outros três convertem.
@@ -314,7 +313,7 @@ func coerceSeedValue(value any, kind string) (any, error) {
 			if b, err := strconv.ParseBool(typed); err == nil {
 				return b, nil
 			}
-			return nil, fmt.Errorf("%q não é um booleano válido (use true/false ou 0/1)", typed)
+			return nil, i18n.Errf("mgp_bad_bool", typed)
 		}
 	}
 	return value, nil
@@ -342,7 +341,7 @@ func ParseSeedFile(path string, columns []acao.ColunaDefinicao) ([]acao.Linha, e
 		}
 		return rows, nil
 	}
-	return nil, fmt.Errorf("nenhuma func Seeder() encontrada")
+	return nil, i18n.Errf("mgp_no_seeder_func")
 }
 
 func loadViewCatalog(path string) map[string]string {
@@ -381,7 +380,7 @@ func evalDefinitionFunction(set *token.FileSet, function *ast.FuncDecl, catalog,
 	selector, ok := call.Fun.(*ast.SelectorExpr)
 	if ok && astparser.IdentName(selector.X) == "migrate" && selector.Sel.Name == "Define" {
 		if len(call.Args) == 0 {
-			return nil, positionError(set, call, fmt.Errorf("migrate.Define exige ao menos uma ação"))
+			return nil, positionError(set, call, i18n.Errf("mgp_define_needs_action"))
 		}
 		// Define é variádico: as ações são aplicadas na ordem declarada e
 		// compartilham o mesmo registro de histórico.
@@ -454,19 +453,19 @@ func tableIdentifier(name string) string {
 func evalOperation(expression ast.Expr, catalog, views map[string]string, path string) (acao.Operacao, error) {
 	call, ok := expression.(*ast.CallExpr)
 	if !ok {
-		return acao.Operacao{}, fmt.Errorf("esperado migrate.Metodo(...)")
+		return acao.Operacao{}, i18n.Errf("mgp_expect_method")
 	}
 	selector, ok := call.Fun.(*ast.SelectorExpr)
 	if ok && selector.Sel.Name == "Alias" {
 		if len(call.Args) != 1 {
-			return acao.Operacao{}, fmt.Errorf("Alias exige exatamente um apelido")
+			return acao.Operacao{}, i18n.Errf("mgp_alias_one_arg")
 		}
 		operation, err := evalOperation(selector.X, catalog, views, path)
 		if err != nil {
 			return acao.Operacao{}, err
 		}
 		if operation.Kind != string(acao.CreateTable) {
-			return acao.Operacao{}, fmt.Errorf("Alias só pode ser usado em CreateTable")
+			return acao.Operacao{}, i18n.Errf("mgp_alias_only_create")
 		}
 		operation.AliasName, err = astparser.StringLiteral(call.Args[0])
 		if err == nil {
@@ -486,7 +485,7 @@ func evalOperation(expression ast.Expr, catalog, views map[string]string, path s
 	}
 	if method == "CreateTable" {
 		if len(call.Args) < 2 {
-			return acao.Operacao{}, fmt.Errorf("CreateTable exige nome e colunas")
+			return acao.Operacao{}, i18n.Errf("mgp_createtable_args")
 		}
 		table, err := astparser.StringLiteral(call.Args[0])
 		if err != nil {
@@ -538,7 +537,7 @@ func evalOperation(expression ast.Expr, catalog, views map[string]string, path s
 		return acao.Operacao{Kind: string(acao.RawSQL), Dialect: dialect, SQL: statement}, nil
 	}
 	if len(call.Args) == 0 {
-		return acao.Operacao{}, fmt.Errorf("%s exige alias.*", method)
+		return acao.Operacao{}, i18n.Errf("mgp_needs_alias_ref", method)
 	}
 	table, err := tableReference(call.Args[0], catalog)
 	if err != nil {
@@ -559,13 +558,13 @@ func evalOperation(expression ast.Expr, catalog, views map[string]string, path s
 		return columnOperation(acao.DropForeignKey, table, call.Args[1:])
 	case "RenameTable":
 		if len(call.Args) != 2 {
-			return acao.Operacao{}, fmt.Errorf("RenameTable exige alias.* e novo nome")
+			return acao.Operacao{}, i18n.Errf("mgp_renametable_args")
 		}
 		name, err := astparser.StringLiteral(call.Args[1])
 		return acao.Operacao{Kind: string(acao.RenameTable), Table: table, NewName: name}, err
 	case "RenameColumn":
 		if len(call.Args) != 3 {
-			return acao.Operacao{}, fmt.Errorf("RenameColumn exige alias.*, nome atual e novo nome")
+			return acao.Operacao{}, i18n.Errf("mgp_renamecolumn_args")
 		}
 		oldName, err := astparser.StringLiteral(call.Args[1])
 		if err != nil {
@@ -575,7 +574,7 @@ func evalOperation(expression ast.Expr, catalog, views map[string]string, path s
 		return acao.Operacao{Kind: string(acao.RenameColumn), Table: table, Column: &acao.ColunaDefinicao{Name: oldName}, NewName: newName}, err
 	case "AddPrimaryKey", "AddUnique":
 		if len(call.Args) < 3 {
-			return acao.Operacao{}, fmt.Errorf("%s exige alias.*, nome e colunas", method)
+			return acao.Operacao{}, i18n.Errf("mgp_needs_alias_name_columns", method)
 		}
 		name, err := astparser.StringLiteral(call.Args[1])
 		if err != nil {
@@ -589,7 +588,7 @@ func evalOperation(expression ast.Expr, catalog, views map[string]string, path s
 		return acao.Operacao{Kind: string(kind), Table: table, Name: name, IndexColumns: columns}, err
 	case "AddCompositeForeignKey":
 		if len(call.Args) < 4 {
-			return acao.Operacao{}, fmt.Errorf("AddCompositeForeignKey exige alias.*, nome, tabela referenciada e mapeamentos")
+			return acao.Operacao{}, i18n.Errf("mgp_composite_fk_args")
 		}
 		name, err := astparser.StringLiteral(call.Args[1])
 		if err != nil {
@@ -607,7 +606,7 @@ func evalOperation(expression ast.Expr, catalog, views map[string]string, path s
 		for _, mapping := range mappings {
 			parts := strings.SplitN(mapping, ":", 2)
 			if len(parts) != 2 {
-				return acao.Operacao{}, fmt.Errorf("mapeamento %q deve usar coluna:referência", mapping)
+				return acao.Operacao{}, i18n.Errf("mgp_mapping_format", mapping)
 			}
 			foreignKey.Columns = append(foreignKey.Columns, parts[0])
 			foreignKey.ReferenceColumns = append(foreignKey.ReferenceColumns, parts[1])
@@ -615,7 +614,7 @@ func evalOperation(expression ast.Expr, catalog, views map[string]string, path s
 		return acao.Operacao{Kind: string(acao.AddForeignKey), Table: table, ForeignKey: foreignKey}, nil
 	case "AddCheck":
 		if len(call.Args) != 3 {
-			return acao.Operacao{}, fmt.Errorf("AddCheck exige alias.*, nome e expressão")
+			return acao.Operacao{}, i18n.Errf("mgp_addcheck_args")
 		}
 		name, err := astparser.StringLiteral(call.Args[1])
 		if err != nil {
@@ -625,13 +624,13 @@ func evalOperation(expression ast.Expr, catalog, views map[string]string, path s
 		return acao.Operacao{Kind: string(acao.AddCheck), Table: table, Name: name, SQL: expression}, err
 	case "DropConstraint":
 		if len(call.Args) != 2 {
-			return acao.Operacao{}, fmt.Errorf("DropConstraint exige alias.* e nome")
+			return acao.Operacao{}, i18n.Errf("mgp_dropconstraint_args")
 		}
 		name, err := astparser.StringLiteral(call.Args[1])
 		return acao.Operacao{Kind: string(acao.DropConstraint), Table: table, Name: name}, err
 	case "CreateIndex", "CreateUniqueIndex":
 		if len(call.Args) < 3 {
-			return acao.Operacao{}, fmt.Errorf("%s exige alias.*, nome e colunas", method)
+			return acao.Operacao{}, i18n.Errf("mgp_needs_alias_name_columns", method)
 		}
 		name, err := astparser.StringLiteral(call.Args[1])
 		if err != nil {
@@ -648,12 +647,12 @@ func evalOperation(expression ast.Expr, catalog, views map[string]string, path s
 		return acao.Operacao{Kind: string(acao.CreateIndex), Table: table, Name: name, IndexColumns: columns, Unique: method == "CreateUniqueIndex"}, nil
 	case "DropIndex":
 		if len(call.Args) != 2 {
-			return acao.Operacao{}, fmt.Errorf("DropIndex exige alias.* e nome")
+			return acao.Operacao{}, i18n.Errf("mgp_dropindex_args")
 		}
 		name, err := astparser.StringLiteral(call.Args[1])
 		return acao.Operacao{Kind: string(acao.DropIndex), Table: table, Name: name}, err
 	default:
-		return acao.Operacao{}, fmt.Errorf("método migrate.%s não suportado", method)
+		return acao.Operacao{}, i18n.Errf("mgp_method_unsupported", method)
 	}
 }
 
@@ -680,11 +679,11 @@ func columnOperation(kind acao.Tipo, table string, expressions []ast.Expr) (acao
 func tableReference(expression ast.Expr, catalog map[string]string) (string, error) {
 	selector, ok := expression.(*ast.SelectorExpr)
 	if !ok || (astparser.IdentName(selector.X) != "alias" && astparser.IdentName(selector.X) != "table") {
-		return "", fmt.Errorf("use uma referência alias.*")
+		return "", i18n.Errf("mgp_use_alias_ref")
 	}
 	name, ok := catalog[selector.Sel.Name]
 	if !ok {
-		return "", fmt.Errorf("referência alias.%s não existe no catálogo", selector.Sel.Name)
+		return "", i18n.Errf("mgp_alias_not_in_catalog", selector.Sel.Name)
 	}
 	return name, nil
 }
@@ -692,11 +691,11 @@ func tableReference(expression ast.Expr, catalog map[string]string) (string, err
 func viewReference(expression ast.Expr, catalog map[string]string) (string, error) {
 	selector, ok := expression.(*ast.SelectorExpr)
 	if !ok || astparser.IdentName(selector.X) != "view" {
-		return "", fmt.Errorf("use exclusivamente uma referência view.*")
+		return "", i18n.Errf("mgp_use_view_ref")
 	}
 	name, ok := catalog[selector.Sel.Name]
 	if !ok {
-		return "", fmt.Errorf("referência view.%s não existe no catálogo", selector.Sel.Name)
+		return "", i18n.Errf("mgp_view_not_in_catalog", selector.Sel.Name)
 	}
 	return name, nil
 }
@@ -704,7 +703,7 @@ func viewReference(expression ast.Expr, catalog map[string]string) (string, erro
 func loadVersionedViewSQL(migrationPath, viewName string) (map[string]string, error) {
 	match := migrationIDEntry.FindStringSubmatch(filepath.Base(migrationPath))
 	if len(match) == 0 {
-		return nil, fmt.Errorf("migration de view precisa iniciar com um ID de timestamp")
+		return nil, i18n.Errf("mgp_view_needs_timestamp")
 	}
 	id := match[1]
 	root := projectRoot(filepath.Dir(migrationPath))
@@ -717,7 +716,7 @@ func loadVersionedViewSQL(migrationPath, viewName string) (map[string]string, er
 			break
 		}
 	}
-	return nil, fmt.Errorf("SQL da view %s não encontrado para a migration %s", viewName, id)
+	return nil, i18n.Errf("mgp_view_sql_missing", viewName, id)
 }
 
 func readViewSQLFolder(folder string) (map[string]string, error) {
@@ -733,7 +732,7 @@ func readViewSQLFolder(folder string) (map[string]string, error) {
 		}
 		dialect := strings.TrimSuffix(strings.ToLower(entry.Name()), ".sql")
 		if !allowed[dialect] {
-			return nil, fmt.Errorf("arquivo de view %s inválido; use common.sql, oracle.sql, postgres.sql, mysql.sql ou sqlserver.sql", entry.Name())
+			return nil, i18n.Errf("mgp_view_file_invalid", entry.Name())
 		}
 		data, err := os.ReadFile(filepath.Join(folder, entry.Name()))
 		if err != nil {
@@ -741,7 +740,7 @@ func readViewSQLFolder(folder string) (map[string]string, error) {
 		}
 		query := strings.TrimSpace(strings.TrimSuffix(string(data), ";"))
 		if query == "" {
-			return nil, fmt.Errorf("%s está vazio", filepath.Join(folder, entry.Name()))
+			return nil, i18n.Errf("mgp_file_empty", filepath.Join(folder, entry.Name()))
 		}
 		result[dialect] = query
 	}
@@ -749,7 +748,7 @@ func readViewSQLFolder(folder string) (map[string]string, error) {
 	// só recorre a common.sql como fallback. Exigi-lo aqui impedia views
 	// escritas para um único banco.
 	if len(result) == 0 {
-		return nil, fmt.Errorf("%s não contém nenhum .sql; crie common.sql ou um arquivo por dialeto (oracle.sql, postgres.sql, mysql.sql, sqlserver.sql)", folder)
+		return nil, i18n.Errf("mgp_no_sql_file", folder)
 	}
 	return result, nil
 }
@@ -763,11 +762,11 @@ func samePath(left, right string) bool {
 func evalLegacyOperation(expression ast.Expr) (acao.Operacao, error) {
 	call, ok := expression.(*ast.CallExpr)
 	if !ok || astparser.IdentName(call.Fun) != "nova" || len(call.Args) < 2 {
-		return acao.Operacao{}, fmt.Errorf("esperado migrate.Metodo(...)")
+		return acao.Operacao{}, i18n.Errf("mgp_expect_method")
 	}
 	selector, ok := call.Args[0].(*ast.SelectorExpr)
 	if !ok || astparser.IdentName(selector.X) != "acao" {
-		return acao.Operacao{}, fmt.Errorf("ação antiga inválida")
+		return acao.Operacao{}, i18n.Errf("mgp_legacy_action")
 	}
 	table, err := astparser.StringLiteral(call.Args[1])
 	if err != nil {
@@ -784,16 +783,16 @@ func evalColumn(expression ast.Expr) (acao.Coluna, error) {
 	}
 
 	if chain.RootFunc != "col" && chain.RootFunc != "coluna" && chain.RootFunc != "Col" {
-		return acao.Coluna{}, fmt.Errorf("esperado col(...) ou método de coluna")
+		return acao.Coluna{}, i18n.Errf("mgp_expect_col")
 	}
 
 	if len(chain.RootArgs) != 1 {
-		return acao.Coluna{}, fmt.Errorf("col exige um nome")
+		return acao.Coluna{}, i18n.Errf("mgp_col_needs_name")
 	}
 
 	colName, ok := chain.RootArgs[0].(string)
 	if !ok {
-		return acao.Coluna{}, fmt.Errorf("nome de coluna inválido")
+		return acao.Coluna{}, i18n.Errf("mgp_col_bad_name")
 	}
 
 	column := acao.NovaColuna(colName)
@@ -807,20 +806,20 @@ func evalColumn(expression ast.Expr) (acao.Coluna, error) {
 			column = column.Int()
 		case "Varchar":
 			if len(call.Args) != 1 {
-				return acao.Coluna{}, fmt.Errorf("Varchar exige tamanho")
+				return acao.Coluna{}, i18n.Errf("mgp_varchar_size")
 			}
 			size, ok := call.Args[0].(int)
 			if !ok {
-				return acao.Coluna{}, fmt.Errorf("Varchar exige tamanho numérico")
+				return acao.Coluna{}, i18n.Errf("mgp_varchar_size_numeric")
 			}
 			column = column.Varchar(size)
 		case "Char":
 			if len(call.Args) != 1 {
-				return acao.Coluna{}, fmt.Errorf("Char exige tamanho")
+				return acao.Coluna{}, i18n.Errf("mgp_char_size")
 			}
 			size, ok := call.Args[0].(int)
 			if !ok {
-				return acao.Coluna{}, fmt.Errorf("Char exige tamanho numérico")
+				return acao.Coluna{}, i18n.Errf("mgp_char_size_numeric")
 			}
 			column = column.Char(size)
 		case "Text":
@@ -829,12 +828,12 @@ func evalColumn(expression ast.Expr) (acao.Coluna, error) {
 			column = column.Boolean()
 		case "Decimal":
 			if len(call.Args) != 2 {
-				return acao.Coluna{}, fmt.Errorf("Decimal exige precisão e escala")
+				return acao.Coluna{}, i18n.Errf("mgp_decimal_args")
 			}
 			p, ok1 := call.Args[0].(int)
 			s, ok2 := call.Args[1].(int)
 			if !ok1 || !ok2 {
-				return acao.Coluna{}, fmt.Errorf("Decimal exige valores numéricos")
+				return acao.Coluna{}, i18n.Errf("mgp_decimal_numeric")
 			}
 			column = column.Decimal(p, s)
 		case "Date":
@@ -859,45 +858,45 @@ func evalColumn(expression ast.Expr) (acao.Coluna, error) {
 			column = column.Index()
 		case "Default":
 			if len(call.Args) != 1 {
-				return acao.Coluna{}, fmt.Errorf("Default exige um valor")
+				return acao.Coluna{}, i18n.Errf("mgp_default_value")
 			}
 			val, ok := call.Args[0].(string)
 			if !ok {
-				return acao.Coluna{}, fmt.Errorf("Default exige valor texto")
+				return acao.Coluna{}, i18n.Errf("mgp_default_text")
 			}
 			column = column.Default(val)
 		case "DefaultExpr":
 			if len(call.Args) != 1 {
-				return acao.Coluna{}, fmt.Errorf("DefaultExpr exige um valor")
+				return acao.Coluna{}, i18n.Errf("mgp_defaultexpr_value")
 			}
 			val, ok := call.Args[0].(string)
 			if !ok {
-				return acao.Coluna{}, fmt.Errorf("DefaultExpr exige valor texto")
+				return acao.Coluna{}, i18n.Errf("mgp_defaultexpr_text")
 			}
 			column = column.DefaultExpr(val)
 		case "References":
 			if len(call.Args) != 2 {
-				return acao.Coluna{}, fmt.Errorf("References exige tabela e coluna")
+				return acao.Coluna{}, i18n.Errf("mgp_references_args")
 			}
 			tbl, ok1 := call.Args[0].(string)
 			cl, ok2 := call.Args[1].(string)
 			if !ok1 || !ok2 {
-				return acao.Coluna{}, fmt.Errorf("References exige parâmetros texto")
+				return acao.Coluna{}, i18n.Errf("mgp_references_text")
 			}
 			column = column.References(tbl, cl)
 		case "Constraint":
 			if len(call.Args) != 1 {
-				return acao.Coluna{}, fmt.Errorf("Constraint exige nome")
+				return acao.Coluna{}, i18n.Errf("mgp_constraint_name")
 			}
 			name, ok := call.Args[0].(string)
 			if !ok {
-				return acao.Coluna{}, fmt.Errorf("Constraint exige nome texto")
+				return acao.Coluna{}, i18n.Errf("mgp_constraint_name_text")
 			}
 			column = column.Constraint(name)
 		case "OnDeleteCascade":
 			column = column.OnDeleteCascade()
 		default:
-			return acao.Coluna{}, fmt.Errorf("método de coluna %s não suportado", call.Method)
+			return acao.Coluna{}, i18n.Errf("mgp_col_method_unsupported", call.Method)
 		}
 	}
 	return column, nil
@@ -917,7 +916,7 @@ func stringArguments(expressions []ast.Expr) ([]string, error) {
 
 func expectArgs(c *ast.CallExpr, n int) error {
 	if len(c.Args) != n {
-		return fmt.Errorf("%s exige %d argumento(s)", callName(c), n)
+		return i18n.Errf("mgp_needs_n_args", callName(c), n)
 	}
 	return nil
 }

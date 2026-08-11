@@ -109,7 +109,10 @@ type Config struct {
 }
 
 type GoConfig struct {
-	Module          string `json:"module,omitempty"`
+	Module string `json:"module,omitempty"`
+	// Mode decide como o projeto consome o gokit: "dev" usa o checkout da pasta
+	// irmã por go.work, "prod" fixa a versão publicada. Escolhido na criação.
+	Mode            string `json:"mode,omitempty"`
 	GoKitModule     string `json:"gokit_module,omitempty"`
 	GoKitVersion    string `json:"gokit_version,omitempty"`
 	GoKitLocal      string `json:"gokit_local,omitempty"`
@@ -329,13 +332,18 @@ func checkFolderEmpty() bool {
 }
 
 func createOnboardingScaffold() error {
+	// O modo da criação: dev quando o gokit está na pasta irmã, prod quando não
+	// está. É palpite só aqui — a partir deste ponto o valor fica declarado em
+	// go.mode no gokit.json, e é ele que manda.
+	modo := gomodule.ModoInferido(".", gomodule.CanonicalGoKitModule)
 	moduleResult, err := gomodule.Ensure(gomodule.Options{
 		Root:        ".",
 		GoKitModule: gomodule.CanonicalGoKitModule,
 		GoKitLocal:  "auto",
+		Mode:        modo,
 	})
 	if err != nil {
-		return fmt.Errorf("nao foi possivel inicializar o modulo Go: %w", err)
+		return i18n.Errf("cfg_gomod_init_failed", err)
 	}
 
 	r := rand.New(rand.NewSource(time.Now().UnixNano()))
@@ -393,6 +401,7 @@ MYSQL_SCHEMA=gokit_onboarding
   "language": "pt",
   "go": {
     "module": %q,
+    "mode": %q,
     "gokit_module": %q,
     "gokit_version": %q,
     "gokit_local": %q,
@@ -461,14 +470,17 @@ MYSQL_SCHEMA=gokit_onboarding
       }
     }
   }
-}`, moduleResult.Module, moduleResult.GoKitModule, moduleResult.GoKitVersion, moduleResult.GoKitLocal)
+}`, moduleResult.Module, moduleResult.Mode, moduleResult.GoKitModule, moduleResult.GoKitVersion, moduleResult.GoKitLocal)
 	if err := os.WriteFile(filepath.Join("internal", "gokit", "gokit.json"), []byte(gokitJSON), 0o644); err != nil {
 		return err
 	}
 
 	// Gera as configurações do Docker em sincronia com as portas do .env
+	// O bind mount do gokit local só existe no modo dev: em prod ele seria um
+	// caminho de fora do projeto num arquivo commitado, que só funciona na
+	// máquina de quem gerou.
 	localGoKitVolume := ""
-	if moduleResult.GoKitLocal != "" {
+	if moduleResult.Mode == gomodule.ModoDev && moduleResult.GoKitLocal != "" {
 		localGoKitVolume = fmt.Sprintf("      - %s:/gokit\n", moduleResult.GoKitLocal)
 	}
 	dockerCompose := fmt.Sprintf(`services:
@@ -559,7 +571,9 @@ gokit_local
 *.log
 `
 	_ = os.WriteFile(".dockerignore", []byte(dockerIgnore), 0o644)
-	gitIgnore := "internal/gokit/.state/\n"
+	// go.work é decisão de máquina, não de projeto: cada dev aponta para o seu
+	// checkout do gokit. Por isso fica fora do Git.
+	gitIgnore := "internal/gokit/.state/\ngo.work\ngo.work.sum\n"
 	if current, err := os.ReadFile(".gitignore"); err == nil {
 		if !strings.Contains(string(current), "internal/gokit/.state/") {
 			_ = os.WriteFile(".gitignore", append(current, []byte("\n"+gitIgnore)...), 0o644)
@@ -567,6 +581,10 @@ gokit_local
 	} else if os.IsNotExist(err) {
 		_ = os.WriteFile(".gitignore", []byte(gitIgnore), 0o644)
 	}
+
+	// Configuração de editor no scaffold: a árvore de anotações e o executor de
+	// .http já valem no primeiro dia. Falha aqui não impede o projeto de nascer.
+	_, _, _ = EscreverConfigEditores(".")
 
 	_ = os.MkdirAll(filepath.Join("internal", "gokit", "migrate", "create_table"), 0o755)
 	_ = os.MkdirAll(filepath.Join("internal", "gokit", "migrate", "add_column"), 0o755)
@@ -849,13 +867,13 @@ func EnsureConfigExistsAndLoad() (*Config, string, []string, error) {
 
 	data, err := os.ReadFile(configPath)
 	if err != nil {
-		return nil, configPath, nil, fmt.Errorf("não foi possível ler o arquivo: %v", err)
+		return nil, configPath, nil, i18n.Errf("cfg_read_failed", err)
 	}
 
 	var rawConfig Config
 	err = json.Unmarshal(data, &rawConfig)
 	if err != nil {
-		return nil, configPath, nil, fmt.Errorf("sintaxe JSON inválida: %v", err)
+		return nil, configPath, nil, i18n.Errf("cfg_bad_json", err)
 	}
 
 	// Inicializa o idioma ativo baseado na configuração
@@ -1069,7 +1087,7 @@ func RunConfigChecks() ConfigState {
 		for name := range cfg.Connections {
 			avail = append(avail, fmt.Sprintf("'%s'", name))
 		}
-		state.ConfigFileError = fmt.Errorf("cliente ativo '%s' não encontrado. Suas conexões configuradas no gokit.json são: %s", activeClient, strings.Join(avail, ", "))
+		state.ConfigFileError = i18n.Errf("cfg_client_not_found", activeClient, strings.Join(avail, ", "))
 		return state
 	}
 

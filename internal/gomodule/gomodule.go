@@ -1,13 +1,13 @@
 package gomodule
 
 import (
-	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
 	"runtime"
 	"strings"
 
+	"github.com/PhelipeViana/gokit/internal/i18n"
 	"golang.org/x/mod/modfile"
 )
 
@@ -19,6 +19,8 @@ type Options struct {
 	GoKitModule  string
 	GoKitVersion string
 	GoKitLocal   string
+	// Mode é "dev", "prod" ou "map". Vazio é normalizado para produção.
+	Mode string
 }
 
 type Result struct {
@@ -26,6 +28,7 @@ type Result struct {
 	GoKitModule  string
 	GoKitVersion string
 	GoKitLocal   string
+	Mode         string
 }
 
 var invalidModuleChar = regexp.MustCompile(`[^A-Za-z0-9._~\-/]+`)
@@ -78,7 +81,7 @@ func Ensure(options Options) (Result, error) {
 
 	file, err := modfile.Parse(goModPath, data, nil)
 	if err != nil {
-		return Result{}, fmt.Errorf("go.mod invalido: %w", err)
+		return Result{}, i18n.Errf("mod_invalid", err)
 	}
 	moduleName := strings.TrimSpace(options.Module)
 	if file.Module != nil && strings.TrimSpace(file.Module.Mod.Path) != "" {
@@ -92,42 +95,60 @@ func Ensure(options Options) (Result, error) {
 			return Result{}, err
 		}
 	}
+	versaoGo := strings.TrimPrefix(runtime.Version(), "go")
+	if parts := strings.Split(versaoGo, "."); len(parts) >= 2 {
+		versaoGo = parts[0] + "." + parts[1]
+	}
 	if file.Go == nil {
-		version := strings.TrimPrefix(runtime.Version(), "go")
-		parts := strings.Split(version, ".")
-		if len(parts) >= 2 {
-			version = parts[0] + "." + parts[1]
-		}
-		if err := file.AddGoStmt(version); err != nil {
+		if err := file.AddGoStmt(versaoGo); err != nil {
 			return Result{}, err
 		}
 	}
 
 	local := strings.TrimSpace(options.GoKitLocal)
-	if local == "auto" {
+	if local == "auto" || local == "" {
 		local = DetectSiblingGoKit(absRoot, goKitModule)
 	}
-	version := strings.TrimSpace(options.GoKitVersion)
-	if local != "" {
-		if version == "" {
-			version = "v0.0.0"
+
+	// O go.mod é igual nos dois modos: require de uma versão publicada, sem
+	// replace. É o que torna o arquivo commitável — o desvio para a pasta local
+	// é responsabilidade do go.work, que fica fora do Git.
+	version := versaoDesejada(options.GoKitVersion)
+	if err := file.AddRequire(goKitModule, version); err != nil {
+		return Result{}, err
+	}
+	// Projeto vindo do formato antigo carrega um replace para ../gokit. Ele sai
+	// aqui: deixá-lo faria o modo prod continuar compilando contra a pasta local
+	// sem ninguém perceber.
+	if err := file.DropReplace(goKitModule, ""); err != nil {
+		return Result{}, err
+	}
+
+	mode := NormalizarModo(options.Mode)
+	if mode == ModoDev {
+		// Uma mensagem só para os dois jeitos de faltar o gokit local — não achamos
+		// a pasta irmã, ou o caminho configurado não tem go.mod. Para quem lê o
+		// erro é o mesmo problema, e a saída é a mesma.
+		exibicao := local
+		if exibicao == "" {
+			exibicao = "../gokit"
 		}
 		localPath := local
-		if !filepath.IsAbs(localPath) {
+		if localPath != "" && !filepath.IsAbs(localPath) {
 			localPath = filepath.Join(absRoot, filepath.FromSlash(localPath))
 		}
+		if localPath == "" {
+			return Result{}, i18n.Errf("mod_dev_sem_local", exibicao)
+		}
 		if _, err := os.Stat(filepath.Join(localPath, "go.mod")); err != nil {
-			return Result{}, fmt.Errorf("codigo local do GoKit nao encontrado em %s", local)
+			return Result{}, i18n.Errf("mod_dev_sem_local", exibicao)
 		}
-		if err := file.AddRequire(goKitModule, version); err != nil {
-			return Result{}, err
+		if err := escreverGoWork(absRoot, versaoGo, version, local); err != nil {
+			return Result{}, i18n.Errf("mod_gowork_falhou", err)
 		}
-		if err := file.AddReplace(goKitModule, "", filepath.ToSlash(local), ""); err != nil {
-			return Result{}, err
-		}
-	} else if version != "" {
-		if err := file.AddRequire(goKitModule, version); err != nil {
-			return Result{}, err
+	} else {
+		if err := removerGoWorkDoGoKit(absRoot, local); err != nil {
+			return Result{}, i18n.Errf("mod_gowork_falhou", err)
 		}
 	}
 
@@ -138,5 +159,8 @@ func Ensure(options Options) (Result, error) {
 	if err := os.WriteFile(goModPath, formatted, 0o644); err != nil {
 		return Result{}, err
 	}
-	return Result{Module: moduleName, GoKitModule: goKitModule, GoKitVersion: version, GoKitLocal: local}, nil
+	return Result{
+		Module: moduleName, GoKitModule: goKitModule,
+		GoKitVersion: version, GoKitLocal: local, Mode: mode,
+	}, nil
 }

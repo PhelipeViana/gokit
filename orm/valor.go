@@ -7,30 +7,30 @@ import (
 	"time"
 )
 
-// Valor é o resultado de uma consulta escalar (agregação, Pluck). Uma agregação
+// Value é o resultado de uma consulta escalar (agregação, Pluck). Uma agregação
 // é dinâmica por natureza — MIN de uma data devolve data, de um id devolve
 // número — então o motor lê o valor cru e o chamador extrai no tipo que espera.
 // É o que corrige o Min/Max em coluna de data (antes tudo era lido como float64
 // e a data estourava o Scan).
-type Valor struct{ bruto any }
+type Value struct{ bruto any }
 
-// NovoValor embala um valor cru (uso interno e de testes).
-func NovoValor(v any) Valor { return Valor{bruto: normalizeCell(v)} }
+// NewValue embala um valor cru (uso interno e de testes).
+func NewValue(v any) Value { return Value{bruto: normalizeCell(v)} }
 
-// MarshalJSON serializa o valor CRU, não o struct. Sem isto um Valor devolvido
+// MarshalJSON serializa o valor CRU, não o struct. Sem isto um Value devolvido
 // numa resposta JSON sairia como "{}" (o campo interno é privado).
-func (v Valor) MarshalJSON() ([]byte, error) { return json.Marshal(v.bruto) }
+func (v Value) MarshalJSON() ([]byte, error) { return json.Marshal(v.bruto) }
 
 // Nulo informa que a consulta não devolveu valor (ex.: agregação sem linhas).
-func (v Valor) Nulo() bool { return v.bruto == nil }
+func (v Value) IsNull() bool { return v.bruto == nil }
 
 // Bruto devolve o valor como veio do driver.
-func (v Valor) Bruto() any { return v.bruto }
+func (v Value) Raw() any { return v.bruto }
 
-func (v Valor) String() string { return v.Texto() }
+func (v Value) String() string { return v.Text() }
 
 // Texto converte para string (número e data viram texto legível).
-func (v Valor) Texto() string {
+func (v Value) Text() string {
 	switch t := v.bruto.(type) {
 	case nil:
 		return ""
@@ -44,7 +44,7 @@ func (v Valor) Texto() string {
 }
 
 // Int converte para int64 (trunca fracionário). Zero quando nulo/inconvertível.
-func (v Valor) Int() int64 {
+func (v Value) Int() int64 {
 	switch t := v.bruto.(type) {
 	case int64:
 		return t
@@ -70,7 +70,7 @@ func (v Valor) Int() int64 {
 }
 
 // Float converte para float64. Zero quando nulo/inconvertível.
-func (v Valor) Float() float64 {
+func (v Value) Float() float64 {
 	switch t := v.bruto.(type) {
 	case float64:
 		return t
@@ -93,7 +93,7 @@ func (v Valor) Float() float64 {
 }
 
 // Bool converte para booleano (0/1, "true"/"false").
-func (v Valor) Bool() bool {
+func (v Value) Bool() bool {
 	switch t := v.bruto.(type) {
 	case bool:
 		return t
@@ -109,12 +109,12 @@ func (v Valor) Bool() bool {
 }
 
 // Tempo converte para time.Time, aceitando os formatos de data usuais em texto.
-func (v Valor) Tempo() time.Time {
+func (v Value) Time() time.Time {
 	switch t := v.bruto.(type) {
 	case time.Time:
 		return t
 	case string:
-		if d, ok := parseData(t); ok {
+		if d, ok := parseDate(t); ok {
 			return d
 		}
 	}

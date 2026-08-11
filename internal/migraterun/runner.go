@@ -20,6 +20,7 @@ import (
 
 	"github.com/PhelipeViana/gokit/internal/cliui"
 	"github.com/PhelipeViana/gokit/internal/config"
+	"github.com/PhelipeViana/gokit/internal/i18n"
 	"github.com/PhelipeViana/gokit/internal/migrationgo"
 	"github.com/PhelipeViana/gokit/migration/acao"
 )
@@ -44,7 +45,7 @@ type MigrationChangedError struct {
 }
 
 func (e MigrationChangedError) Error() string {
-	return fmt.Sprintf("migration %s foi alterada depois de executada", e.Name)
+	return i18n.Tf("run_changed_after_run", e.Name)
 }
 
 // LoadIssue é um problema encontrado em um arquivo de migration durante a
@@ -62,7 +63,7 @@ type LoadError struct {
 
 func (e *LoadError) Error() string {
 	var builder strings.Builder
-	fmt.Fprintf(&builder, "%d migration(s) com problema:", len(e.Issues))
+	fmt.Fprintf(&builder, i18n.T("run_load_problems"), len(e.Issues))
 	for _, issue := range e.Issues {
 		fmt.Fprintf(&builder, "\n  %s\n    %s", issue.File, issue.Detail)
 	}
@@ -149,15 +150,15 @@ func ValidateReport(root string, state config.ConfigState) error {
 
 	var loadErr *LoadError
 	if errors.As(err, &loadErr) {
-		fmt.Printf("%s %d problema(s) encontrado(s):\n", cliui.Failure("✗"), len(loadErr.Issues))
-		fmt.Println(cliui.Muted("\nPor causa:") + loadErr.Summary())
-		fmt.Println(cliui.Muted("\nPor arquivo:"))
+		fmt.Printf(i18n.T("run_problems_found"), cliui.Failure("✗"), len(loadErr.Issues))
+		fmt.Println(cliui.Muted(i18n.T("run_by_cause")) + loadErr.Summary())
+		fmt.Println(cliui.Muted(i18n.T("run_by_file")))
 		for _, issue := range loadErr.Issues {
 			fmt.Printf("  %s %s\n      %s\n", cliui.Failure("•"), issue.File, issue.Detail)
 		}
 		return cliui.NewUserError(
-			fmt.Sprintf("%d migration(s) não passaram na pré-validação.", len(loadErr.Issues)),
-			"Corrija os arquivos listados acima e rode gokit migrate validate novamente.",
+			i18n.Tf("run_prevalidation_count", len(loadErr.Issues)),
+			i18n.T("run_prevalidation_fix"),
 		)
 	}
 	if err != nil {
@@ -178,7 +179,7 @@ func ValidateReport(root string, state config.ConfigState) error {
 	}
 	sort.Strings(names)
 
-	fmt.Printf("%s %d migration(s), %d operação(ões)\n", cliui.Success("✓ OK"), len(files), operations)
+	fmt.Printf(i18n.T("run_ok_files"), cliui.Success("✓ OK"), len(files), operations)
 	for _, kind := range names {
 		fmt.Printf("  %s %-20s %d\n", cliui.Muted("·"), kind, kinds[kind])
 	}
@@ -192,8 +193,8 @@ func Run(root string, state config.ConfigState) error {
 	}
 	if len(files) == 0 {
 		return cliui.NewUserError(
-			"Nenhuma migration foi gerada.",
-			fmt.Sprintf("Crie um arquivo de migration em Go sob %s para começar.", state.Config.Output.Migrate),
+			i18n.T("run_none_generated"),
+			i18n.Tf("run_create_first", state.Config.Output.Migrate),
 		)
 	}
 
@@ -210,20 +211,20 @@ func Run(root string, state config.ConfigState) error {
 	if runErr != nil {
 		fmt.Printf("  %s %s\n", cliui.Failure("✗ ERRO:"), runErr)
 		message, solution := migrationConnectionAdvice(connection, runErr)
-		fmt.Printf("  %s %s\n", cliui.Warning("⚠ Diagnóstico:"), message)
+		fmt.Printf("  %s %s\n", cliui.Warning(i18n.T("run_diagnosis_label")), message)
 		var changed MigrationChangedError
 		if errors.As(runErr, &changed) {
 			return cliui.NewUserError(
-				"O histórico de migrations divergiu dos arquivos locais.",
+				i18n.T("run_history_diverged"),
 				solution,
 			)
 		}
 		return cliui.NewUserError(
-			"A conexão ativa não concluiu as migrations.",
+			i18n.T("run_conn_incomplete"),
 			solution,
 		)
 	}
-	fmt.Printf("  %s %d aplicada(s), %d já executada(s)\n", cliui.Success("✓ OK"), applied, skipped)
+	fmt.Printf(i18n.T("run_applied_count"), cliui.Success("✓ OK"), applied, skipped)
 
 	// O seed inicial de cada tabela roda aqui: nesse ponto a tabela acabou de
 	// nascer, então é inserção pura. As correções ficam para o `seed run`.
@@ -232,12 +233,12 @@ func Run(root string, state config.ConfigState) error {
 	}
 	if err := GenerateDocumentation(root, state); err != nil {
 		return cliui.NewUserError(
-			"As migrations foram aplicadas, mas a documentação não pôde ser atualizada.",
+			i18n.T("run_docs_failed"),
 			err.Error(),
 		)
 	}
 
-	fmt.Println("\n" + cliui.Success("✓ Migrations atualizadas na conexão padrão."))
+	fmt.Println("\n" + cliui.Success(i18n.T("run_migrations_updated")))
 	return nil
 }
 
@@ -342,11 +343,11 @@ func describeLoadError(err error) error {
 	if !errors.As(err, &loadErr) {
 		return err
 	}
-	fmt.Printf("%s %d migration(s) não passaram na pré-validação:\n%s\n",
+	fmt.Printf(i18n.T("run_prevalidation_list"),
 		cliui.Failure("✗"), len(loadErr.Issues), loadErr.Summary())
 	return cliui.NewUserError(
-		"O corpus de migrations tem erros e nada foi aplicado.",
-		"Rode gokit migrate validate para ver arquivo por arquivo.",
+		i18n.T("run_corpus_broken"),
+		i18n.T("run_corpus_broken_fix"),
 	)
 }
 
@@ -356,7 +357,7 @@ func Rollback(root string, state config.ConfigState) error {
 		return describeLoadError(err)
 	}
 	if len(files) == 0 {
-		return cliui.NewUserError("Nenhuma migration encontrada.", "Nenhuma migration disponível.")
+		return cliui.NewUserError(i18n.T("run_none_found"), i18n.T("run_none_available"))
 	}
 
 	connection := state.Config.Connections[state.ActiveClient]
@@ -372,7 +373,7 @@ func Rollback(root string, state config.ConfigState) error {
 		"oracle": "oracle", "postgres": "pgx", "mysql": "mysql", "sqlserver": "sqlserver",
 	}[dialect]
 	if driver == "" {
-		return fmt.Errorf("dialeto não suportado: %s", dialect)
+		return i18n.Errf("run_dialect_unsupported", dialect)
 	}
 	db, err := sql.Open(driver, activeURL)
 	if err != nil {
@@ -394,17 +395,17 @@ func Rollback(root string, state config.ConfigState) error {
 	var maxBatch int
 	err = db.QueryRowContext(ctx, fmt.Sprintf("SELECT COALESCE(MAX(batch), 0) FROM %s", qualified(dialect, schema, historyTable))).Scan(&maxBatch)
 	if err != nil {
-		return fmt.Errorf("erro ao buscar último batch: %w", err)
+		return i18n.Errf("run_batch_fetch_failed", err)
 	}
 
 	if maxBatch == 0 {
-		fmt.Println("Nenhuma migration para reverter.")
+		fmt.Println(i18n.T("run_nothing_to_rollback"))
 		return nil
 	}
 
 	rows, err := db.QueryContext(ctx, fmt.Sprintf("SELECT migration FROM %s WHERE batch = %d ORDER BY id DESC", qualified(dialect, schema, historyTable), maxBatch))
 	if err != nil {
-		return fmt.Errorf("erro ao buscar histórico do lote %d: %w", maxBatch, err)
+		return i18n.Errf("run_history_fetch_failed", maxBatch, err)
 	}
 	defer rows.Close()
 
@@ -418,7 +419,7 @@ func Rollback(root string, state config.ConfigState) error {
 	}
 
 	if len(migrationsToRollback) == 0 {
-		fmt.Println("Nenhuma migration encontrada para reverter no lote", maxBatch)
+		fmt.Println(i18n.T("run_batch_empty"), maxBatch)
 		return nil
 	}
 
@@ -428,7 +429,7 @@ func Rollback(root string, state config.ConfigState) error {
 		filesMap[file.Name] = file
 	}
 
-	fmt.Printf("Revertendo lote %d (%d migrations)...\n", maxBatch, len(migrationsToRollback))
+	fmt.Printf(i18n.T("run_reverting_batch"), maxBatch, len(migrationsToRollback))
 
 	// Os aliases precisam estar resolvidos aqui também: o plano guarda o
 	// apelido, e o banco só conhece o nome físico.
@@ -440,7 +441,7 @@ func Rollback(root string, state config.ConfigState) error {
 	for _, name := range migrationsToRollback {
 		file, exists := filesMap[name]
 		if !exists {
-			return fmt.Errorf("arquivo da migration %s não encontrado no projeto. Impossível reverter sem a definição Go", name)
+			return i18n.Errf("run_file_missing", name)
 		}
 
 		fmt.Printf("  %s %s\n", cliui.Warning("←"), file.Name)
@@ -455,7 +456,7 @@ func Rollback(root string, state config.ConfigState) error {
 				continue
 			}
 			if _, err := db.ExecContext(ctx, rollbackQuery); err != nil {
-				return fmt.Errorf("falha ao reverter operação %s na tabela %s: %w", operation.Kind, operation.Table, err)
+				return i18n.Errf("run_revert_failed", operation.Kind, operation.Table, err)
 			}
 		}
 
@@ -468,11 +469,11 @@ func Rollback(root string, state config.ConfigState) error {
 
 		_, err = db.ExecContext(ctx, deleteQuery, name)
 		if err != nil {
-			return fmt.Errorf("erro ao remover histórico da migration %s: %w", name, err)
+			return i18n.Errf("run_history_delete_failed", name, err)
 		}
 	}
 
-	fmt.Println("\n" + cliui.Success("✓ Rollback concluído com sucesso."))
+	fmt.Println("\n" + cliui.Success(i18n.T("run_rollback_done")))
 	return nil
 }
 
@@ -488,7 +489,7 @@ func rollbackSQL(dialect, schema string, operation acao.Operacao) (string, error
 		return dropTableSQL(dialect, schema, operation.Table), nil
 	case acao.AddColumn:
 		if operation.Column == nil {
-			return "", fmt.Errorf("add_column sem coluna")
+			return "", i18n.Errf("run_add_column_no_column")
 		}
 		return fmt.Sprintf("ALTER TABLE %s DROP COLUMN %s",
 			qualified(dialect, schema, operation.Table), quote(dialect, operation.Column.Name)), nil
@@ -500,7 +501,7 @@ func rollbackSQL(dialect, schema string, operation acao.Operacao) (string, error
 		return "DROP INDEX " + quote(dialect, operation.Name), nil
 	case acao.AddForeignKey:
 		if operation.ForeignKey == nil {
-			return "", fmt.Errorf("add_foreign_key sem definição")
+			return "", i18n.Errf("run_fk_no_definition")
 		}
 		// O nome precisa ser recalculado igual ao da criação: quando a FK não
 		// declara ConstraintName, o executor gera um a partir de tabela+coluna.
@@ -524,7 +525,7 @@ func rollbackSQL(dialect, schema string, operation acao.Operacao) (string, error
 			qualified(dialect, schema, operation.NewName), quote(dialect, operation.Table)), nil
 	case acao.RenameColumn:
 		if operation.Column == nil {
-			return "", fmt.Errorf("rename_column sem coluna")
+			return "", i18n.Errf("run_rename_column_no_column")
 		}
 		if dialect == "sqlserver" {
 			return fmt.Sprintf("EXEC sp_rename N'%s.%s', N'%s', N'COLUMN'",
@@ -534,21 +535,21 @@ func rollbackSQL(dialect, schema string, operation acao.Operacao) (string, error
 			qualified(dialect, schema, operation.Table), quote(dialect, operation.NewName), quote(dialect, operation.Column.Name)), nil
 	case acao.RawSQL, acao.AlterView:
 		// Sem informação do estado anterior não há como desfazer com segurança.
-		return "", fmt.Errorf("a operação %s não é reversível automaticamente; reverta manualmente ou crie uma migration de correção", operation.Kind)
+		return "", i18n.Errf("run_not_reversible", operation.Kind)
 	case acao.DropTable, acao.DropColumn, acao.DropIndex, acao.DropView,
 		acao.DropSequence, acao.DropConstraint, acao.DropForeignKey:
-		return "", fmt.Errorf("a operação %s removeu um objeto e não pode ser recriada automaticamente; reverta manualmente", operation.Kind)
+		return "", i18n.Errf("run_drop_not_recreatable", operation.Kind)
 	case acao.AlterColumn:
-		return "", fmt.Errorf("alter_column não guarda a definição anterior da coluna; reverta manualmente")
+		return "", i18n.Errf("run_alter_no_previous")
 	default:
-		return "", fmt.Errorf("operação %s não tem rollback definido", operation.Kind)
+		return "", i18n.Errf("run_no_rollback_defined", operation.Kind)
 	}
 }
 
 func pingConnection(connection config.ConnConfig) error {
 	driver := map[string]string{"oracle": "oracle", "postgres": "pgx", "mysql": "mysql", "sqlserver": "sqlserver"}[strings.ToLower(connection.Dialect)]
 	if driver == "" {
-		return fmt.Errorf("dialeto não suportado: %s", connection.Dialect)
+		return i18n.Errf("run_dialect_unsupported", connection.Dialect)
 	}
 	db, err := sql.Open(driver, connection.BuildURL())
 	if err != nil {
@@ -588,9 +589,9 @@ func resetConnection(connection config.ConnConfig, historyTable string, files []
 			continue
 		}
 		if _, err := db.ExecContext(ctx, "DROP VIEW "+qualified(dialect, connection.Schema, view)); err != nil {
-			return fmt.Errorf("remover view %s: %w", view, err)
+			return i18n.Errf("run_view_drop_failed", view, err)
 		}
-		fmt.Printf("  - view %s removida\n", view)
+		fmt.Printf(i18n.T("run_view_removed"), view)
 	}
 	tables := managedTables(files)
 	for _, table := range tables {
@@ -602,9 +603,9 @@ func resetConnection(connection config.ConnConfig, historyTable string, files []
 			continue
 		}
 		if _, err := db.ExecContext(ctx, dropTableSQL(dialect, connection.Schema, table)); err != nil {
-			return fmt.Errorf("remover tabela %s: %w", table, err)
+			return i18n.Errf("run_table_drop_failed", table, err)
 		}
-		fmt.Printf("  - tabela %s removida\n", table)
+		fmt.Printf(i18n.T("run_table_removed"), table)
 	}
 	exists, err := tableExists(ctx, db, dialect, connection.Schema, historyTable)
 	if err != nil {
@@ -612,7 +613,7 @@ func resetConnection(connection config.ConnConfig, historyTable string, files []
 	}
 	if exists {
 		if _, err := db.ExecContext(ctx, dropTableSQL(dialect, connection.Schema, historyTable)); err != nil {
-			return fmt.Errorf("remover histórico %s: %w", historyTable, err)
+			return i18n.Errf("run_history_drop_failed", historyTable, err)
 		}
 	}
 	return nil
@@ -679,15 +680,7 @@ func managedTables(files []migrationFile) []string {
 func migrationConnectionAdvice(connection config.ConnConfig, err error) (string, string) {
 	var changed MigrationChangedError
 	if errors.As(err, &changed) {
-		return fmt.Sprintf(
-				"%s já foi executada e o arquivo local agora possui outro conteúdo; a conexão com o banco está funcionando",
-				changed.Name,
-			), strings.Join([]string{
-				"Não altere nem apague uma migration já executada.",
-				"Se ela foi compartilhada: restaure o arquivo original e mantenha a correção ou o Drop em uma nova migration.",
-				"Se o banco é descartável e somente de desenvolvimento: restaure o arquivo ou remova apenas os arquivos locais ainda não executados e use Reload Fresh para reconstruir o banco.",
-				"Se Create e Drop nunca foram executados em nenhum ambiente: remova os dois arquivos e rode Reload novamente.",
-			}, "\n")
+		return i18n.Tf("run_advice_changed", changed.Name), i18n.T("run_advice_changed_fix")
 	}
 
 	detail := strings.ToLower(err.Error())
@@ -700,45 +693,35 @@ func migrationConnectionAdvice(connection config.ConnConfig, err error) (string,
 		strings.Contains(detail, "actively refused"),
 		strings.Contains(detail, "no connection could be made"):
 		if local {
-			return fmt.Sprintf(
-					"%s é uma conexão local; este erro não depende da internet e indica que a porta, o container ou o listener não aceitou a sessão",
-					host,
+			return i18n.Tf("run_advice_local_refused", host,
 				),
-				"Confirme o container, a porta publicada e o listener Oracle; depois execute Connection e Migrate Run novamente."
+				i18n.T("run_advice_local_refused_fix")
 		}
-		return fmt.Sprintf(
-				"%s é um host remoto; o servidor recusou a conexão e pode haver indisponibilidade, firewall, VPN ou falha de internet",
-				host,
+		return i18n.Tf("run_advice_remote_refused", host,
 			),
-			"Confira sua internet/VPN, DNS, firewall, host e porta; depois execute Connection e Migrate Run novamente."
+			i18n.T("run_advice_remote_refused_fix")
 	case strings.Contains(detail, "no such host"),
 		strings.Contains(detail, "server misbehaving"),
 		strings.Contains(detail, "name resolution"):
-		return fmt.Sprintf(
-				"não foi possível resolver o host %s; a causa pode ser DNS, VPN ou conexão com a internet",
-				host,
+		return i18n.Tf("run_advice_dns", host,
 			),
-			"Confira sua internet/VPN e o nome do host no connection.yaml; depois execute Connection novamente."
+			i18n.T("run_advice_dns_fix")
 	case strings.Contains(detail, "timeout"),
 		strings.Contains(detail, "deadline exceeded"):
 		if local {
-			return fmt.Sprintf(
-					"%s é local; o serviço não respondeu no tempo esperado e a internet não é necessária",
-					host,
+			return i18n.Tf("run_advice_local_timeout", host,
 				),
-				"Confira a saúde do container, a porta e os logs do banco; depois execute Connection novamente."
+				i18n.T("run_advice_local_timeout_fix")
 		}
-		return fmt.Sprintf(
-				"%s não respondeu; verifique internet, VPN, rota, firewall e disponibilidade do servidor",
-				host,
+		return i18n.Tf("run_advice_remote_timeout", host,
 			),
-			"Teste sua internet/VPN e a conectividade com o host e a porta antes de repetir Migrate Run."
+			i18n.T("run_advice_remote_timeout_fix")
 	case strings.Contains(detail, "ora-12514"):
-		return "o listener respondeu, mas o serviço Oracle configurado não foi encontrado",
-			"Confira ORACLE_SERVICE no .env e os serviços registrados no listener; depois execute Connection novamente."
+		return i18n.T("run_advice_oracle_service"),
+			i18n.T("run_advice_oracle_service_fix")
 	default:
-		return "a conexão foi alcançada, mas o banco recusou ou interrompeu a operação",
-			"Confira a mensagem técnica acima, execute Connection e corrija a configuração antes de repetir Migrate Run."
+		return i18n.T("run_advice_db_refused"),
+			i18n.T("run_advice_db_refused_fix")
 	}
 }
 
@@ -757,7 +740,7 @@ func connectionHost(connection config.ConnConfig) string {
 	if parsed, err := url.Parse(connection.BuildURL()); err == nil && parsed.Hostname() != "" {
 		return parsed.Hostname()
 	}
-	return "host configurado"
+	return i18n.T("run_host_configured")
 }
 
 func isLocalHost(host string) bool {
@@ -773,7 +756,7 @@ func loadPlans(folder string) ([]migrationFile, error) {
 	projectRoot := findProjectRoot(folder)
 	if projectRoot != "" {
 		if err := migrationgo.PrimeCoreCatalog(projectRoot, paths); err != nil {
-			return nil, fmt.Errorf("reconstruir catálogo inicial de aliases: %w", err)
+			return nil, i18n.Errf("run_alias_catalog_rebuild", err)
 		}
 	}
 	failures := &LoadError{}
@@ -827,7 +810,7 @@ func loadPlans(folder string) ([]migrationFile, error) {
 	})
 	for index := 1; index < len(result); index++ {
 		if result[index-1].ID == result[index].ID {
-			failures.add(displayMigrationPath(folder, result[index].Path), "ID de migration duplicado %s, já usado por %s",
+			failures.add(displayMigrationPath(folder, result[index].Path), i18n.T("run_dup_migration_id"),
 				result[index].ID, displayMigrationPath(folder, result[index-1].Path))
 		}
 	}
@@ -853,10 +836,10 @@ func loadPlans(folder string) ([]migrationFile, error) {
 	}
 	if projectRoot != "" {
 		if err := migrationgo.WriteCoreCatalog(projectRoot, aliases); err != nil {
-			return nil, fmt.Errorf("gerar catálogo de aliases no core: %w", err)
+			return nil, i18n.Errf("run_alias_catalog_gen", err)
 		}
 		if err := migrationgo.WriteCoreViewCatalog(projectRoot, views); err != nil {
-			return nil, fmt.Errorf("gerar catálogo de views no core: %w", err)
+			return nil, i18n.Errf("run_view_catalog_gen", err)
 		}
 	}
 	return result, nil
@@ -908,25 +891,25 @@ func validatePlans(files []migrationFile, failures *LoadError) {
 			switch operation.Kind {
 			case string(acao.CreateView):
 				if views[operation.Name] {
-					failures.add(file.Name, "view %q já existe", operation.Name)
+					failures.add(file.Name, i18n.T("run_view_exists"), operation.Name)
 				}
 				views[operation.Name] = true
 				continue
 			case string(acao.AlterView):
 				if !views[operation.Name] {
-					failures.add(file.Name, "AlterView exige uma view existente")
+					failures.add(file.Name, "%s", i18n.T("run_alterview_needs_view"))
 				}
 				continue
 			case string(acao.DropView):
 				if !views[operation.Name] {
-					failures.add(file.Name, "DropView exige uma view existente")
+					failures.add(file.Name, "%s", i18n.T("run_dropview_needs_view"))
 				}
 				views[operation.Name] = false
 				continue
 			}
 			if referenced := referencedColumns(operation); len(referenced) > 0 {
 				if missing := keyed.unknownColumns(operation.Table, referenced); len(missing) > 0 {
-					failures.add(file.Name, "%s em %q usa a(s) coluna(s) %s, que nenhuma migration anterior criou",
+					failures.add(file.Name, i18n.T("run_unknown_columns"),
 						operation.Kind, operation.Table, strings.Join(missing, ", "))
 				}
 			}
@@ -943,7 +926,7 @@ func validatePlans(files []migrationFile, failures *LoadError) {
 			if name := constraintNameOf(operation); name != "" {
 				key := strings.ToLower(name)
 				if previous, taken := constraintNames[key]; taken {
-					failures.add(file.Name, "o nome de constraint/índice %q já foi usado em %s; nomes precisam ser únicos no schema", name, previous)
+					failures.add(file.Name, i18n.T("run_constraint_name_used"), name, previous)
 				} else {
 					constraintNames[key] = file.Name
 				}
@@ -954,12 +937,12 @@ func validatePlans(files []migrationFile, failures *LoadError) {
 					_, knownAlias := aliases[reference]
 					_, knownPhysical := physical[reference]
 					if !knownAlias && !knownPhysical {
-						failures.add(file.Name, "alias de tabela %q não foi declarado por nenhum CreateTable anterior", operation.Table)
+						failures.add(file.Name, i18n.T("run_alias_undeclared"), operation.Table)
 					}
 					if operation.Kind == string(acao.RenameTable) {
 						newKey := strings.ToLower(operation.NewName)
 						if previous, exists := physical[newKey]; exists {
-							failures.add(file.Name, "RenameTable usaria o nome físico %q já declarado em %s", operation.NewName, previous)
+							failures.add(file.Name, i18n.T("run_rename_physical_taken"), operation.NewName, previous)
 						}
 						physical[newKey] = file.Name
 					}
@@ -968,11 +951,11 @@ func validatePlans(files []migrationFile, failures *LoadError) {
 			}
 			key := strings.ToLower(operation.Table)
 			if previous, exists := physical[key]; exists {
-				failures.add(file.Name, "CreateTable duplicado para %q, já declarado em %s", operation.Table, previous)
+				failures.add(file.Name, i18n.T("run_createtable_dup"), operation.Table, previous)
 			}
 			alias := strings.ToLower(operation.AliasName)
 			if previous, exists := aliases[alias]; exists {
-				failures.add(file.Name, "alias %q duplicado, já declarado em %s", operation.AliasName, previous)
+				failures.add(file.Name, i18n.T("run_alias_dup"), operation.AliasName, previous)
 			}
 			physical[key], aliases[alias] = file.Name, file.Name
 		}
@@ -1063,8 +1046,7 @@ func (k *keyIndex) mismatchedForeignKeyTypes(operation acao.Operacao) string {
 		if childType == "" || parentType == "" || childType == parentType {
 			continue
 		}
-		return fmt.Sprintf("a FK %s.%s é %s mas %s.%s é %s; os dois lados precisam ter o mesmo tipo",
-			operation.Table, locals[index], childType, fk.ReferenceTable, references[index], parentType)
+		return i18n.Tf("run_fk_type_mismatch", operation.Table, locals[index], childType, fk.ReferenceTable, references[index], parentType)
 	}
 	return ""
 }
@@ -1196,9 +1178,7 @@ func (k *keyIndex) missingParentKey(operation acao.Operacao) string {
 	if k.keys[parent][columnSetKey(references)] {
 		return ""
 	}
-	return fmt.Sprintf(
-		"a FK de %s(%s) referencia %s(%s), mas essas colunas ainda não são PRIMARY KEY nem UNIQUE; declare AddUnique/AddPrimaryKey em %s antes desta migration",
-		operation.Table, strings.Join(fkColumns(fk), ", "), fk.ReferenceTable, strings.Join(references, ", "), fk.ReferenceTable)
+	return i18n.Tf("run_fk_target_not_unique", operation.Table, strings.Join(fkColumns(fk), ", "), fk.ReferenceTable, strings.Join(references, ", "), fk.ReferenceTable)
 }
 
 // constraintNameOf devolve o nome que a operação vai reservar no schema, já
@@ -1265,7 +1245,7 @@ func runConnection(connection config.ConnConfig, historyTable string, files []mi
 		"oracle": "oracle", "postgres": "pgx", "mysql": "mysql", "sqlserver": "sqlserver",
 	}[dialect]
 	if driver == "" {
-		return 0, 0, fmt.Errorf("dialeto não suportado: %s", dialect)
+		return 0, 0, i18n.Errf("run_dialect_unsupported", dialect)
 	}
 	db, err := sql.Open(driver, connection.BuildURL())
 	if err != nil {
@@ -1278,7 +1258,7 @@ func runConnection(connection config.ConnConfig, historyTable string, files []mi
 		return 0, 0, err
 	}
 	if err := ensureHistory(ctx, db, dialect, connection.Schema, historyTable); err != nil {
-		return 0, 0, fmt.Errorf("criar %s: %w", historyTable, err)
+		return 0, 0, i18n.Errf("run_create_failed", historyTable, err)
 	}
 	history, batch, err := loadHistory(ctx, db, dialect, connection.Schema, historyTable)
 	if err != nil {
@@ -1309,7 +1289,7 @@ func runConnection(connection config.ConnConfig, historyTable string, files []mi
 			}
 		}
 		if err := insertHistory(ctx, db, dialect, connection.Schema, historyTable, file, batch); err != nil {
-			return applied, skipped, fmt.Errorf("registrar %s: %w", file.Name, err)
+			return applied, skipped, i18n.Errf("run_register_failed", file.Name, err)
 		}
 		advanceAliases(aliases, file.Plan.Operations)
 		applied++
@@ -1409,13 +1389,13 @@ func executeOperation(ctx context.Context, db *sql.DB, dialect, schema string, o
 			return err
 		}
 		if _, err := db.ExecContext(ctx, query); err != nil {
-			return fmt.Errorf("criar tabela %s: %w", operation.Table, err)
+			return i18n.Errf("run_table_create_failed", operation.Table, err)
 		}
 		cache.noteTable(operation.Table, operation.Columns)
 		created[operation.Table] = true
 	case "add_column":
 		if operation.Column == nil {
-			return fmt.Errorf("operação add_column inválida")
+			return i18n.Errf("run_op_add_column_invalid")
 		}
 		exists, err := cache.hasColumn(ctx, db, operation.Table, operation.Column.Name)
 		if err != nil {
@@ -1426,12 +1406,12 @@ func executeOperation(ctx context.Context, db *sql.DB, dialect, schema string, o
 		}
 		query := fmt.Sprintf("ALTER TABLE %s ADD %s", qualified(dialect, schema, operation.Table), columnDefinition(dialect, *operation.Column, false))
 		if _, err := db.ExecContext(ctx, query); err != nil {
-			return fmt.Errorf("adicionar %s.%s: %w", operation.Table, operation.Column.Name, err)
+			return i18n.Errf("run_column_add_failed", operation.Table, operation.Column.Name, err)
 		}
 		cache.noteColumn(operation.Table, *operation.Column)
 	case "alter_column":
 		if operation.Column == nil {
-			return fmt.Errorf("operação alter_column inválida")
+			return i18n.Errf("run_op_alter_column_invalid")
 		}
 		var currentNullable *bool
 		if dialect == "oracle" {
@@ -1443,24 +1423,24 @@ func executeOperation(ctx context.Context, db *sql.DB, dialect, schema string, o
 		}
 		for _, query := range alterColumnSQL(dialect, schema, operation.Table, *operation.Column, currentNullable) {
 			if _, err := db.ExecContext(ctx, query); err != nil {
-				return fmt.Errorf("alterar %s.%s: %w", operation.Table, operation.Column.Name, err)
+				return i18n.Errf("run_column_alter_failed", operation.Table, operation.Column.Name, err)
 			}
 		}
 	case "drop_column":
 		if operation.Column == nil {
-			return fmt.Errorf("operação drop_column inválida")
+			return i18n.Errf("run_op_drop_column_invalid")
 		}
 		query := fmt.Sprintf("ALTER TABLE %s DROP COLUMN %s", qualified(dialect, schema, operation.Table), quote(dialect, operation.Column.Name))
 		if _, err := db.ExecContext(ctx, query); err != nil {
-			return fmt.Errorf("remover %s.%s: %w", operation.Table, operation.Column.Name, err)
+			return i18n.Errf("run_column_drop_failed", operation.Table, operation.Column.Name, err)
 		}
 	case "drop_table":
 		if _, err := db.ExecContext(ctx, dropTableSQL(dialect, schema, operation.Table)); err != nil {
-			return fmt.Errorf("remover tabela %s: %w", operation.Table, err)
+			return i18n.Errf("run_table_drop_failed", operation.Table, err)
 		}
 	case "add_foreign_key":
 		if operation.ForeignKey == nil {
-			return fmt.Errorf("operação add_foreign_key inválida")
+			return i18n.Errf("run_op_add_fk_invalid")
 		}
 		fk := operation.ForeignKey
 		name := fk.ConstraintName
@@ -1484,11 +1464,11 @@ func executeOperation(ctx context.Context, db *sql.DB, dialect, schema string, o
 			qualified(dialect, schema, fk.ReferenceTable), strings.Join(quotedColumns(dialect, references), ", "), onDelete,
 		)
 		if _, err := db.ExecContext(ctx, query); err != nil {
-			return fmt.Errorf("criar relacionamento %s.%s: %w", operation.Table, fk.Column, err)
+			return i18n.Errf("run_fk_create_failed", operation.Table, fk.Column, err)
 		}
 	case "drop_foreign_key":
 		if operation.ForeignKey == nil {
-			return fmt.Errorf("operação drop_foreign_key inválida")
+			return i18n.Errf("run_op_drop_fk_invalid")
 		}
 		name := operation.ForeignKey.ConstraintName
 		if name == "" {
@@ -1496,7 +1476,7 @@ func executeOperation(ctx context.Context, db *sql.DB, dialect, schema string, o
 		}
 		query := dropForeignKeySQL(dialect, schema, operation.Table, name)
 		if _, err := db.ExecContext(ctx, query); err != nil {
-			return fmt.Errorf("remover relacionamento %s.%s: %w", operation.Table, operation.ForeignKey.Column, err)
+			return i18n.Errf("run_fk_drop_failed", operation.Table, operation.ForeignKey.Column, err)
 		}
 	case "create_index":
 		unique := ""
@@ -1505,11 +1485,11 @@ func executeOperation(ctx context.Context, db *sql.DB, dialect, schema string, o
 		}
 		columns, err := indexColumnsSQL(ctx, db, dialect, schema, operation.Table, operation.IndexColumns, cache)
 		if err != nil {
-			return fmt.Errorf("planejar índice %s: %w", operation.Name, err)
+			return i18n.Errf("run_index_plan_failed", operation.Name, err)
 		}
 		query := fmt.Sprintf("CREATE %sINDEX %s ON %s (%s)", unique, quote(dialect, operation.Name), qualified(dialect, schema, operation.Table), strings.Join(columns, ", "))
 		if _, err := db.ExecContext(ctx, query); err != nil {
-			return fmt.Errorf("criar índice %s: %w", operation.Name, err)
+			return i18n.Errf("run_index_create_failed", operation.Name, err)
 		}
 	case "drop_index":
 		query := fmt.Sprintf("DROP INDEX %s", quote(dialect, operation.Name))
@@ -1517,7 +1497,7 @@ func executeOperation(ctx context.Context, db *sql.DB, dialect, schema string, o
 			query = fmt.Sprintf("DROP INDEX %s ON %s", quote(dialect, operation.Name), qualified(dialect, schema, operation.Table))
 		}
 		if _, err := db.ExecContext(ctx, query); err != nil {
-			return fmt.Errorf("remover índice %s: %w", operation.Name, err)
+			return i18n.Errf("run_index_drop_failed", operation.Name, err)
 		}
 	case "create_view":
 		exists, err := viewExists(ctx, db, dialect, schema, operation.Name)
@@ -1525,14 +1505,14 @@ func executeOperation(ctx context.Context, db *sql.DB, dialect, schema string, o
 			return err
 		}
 		if exists {
-			return fmt.Errorf("criar view %s: a view já existe; use AlterView", operation.Name)
+			return i18n.Errf("run_view_create_exists", operation.Name)
 		}
 		query, err := selectedViewSQL(operation, dialect)
 		if err != nil {
 			return err
 		}
 		if _, err := db.ExecContext(ctx, fmt.Sprintf("CREATE VIEW %s AS %s", qualified(dialect, schema, operation.Name), query)); err != nil {
-			return fmt.Errorf("criar view %s usando %s.sql: %w; revise o SQL ou crie %s.sql para este dialeto", operation.Name, selectedViewSource(operation, dialect), err, dialect)
+			return i18n.Errf("run_view_create_sql_failed", operation.Name, selectedViewSource(operation, dialect), err, dialect)
 		}
 	case "alter_view":
 		exists, err := viewExists(ctx, db, dialect, schema, operation.Name)
@@ -1540,7 +1520,7 @@ func executeOperation(ctx context.Context, db *sql.DB, dialect, schema string, o
 			return err
 		}
 		if !exists {
-			return fmt.Errorf("alterar view %s: a view não existe; use CreateView", operation.Name)
+			return i18n.Errf("run_view_alter_missing", operation.Name)
 		}
 		query, err := selectedViewSQL(operation, dialect)
 		if err != nil {
@@ -1551,7 +1531,7 @@ func executeOperation(ctx context.Context, db *sql.DB, dialect, schema string, o
 			verb = "CREATE OR ALTER VIEW"
 		}
 		if _, err := db.ExecContext(ctx, fmt.Sprintf("%s %s AS %s", verb, qualified(dialect, schema, operation.Name), query)); err != nil {
-			return fmt.Errorf("alterar view %s usando %s.sql: %w; revise o SQL ou crie %s.sql para este dialeto", operation.Name, selectedViewSource(operation, dialect), err, dialect)
+			return i18n.Errf("run_view_alter_sql_failed", operation.Name, selectedViewSource(operation, dialect), err, dialect)
 		}
 	case "drop_view":
 		exists, err := viewExists(ctx, db, dialect, schema, operation.Name)
@@ -1559,24 +1539,24 @@ func executeOperation(ctx context.Context, db *sql.DB, dialect, schema string, o
 			return err
 		}
 		if !exists {
-			return fmt.Errorf("remover view %s: a view não existe", operation.Name)
+			return i18n.Errf("run_view_drop_missing", operation.Name)
 		}
 		if _, err := db.ExecContext(ctx, "DROP VIEW "+qualified(dialect, schema, operation.Name)); err != nil {
-			return fmt.Errorf("remover view %s: %w", operation.Name, err)
+			return i18n.Errf("run_view_drop_failed", operation.Name, err)
 		}
 	case "create_sequence":
 		if dialect == "mysql" {
-			return fmt.Errorf("sequences não são suportadas pelo MySQL")
+			return i18n.Errf("run_sequence_mysql")
 		}
 		if _, err := db.ExecContext(ctx, "CREATE SEQUENCE "+qualified(dialect, schema, operation.Name)); err != nil {
-			return fmt.Errorf("criar sequence %s: %w", operation.Name, err)
+			return i18n.Errf("run_sequence_create_failed", operation.Name, err)
 		}
 	case "drop_sequence":
 		if dialect == "mysql" {
-			return fmt.Errorf("sequences não são suportadas pelo MySQL")
+			return i18n.Errf("run_sequence_mysql")
 		}
 		if _, err := db.ExecContext(ctx, "DROP SEQUENCE "+qualified(dialect, schema, operation.Name)); err != nil {
-			return fmt.Errorf("remover sequence %s: %w", operation.Name, err)
+			return i18n.Errf("run_sequence_drop_failed", operation.Name, err)
 		}
 	case "rename_table":
 		query := fmt.Sprintf("ALTER TABLE %s RENAME TO %s", qualified(dialect, schema, operation.Table), quote(dialect, operation.NewName))
@@ -1584,18 +1564,18 @@ func executeOperation(ctx context.Context, db *sql.DB, dialect, schema string, o
 			query = fmt.Sprintf("EXEC sp_rename N'%s', N'%s'", objectName(schema, operation.Table), operation.NewName)
 		}
 		if _, err := db.ExecContext(ctx, query); err != nil {
-			return fmt.Errorf("renomear tabela %s: %w", operation.Table, err)
+			return i18n.Errf("run_table_rename_failed", operation.Table, err)
 		}
 	case "rename_column":
 		if operation.Column == nil {
-			return fmt.Errorf("operação rename_column inválida")
+			return i18n.Errf("run_op_rename_column_invalid")
 		}
 		query := fmt.Sprintf("ALTER TABLE %s RENAME COLUMN %s TO %s", qualified(dialect, schema, operation.Table), quote(dialect, operation.Column.Name), quote(dialect, operation.NewName))
 		if dialect == "sqlserver" {
 			query = fmt.Sprintf("EXEC sp_rename N'%s.%s', N'%s', N'COLUMN'", objectName(schema, operation.Table), operation.Column.Name, operation.NewName)
 		}
 		if _, err := db.ExecContext(ctx, query); err != nil {
-			return fmt.Errorf("renomear coluna %s.%s: %w", operation.Table, operation.Column.Name, err)
+			return i18n.Errf("run_column_rename_failed", operation.Table, operation.Column.Name, err)
 		}
 	case "add_primary_key", "add_unique":
 		columns := quotedColumns(dialect, operation.IndexColumns)
@@ -1609,23 +1589,23 @@ func executeOperation(ctx context.Context, db *sql.DB, dialect, schema string, o
 		if dialect == "sqlserver" && constraintType == "PRIMARY KEY" {
 			for _, column := range operation.IndexColumns {
 				if err := sqlServerRequireNotNull(ctx, db, schema, operation.Table, column); err != nil {
-					return fmt.Errorf("preparar %s.%s para a chave primária: %w", operation.Table, column, err)
+					return i18n.Errf("run_pk_prepare_failed", operation.Table, column, err)
 				}
 			}
 		}
 		query := fmt.Sprintf("ALTER TABLE %s ADD CONSTRAINT %s %s (%s)", qualified(dialect, schema, operation.Table), quote(dialect, operation.Name), constraintType, strings.Join(columns, ", "))
 		if _, err := db.ExecContext(ctx, query); err != nil {
-			return fmt.Errorf("criar constraint %s: %w", operation.Name, err)
+			return i18n.Errf("run_constraint_create_failed", operation.Name, err)
 		}
 	case "add_check":
 		query := fmt.Sprintf("ALTER TABLE %s ADD CONSTRAINT %s CHECK (%s)", qualified(dialect, schema, operation.Table), quote(dialect, operation.Name), checkExpressionSQL(dialect, operation.SQL))
 		if _, err := db.ExecContext(ctx, query); err != nil {
-			return fmt.Errorf("criar check %s: %w", operation.Name, err)
+			return i18n.Errf("run_check_create_failed", operation.Name, err)
 		}
 	case "drop_constraint":
 		query := fmt.Sprintf("ALTER TABLE %s DROP CONSTRAINT %s", qualified(dialect, schema, operation.Table), quote(dialect, operation.Name))
 		if _, err := db.ExecContext(ctx, query); err != nil {
-			return fmt.Errorf("remover constraint %s: %w", operation.Name, err)
+			return i18n.Errf("run_constraint_drop_failed", operation.Name, err)
 		}
 	case "raw_sql":
 		// Só executa se o dialeto declarado na migration bater com o banco ativo.
@@ -1644,14 +1624,13 @@ func executeOperation(ctx context.Context, db *sql.DB, dialect, schema string, o
 		for index, statement := range statements {
 			if _, err := db.ExecContext(ctx, statement); err != nil {
 				if len(statements) > 1 {
-					return fmt.Errorf("executar SQL específico de %s (statement %d de %d): %w",
-						operation.Dialect, index+1, len(statements), err)
+					return i18n.Errf("run_dialect_sql_stmt_failed", operation.Dialect, index+1, len(statements), err)
 				}
-				return fmt.Errorf("executar SQL específico de %s: %w", operation.Dialect, err)
+				return i18n.Errf("run_dialect_sql_failed", operation.Dialect, err)
 			}
 		}
 	default:
-		return fmt.Errorf("operação desconhecida: %s", operation.Kind)
+		return i18n.Errf("run_op_unknown", operation.Kind)
 	}
 	return nil
 }
@@ -1733,7 +1712,7 @@ func executeSeedRows(ctx context.Context, db *sql.DB, dialect, schema string, op
 
 	transaction, err := db.BeginTx(ctx, nil)
 	if err != nil {
-		return fmt.Errorf("iniciar transação do seed de %s: %w", operation.Table, err)
+		return i18n.Errf("run_seed_tx_failed", operation.Table, err)
 	}
 	defer transaction.Rollback()
 
@@ -1782,7 +1761,7 @@ func executeSeedRows(ctx context.Context, db *sql.DB, dialect, schema string, op
 
 		if !informouChave {
 			if err := seedInsert(ctx, transaction, dialect, target, columns, row); err != nil {
-				return fmt.Errorf("inserir em %s (linha %d): %w", operation.Table, index+1, err)
+				return i18n.Errf("run_seed_insert_failed", operation.Table, index+1, err)
 			}
 			inserted++
 			continue
@@ -1790,7 +1769,7 @@ func executeSeedRows(ctx context.Context, db *sql.DB, dialect, schema string, op
 
 		existing, found, err := seedExistingRow(ctx, transaction, dialect, target, operation.KeyColumns, columns, row)
 		if err != nil {
-			return fmt.Errorf("consultar %s (linha %d): %w", operation.Table, index+1, err)
+			return i18n.Errf("run_seed_query_failed", operation.Table, index+1, err)
 		}
 		if found {
 			difference := seedDifference(row, existing, columns)
@@ -1800,20 +1779,18 @@ func executeSeedRows(ctx context.Context, db *sql.DB, dialect, schema string, op
 			}
 			if !owned[chave] {
 				return cliui.NewUserError(
-					fmt.Sprintf("seed de %s: a linha %s já existe no banco com outro conteúdo (%s).",
-						operation.Table, chave, difference),
-					"Esse ID não foi declarado por nenhum seeder anterior — a linha pode ter vindo da aplicação. "+
-						"Sobrescrever apagaria dado real. Só IDs fixos podem ser editados.",
+					i18n.Tf("run_seed_row_conflict", operation.Table, chave, difference),
+					i18n.T("run_seed_conflict_advice"),
 				)
 			}
 			if err := seedUpdate(ctx, transaction, dialect, target, operation.KeyColumns, columns, row); err != nil {
-				return fmt.Errorf("atualizar %s (linha %d): %w", operation.Table, index+1, err)
+				return i18n.Errf("run_seed_update_failed", operation.Table, index+1, err)
 			}
 			updated++
 			continue
 		}
 		if err := seedInsert(ctx, transaction, dialect, target, columns, row); err != nil {
-			return fmt.Errorf("inserir em %s (linha %d): %w", operation.Table, index+1, err)
+			return i18n.Errf("run_seed_insert_failed", operation.Table, index+1, err)
 		}
 		inserted++
 	}
@@ -1822,17 +1799,17 @@ func executeSeedRows(ctx context.Context, db *sql.DB, dialect, schema string, op
 		return err
 	}
 	if err := transaction.Commit(); err != nil {
-		return fmt.Errorf("confirmar seed de %s: %w", operation.Table, err)
+		return i18n.Errf("run_seed_commit_failed", operation.Table, err)
 	}
 
 	// Fora da transação: no Oracle e no MySQL o resync é DDL e faria commit
 	// implícito no meio do lote.
 	if operation.IdentityColumn != "" {
 		if err := resyncIdentity(ctx, db, dialect, schema, operation.Table, operation.IdentityColumn); err != nil {
-			return fmt.Errorf("ressincronizar a sequência de %s.%s: %w", operation.Table, operation.IdentityColumn, err)
+			return i18n.Errf("run_seed_sequence_failed", operation.Table, operation.IdentityColumn, err)
 		}
 	}
-	fmt.Printf("  %s %s: %d inserida(s), %d editada(s), %d inalterada(s)\n",
+	fmt.Printf(i18n.T("run_seed_summary"),
 		cliui.Muted("·"), operation.Table, inserted, updated, unchanged)
 	return nil
 }
@@ -1926,7 +1903,7 @@ func seedDifference(row acao.Linha, existing map[string]any, columns []string) s
 		declared := normalizeSeedValue(row[column])
 		stored := normalizeSeedValue(existing[column])
 		if declared != stored {
-			return fmt.Sprintf("%s: banco tem %q, seed declara %q", column, stored, declared)
+			return i18n.Tf("run_seed_difference", column, stored, declared)
 		}
 	}
 	return ""
@@ -2085,7 +2062,7 @@ func sqlServerRequireNotNull(ctx context.Context, db *sql.DB, schema, table, col
 		WHERE TABLE_SCHEMA = @p1 AND TABLE_NAME = @p2 AND COLUMN_NAME = @p3`,
 		schemaOr(schema, "dbo"), table, column).Scan(&dataType, &maxLength, &precision, &scale, &isNullable)
 	if err == sql.ErrNoRows {
-		return fmt.Errorf("coluna não encontrada")
+		return i18n.Errf("run_column_not_found")
 	}
 	if err != nil {
 		return err
@@ -2120,7 +2097,7 @@ func selectedViewSQL(operation acao.Operacao, dialect string) (string, error) {
 	if query := strings.TrimSpace(operation.ViewSQL["common"]); query != "" {
 		return query, nil
 	}
-	return "", fmt.Errorf("view %s não possui SQL para %s nem common.sql", operation.Name, dialect)
+	return "", i18n.Errf("run_view_no_sql", operation.Name, dialect)
 }
 
 func selectedViewSource(operation acao.Operacao, dialect string) string {
@@ -2148,7 +2125,7 @@ func indexColumnsSQL(ctx context.Context, db *sql.DB, dialect, schema, table str
 			return nil, err
 		}
 		if !found {
-			return nil, fmt.Errorf("coluna %s.%s não existe", table, column)
+			return nil, i18n.Errf("run_column_missing", table, column)
 		}
 		isText := strings.Contains(meta.DataType, "char") || strings.Contains(meta.DataType, "text")
 		if isText && (meta.Length == 0 || meta.Length > int64(characterBudget)) {
@@ -2291,7 +2268,7 @@ func ensureHistory(ctx context.Context, db *sql.DB, dialect, schema, table strin
 			batch NUMBER(10) NOT NULL, applied_at TIMESTAMP DEFAULT SYSTIMESTAMP NOT NULL)';
 			EXCEPTION WHEN OTHERS THEN IF SQLCODE != -955 THEN RAISE; END IF; END;`, target)
 	default:
-		return fmt.Errorf("dialeto não suportado: %s", dialect)
+		return i18n.Errf("run_dialect_unsupported", dialect)
 	}
 	_, err := db.ExecContext(ctx, query)
 	return err
@@ -2332,7 +2309,7 @@ func insertHistory(ctx context.Context, db *sql.DB, dialect, schema, table strin
 
 func createTableSQL(dialect, schema, table string, columns []acao.ColunaDefinicao) (string, error) {
 	if len(columns) == 0 {
-		return "", fmt.Errorf("tabela %s não possui colunas", table)
+		return "", i18n.Errf("run_table_no_columns", table)
 	}
 	// Com mais de uma coluna marcada como PrimaryKey a chave é composta: o
 	// PRIMARY KEY inline em cada coluna faria o banco recusar a tabela
@@ -2852,7 +2829,7 @@ func CreateScaffoldMigration(root string, state config.ConfigState, name string,
 	}
 	outputDir := filepath.Join(migrateRoot, methodFolder)
 	if err := os.MkdirAll(outputDir, 0755); err != nil {
-		return "", fmt.Errorf("criar pasta de migrations: %w", err)
+		return "", i18n.Errf("run_mig_folder_failed", err)
 	}
 
 	pRoot := projectRoot(outputDir)
@@ -2886,12 +2863,12 @@ func CreateScaffoldMigration(root string, state config.ConfigState, name string,
 		}
 		viewFolder := filepath.Join(outputDir, "views", physicalViewName, timestamp)
 		if err := os.MkdirAll(viewFolder, 0755); err != nil {
-			return "", fmt.Errorf("criar pasta de views: %w", err)
+			return "", i18n.Errf("run_view_folder_failed", err)
 		}
 		sqlFile := filepath.Join(viewFolder, "common.sql")
 		if _, err := os.Stat(sqlFile); os.IsNotExist(err) {
 			if err := os.WriteFile(sqlFile, []byte("SELECT 1 AS id FROM dual\n"), 0644); err != nil {
-				return "", fmt.Errorf("escrever arquivo SQL da view: %w", err)
+				return "", i18n.Errf("run_view_sql_write_failed", err)
 			}
 		}
 	}
@@ -2983,11 +2960,11 @@ func CreateScaffoldMigration(root string, state config.ConfigState, name string,
 		if activeDialect == "" {
 			activeDialect = "oracle"
 		}
-		operationBody = `migrate.SQL("` + activeDialect + `", "-- escreva o SQL aqui")`
+		operationBody = `migrate.SQL("` + activeDialect + `", "` + i18n.T("run_sql_placeholder") + `")`
 	case "todo":
 		operationBody = `migrate.TODO()`
 	default:
-		return "", fmt.Errorf("tipo de operação de migração desconhecido: %s", method)
+		return "", i18n.Errf("run_op_kind_unknown", method)
 	}
 
 	importsBlock := `import migrate "github.com/PhelipeViana/gokit/migration"`
@@ -3012,10 +2989,10 @@ func ` + declarationName + `() migrate.Definition {
 `
 
 	if err := os.WriteFile(filePath, []byte(content), 0644); err != nil {
-		return "", fmt.Errorf("escrever arquivo de migration: %w", err)
+		return "", i18n.Errf("run_mig_write_failed", err)
 	}
 	if err := recordGeneratedFile(pRoot, name, "migration", filePath); err != nil {
-		return "", fmt.Errorf("registrar migration gerada: %w", err)
+		return "", i18n.Errf("run_mig_register_failed", err)
 	}
 
 	return filepath.ToSlash(filepath.Join(methodFolder, filename)), nil
@@ -3111,5 +3088,5 @@ func GetModuleName(projectRoot string) (string, error) {
 	if len(matches) > 1 {
 		return matches[1], nil
 	}
-	return "", fmt.Errorf("nome do módulo não encontrado em go.mod")
+	return "", i18n.Errf("run_module_not_found")
 }

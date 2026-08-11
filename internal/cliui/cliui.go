@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/PhelipeViana/gokit/internal/i18n"
 	"github.com/charmbracelet/lipgloss"
 )
 
@@ -22,11 +23,11 @@ func (e UserError) Error() string {
 	if len(e.Issues) > 0 {
 		var parts []string
 		for _, issue := range e.Issues {
-			parts = append(parts, fmt.Sprintf("%s (Solução: %s)", issue.Message, issue.Solution))
+			parts = append(parts, i18n.Tf("cli_error_with_fix", issue.Message, issue.Solution))
 		}
 		return strings.Join(parts, "; ")
 	}
-	return fmt.Sprintf("%s (Solução: %s)", e.Message, e.Solution)
+	return i18n.Tf("cli_error_with_fix", e.Message, e.Solution)
 }
 
 func NewUserError(message, solution string) error {

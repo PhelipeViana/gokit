@@ -19,6 +19,7 @@ import (
 	"github.com/PhelipeViana/gokit/internal/cliui"
 	"github.com/PhelipeViana/gokit/internal/config"
 	"github.com/PhelipeViana/gokit/internal/factorygo"
+	"github.com/PhelipeViana/gokit/internal/i18n"
 	"github.com/PhelipeViana/gokit/internal/migrationgo"
 	"github.com/PhelipeViana/gokit/migration/acao"
 )
@@ -269,7 +270,7 @@ func FactoryValidate(root string, state config.ConfigState) error {
 		return err
 	}
 	if len(planos) == 0 {
-		fmt.Println(cliui.Muted("Nenhuma factory encontrada em " + factoryRoot(root, state)))
+		fmt.Println(cliui.Muted(i18n.T("fac_none_found_in") + factoryRoot(root, state)))
 		return nil
 	}
 
@@ -278,9 +279,7 @@ func FactoryValidate(root string, state config.ConfigState) error {
 
 	for _, atual := range planos {
 		if !atual.Conhece {
-			problemas = append(problemas, fmt.Sprintf(
-				"%s: a tabela %s não é criada por nenhuma migration",
-				filepath.Base(atual.Arquivo.Caminho), atual.Arquivo.Tabela))
+			problemas = append(problemas, i18n.Tf("fac_table_not_created", filepath.Base(atual.Arquivo.Caminho), atual.Arquivo.Tabela))
 			continue
 		}
 
@@ -292,9 +291,7 @@ func FactoryValidate(root string, state config.ConfigState) error {
 		}
 		for _, coluna := range atual.Arquivo.Colunas() {
 			if !declaradas[strings.ToUpper(coluna)] {
-				problemas = append(problemas, fmt.Sprintf(
-					"%s: a coluna %s não existe em %s",
-					filepath.Base(atual.Arquivo.Caminho), coluna, atual.Arquivo.Tabela))
+				problemas = append(problemas, i18n.Tf("fac_column_missing", filepath.Base(atual.Arquivo.Caminho), coluna, atual.Arquivo.Tabela))
 			}
 		}
 
@@ -306,16 +303,16 @@ func FactoryValidate(root string, state config.ConfigState) error {
 
 	if len(problemas) > 0 {
 		return cliui.NewUserError(
-			fmt.Sprintf("%d problema(s) nas factories:\n  - %s", len(problemas), strings.Join(problemas, "\n  - ")),
-			"Rode `gokit factory create <tabela>` para regerar a factory a partir da migration.",
+			i18n.Tf("fac_problems", len(problemas), strings.Join(problemas, "\n  - ")),
+			i18n.T("fac_problems_fix"),
 		)
 	}
 
 	ordenados, ciclos := ordenaFactories(planos)
-	fmt.Printf("  %s %d factory(ies), %d ativa(s), %d linha(s) a gerar\n",
+	fmt.Printf(i18n.T("fac_summary"),
 		cliui.Success("✓ OK"), len(ordenados), ativas, linhas)
 	if len(ciclos) > 0 {
-		fmt.Println(cliui.Muted("  Ciclo de chave estrangeira rompido em: " + strings.Join(ciclos, ", ")))
+		fmt.Println(cliui.Muted(i18n.T("fac_fk_cycle") + strings.Join(ciclos, ", ")))
 	}
 	return nil
 }
@@ -334,7 +331,7 @@ func FactoryRun(root string, state config.ConfigState, targets []string) error {
 		return err
 	}
 	if len(planos) == 0 {
-		fmt.Println(cliui.Muted("Nenhuma factory encontrada em " + factoryRoot(root, state)))
+		fmt.Println(cliui.Muted(i18n.T("fac_none_found_in") + factoryRoot(root, state)))
 		return nil
 	}
 
@@ -343,7 +340,7 @@ func FactoryRun(root string, state config.ConfigState, targets []string) error {
 		return err
 	}
 	if len(selecionados) == 0 {
-		fmt.Println(cliui.Muted("Nenhuma factory ativa para executar."))
+		fmt.Println(cliui.Muted(i18n.T("fac_none_active")))
 		return nil
 	}
 
@@ -351,7 +348,7 @@ func FactoryRun(root string, state config.ConfigState, targets []string) error {
 	connection := state.Config.Connections[state.ActiveClient]
 	driver := map[string]string{"oracle": "oracle", "postgres": "pgx", "mysql": "mysql", "sqlserver": "sqlserver"}[dialect]
 	if driver == "" {
-		return fmt.Errorf("dialeto não suportado: %s", dialect)
+		return i18n.Errf("run_dialect_unsupported", dialect)
 	}
 	db, err := sql.Open(driver, connection.BuildURL())
 	if err != nil {
@@ -370,22 +367,22 @@ func FactoryRun(root string, state config.ConfigState, targets []string) error {
 	for _, atual := range selecionados {
 		existe, err := tableExists(ctx, db, dialect, connection.Schema, atual.Fisica())
 		if err != nil {
-			return fmt.Errorf("verificar a tabela %s: %w", atual.Fisica(), err)
+			return i18n.Errf("fac_check_table_failed", atual.Fisica(), err)
 		}
 		if existe {
 			existentes = append(existentes, atual)
 			continue
 		}
-		fmt.Println(cliui.Muted("  - " + atual.Arquivo.Tabela + " ignorada: a tabela não existe no banco"))
+		fmt.Println(cliui.Muted("  - " + atual.Arquivo.Tabela + i18n.T("fac_skipped_no_table")))
 	}
 	if len(existentes) == 0 {
-		fmt.Println(cliui.Muted("Nenhuma tabela das factories selecionadas existe no banco."))
+		fmt.Println(cliui.Muted(i18n.T("fac_no_table_exists")))
 		return nil
 	}
 
 	ordenados, ciclos := ordenaFactories(existentes)
 	if len(ciclos) > 0 {
-		fmt.Println(cliui.Muted("  Ciclo de chave estrangeira rompido em: " + strings.Join(ciclos, ", ")))
+		fmt.Println(cliui.Muted(i18n.T("fac_fk_cycle") + strings.Join(ciclos, ", ")))
 	}
 
 	// Limpa na ordem inversa: filha antes de pai, senão a FK barra o DELETE.
@@ -398,14 +395,14 @@ func FactoryRun(root string, state config.ConfigState, targets []string) error {
 	for _, atual := range ordenados {
 		linhas, err := executaFactory(ctx, db, dialect, connection.Schema, atual, inseridas)
 		if err != nil {
-			return fmt.Errorf("factory de %s: %w", atual.Arquivo.Tabela, err)
+			return i18n.Errf("fac_run_failed", atual.Arquivo.Tabela, err)
 		}
 		inseridas[atual.Tabela()] = linhas
 		total += len(linhas)
-		fmt.Printf("  %s %-42s %d linha(s)\n", cliui.Success("✓"), atual.Arquivo.Tabela, len(linhas))
+		fmt.Printf(i18n.T("fac_row_line"), cliui.Success("✓"), atual.Arquivo.Tabela, len(linhas))
 	}
 
-	fmt.Printf("\n  %s %d tabela(s), %d linha(s) inserida(s)\n", cliui.Success("✓ OK"), len(ordenados), total)
+	fmt.Printf(i18n.T("fac_total"), cliui.Success("✓ OK"), len(ordenados), total)
 	return nil
 }
 
@@ -441,8 +438,8 @@ func selecionaFactories(planos []plano, targets []string) ([]plano, error) {
 				return nil
 			}
 			return cliui.NewUserError(
-				fmt.Sprintf("Não existe factory para a tabela %s.", tabela),
-				"Rode `gokit factory create "+strings.ToLower(tabela)+"` para criá-la.",
+				i18n.Tf("fac_missing_for_table", tabela),
+				i18n.Tf("fac_missing_for_table_fix", strings.ToLower(tabela)),
 			)
 		}
 		escolhidos[tabela] = true
@@ -493,8 +490,8 @@ func limpaFactories(ctx context.Context, db *sql.DB, dialect, schema string, ord
 		alvo := qualified(dialect, schema, ordenados[posicao].Fisica())
 		if _, err := db.ExecContext(ctx, "DELETE FROM "+alvo); err != nil {
 			return cliui.NewUserError(
-				fmt.Sprintf("Não foi possível limpar %s: %v", ordenados[posicao].Arquivo.Tabela, err),
-				"Alguma tabela filha fora da seleção referencia estas linhas. Rode as factories sem filtro ou inclua a tabela filha.",
+				i18n.Tf("fac_truncate_failed", ordenados[posicao].Arquivo.Tabela, err),
+				i18n.T("fac_truncate_failed_fix"),
 			)
 		}
 	}
@@ -548,7 +545,7 @@ func executaFactory(ctx context.Context, db *sql.DB, dialect, schema string, atu
 		}
 
 		if err := coageLinha(linha, tipos); err != nil {
-			return nil, fmt.Errorf("linha %d: %w", index+1, err)
+			return nil, i18n.Errf("fac_row_failed", index+1, err)
 		}
 
 		_, escreveIdentity := linha[atual.Identity]
@@ -598,14 +595,12 @@ func executaFactory(ctx context.Context, db *sql.DB, dialect, schema string, atu
 		// melhor que abortar: as linhas já foram gravadas.
 		existe, err := columnExists(ctx, db, dialect, schema, atual.Fisica(), atual.Identity)
 		if err != nil {
-			return nil, fmt.Errorf("verificar a coluna de identidade de %s: %w", atual.Fisica(), err)
+			return nil, i18n.Errf("fac_identity_check_failed", atual.Fisica(), err)
 		}
 		if !existe {
-			fmt.Println(cliui.Muted(fmt.Sprintf(
-				"  - %s: a sequência não foi ressincronizada; a coluna %s não existe no banco (renomeada por migrate.SQL?)",
-				atual.Fisica(), atual.Identity)))
+			fmt.Println(cliui.Muted(i18n.Tf("fac_sequence_skipped", atual.Fisica(), atual.Identity)))
 		} else if err := resyncIdentity(ctx, db, dialect, schema, atual.Fisica(), atual.Identity); err != nil {
-			return nil, fmt.Errorf("ressincronizar a sequência de %s.%s: %w", atual.Fisica(), atual.Identity, err)
+			return nil, i18n.Errf("fac_sequence_failed", atual.Fisica(), atual.Identity, err)
 		}
 	}
 	return geradas, nil
@@ -660,8 +655,8 @@ func valorExistenteNoBanco(ctx context.Context, transaction *sql.Tx, dialect, sc
 	rows, err := transaction.QueryContext(ctx, comando)
 	if err != nil {
 		return nil, cliui.NewUserError(
-			fmt.Sprintf("Não foi possível ler %s.%s para resolver o vínculo: %v", tabela, coluna, err),
-			"Confira se a tabela e a coluna do Vinculo estão escritas como na migration.",
+			i18n.Tf("fac_link_read_failed", tabela, coluna, err),
+			i18n.T("fac_link_read_failed_fix"),
 		)
 	}
 	defer rows.Close()
@@ -679,8 +674,8 @@ func valorExistenteNoBanco(ctx context.Context, transaction *sql.Tx, dialect, sc
 	}
 	if len(valores) == 0 {
 		return nil, cliui.NewUserError(
-			fmt.Sprintf("A tabela %s está vazia e o vínculo com %s.%s não pode ser resolvido.", tabela, tabela, coluna),
-			"Rode a factory de "+strings.ToLower(tabela)+" antes, ou execute sem filtro para que o gokit ordene sozinho.",
+			i18n.Tf("fac_link_parent_empty", tabela, tabela, coluna),
+			i18n.Tf("fac_link_parent_empty_fix", strings.ToLower(tabela)),
 		)
 	}
 	return valores[index%len(valores)], nil
@@ -697,7 +692,7 @@ func coageLinha(linha map[string]any, tipos map[string]string) error {
 		}
 		convertido, err := migrationgo.CoerceValue(valor, tipo)
 		if err != nil {
-			return fmt.Errorf("coluna %s: %w", coluna, err)
+			return i18n.Errf("fac_column_failed", coluna, err)
 		}
 		linha[coluna] = convertido
 	}
@@ -721,22 +716,21 @@ func erroDeInsercao(atual plano, index int, colunas []string, valores []any, err
 	var solucao string
 	switch {
 	case strings.Contains(baixo, "foreign key"), strings.Contains(baixo, "ora-02291"), strings.Contains(baixo, "violates foreign key"):
-		solucao = "A tabela pai não tem a linha referenciada. Use migrate.Vinculo(\"TABELA_PAI\", \"COLUNA\") nessa coluna em vez de um valor fake."
+		solucao = i18n.T("fac_advice_fk")
 	case strings.Contains(baixo, "check constraint"), strings.Contains(baixo, "ora-02290"):
-		solucao = "O valor gerado não passa no CHECK da coluna. Troque por migrate.FakeChoiceIndex(index, ...) com os valores que o CHECK aceita."
+		solucao = i18n.T("fac_advice_check")
 	case strings.Contains(baixo, "too large"), strings.Contains(baixo, "ora-12899"), strings.Contains(baixo, "too long"), strings.Contains(baixo, "truncated"):
-		solucao = "O valor gerado é maior que a coluna. Passe o tamanho da coluna na função Fake*, por exemplo migrate.FakeUniqueText(index, \"Prefixo\", 30)."
+		solucao = i18n.T("fac_advice_too_long")
 	case strings.Contains(baixo, "unique"), strings.Contains(baixo, "ora-00001"), strings.Contains(baixo, "duplicate"):
-		solucao = "Duas linhas geraram o mesmo valor numa coluna única. Use a variante por índice, como migrate.FakeUniqueText ou migrate.FakeIntIndex."
+		solucao = i18n.T("fac_advice_unique")
 	case strings.Contains(baixo, "cannot be null"), strings.Contains(baixo, "ora-01400"), strings.Contains(baixo, "null value in column"):
-		solucao = "Uma coluna obrigatória ficou de fora do Data da factory."
+		solucao = i18n.T("fac_advice_not_null")
 	default:
-		solucao = "Confira o Data da factory contra as colunas declaradas na migration."
+		solucao = i18n.T("fac_advice_generic")
 	}
 
 	return cliui.NewUserError(
-		fmt.Sprintf("Falha ao inserir a linha %d de %s: %v\n  Valores: %s",
-			index+1, atual.Arquivo.Tabela, err, resumoDeValores(colunas, valores)),
+		i18n.Tf("fac_insert_failed", index+1, atual.Arquivo.Tabela, err, resumoDeValores(colunas, valores)),
 		solucao,
 	)
 }

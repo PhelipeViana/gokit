@@ -1,6 +1,8 @@
 package i18n
 
 import (
+	"fmt"
+	"sort"
 	"strings"
 )
 
@@ -187,6 +189,31 @@ var translations = map[string]map[Language]string{
 	},
 }
 
+// Entradas é um bloco de traduções no formato chave → idioma → texto. É o
+// formato único do gokit: para corrigir uma frase, procure a chave; para somar
+// um idioma, acrescente a linha em cada chave.
+type Entradas map[string]map[Language]string
+
+// Register incorpora um bloco de traduções ao catálogo. Cada arquivo de domínio
+// (i18n_gen_orm.go, i18n_gen_response.go, ...) chama Register no seu init(),
+// então o catálogo cresce sem que este arquivo precise mudar.
+func Register(entradas Entradas) {
+	for chave, idiomas := range entradas {
+		translations[chave] = idiomas
+	}
+}
+
+// Keys devolve as chaves registradas em ordem — usado por auditoria/testes para
+// achar chave sem tradução em algum idioma.
+func Keys() []string {
+	chaves := make([]string, 0, len(translations))
+	for chave := range translations {
+		chaves = append(chaves, chave)
+	}
+	sort.Strings(chaves)
+	return chaves
+}
+
 // T retorna a string traduzida correspondente ao idioma ativo.
 func T(key string) string {
 	if langs, ok := translations[key]; ok {
@@ -199,6 +226,23 @@ func T(key string) string {
 		}
 	}
 	return key
+}
+
+// Tf traduz a chave e aplica os argumentos nos marcadores da frase (%s, %d, %q).
+// Use sempre que a mensagem tiver partes variáveis, em vez de concatenar: assim
+// cada idioma pode colocar o valor onde a frase dele precisa.
+func Tf(chave string, args ...any) string {
+	return fmt.Sprintf(T(chave), args...)
+}
+
+// Errf devolve um error com a mensagem traduzida. A frase pode usar %w para
+// embrulhar a causa — errors.Is/errors.As continuam funcionando através dela.
+//
+// Preferir este helper a fmt.Errorf(i18n.T(...)) tem um motivo prático: o vet
+// reclama de formato não constante em fmt.Errorf sem argumentos, e aqui a
+// chamada nunca é analisada como printf.
+func Errf(chave string, args ...any) error {
+	return fmt.Errorf(T(chave), args...)
 }
 
 // Mapeamento de escrita e geração de códigos/métodos de scaffold

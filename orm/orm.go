@@ -64,24 +64,24 @@ const (
 	IsNotNull      Operator = "is_not_null"
 )
 
-// Expression é qualquer condição componível de uma pesquisa: um Filter (folha)
+// Expression é qualquer condição componível de uma pesquisa: um Condition (folha)
 // ou um Group (subárvore com parênteses).
 type Expression interface {
 	expression()
 	active() bool
 }
 
-// Filter é a condição-folha sobre uma coluna. Active=false faz o compilador
+// Condition é a condição-folha sobre uma coluna. Active=false faz o compilador
 // ignorá-la — é o que permite pesquisas dinâmicas (campo vazio não filtra).
-type Filter struct {
+type Condition struct {
 	Field    Field
 	Operator Operator
 	Values   []any
 	Active   bool
 }
 
-func (Filter) expression()    {}
-func (f Filter) active() bool { return f.Active }
+func (Condition) expression()    {}
+func (f Condition) active() bool { return f.Active }
 
 // item liga uma expressão à anterior por AND (or=false) ou OR (or=true).
 type item struct {
@@ -133,8 +133,8 @@ func NumberFilter(f Field) NumberFilterField { return NumberFilterField{f} }
 func DateFilter(f Field) DateFilterField     { return DateFilterField{f} }
 func BoolFilter(f Field) BoolFilterField     { return BoolFilterField{f} }
 
-func condition(f Field, op Operator, values ...any) Filter {
-	return Filter{Field: f, Operator: op, Values: values, Active: conditionActive(op, values)}
+func condition(f Field, op Operator, values ...any) Condition {
+	return Condition{Field: f, Operator: op, Values: values, Active: conditionActive(op, values)}
 }
 
 func conditionActive(op Operator, values []any) bool {
@@ -145,66 +145,68 @@ func conditionActive(op Operator, values []any) bool {
 }
 
 // --- Texto ---
-func (f StringFilterField) Igual(v string) Filter     { return condition(f.Field, Equal, v) }
-func (f StringFilterField) Diferente(v string) Filter { return condition(f.Field, NotEqual, v) }
-func (f StringFilterField) Contem(v string) Filter    { return condition(f.Field, Contains, v) }
-func (f StringFilterField) ComecaCom(v string) Filter { return condition(f.Field, StartsWith, v) }
-func (f StringFilterField) TerminaCom(v string) Filter {
+func (f StringFilterField) Equal(v string) Condition      { return condition(f.Field, Equal, v) }
+func (f StringFilterField) NotEqual(v string) Condition   { return condition(f.Field, NotEqual, v) }
+func (f StringFilterField) Contains(v string) Condition   { return condition(f.Field, Contains, v) }
+func (f StringFilterField) StartsWith(v string) Condition { return condition(f.Field, StartsWith, v) }
+func (f StringFilterField) EndsWith(v string) Condition {
 	return condition(f.Field, EndsWith, v)
 }
-func (f StringFilterField) Em(vs ...string) Filter {
+func (f StringFilterField) In(vs ...string) Condition {
 	return condition(f.Field, In, textsToAny(vs)...)
 }
-func (f StringFilterField) Nulo() Filter    { return condition(f.Field, IsNull) }
-func (f StringFilterField) NaoNulo() Filter { return condition(f.Field, IsNotNull) }
+func (f StringFilterField) IsNull() Condition    { return condition(f.Field, IsNull) }
+func (f StringFilterField) IsNotNull() Condition { return condition(f.Field, IsNotNull) }
 
 // --- Número ---
-func (f NumberFilterField) Igual(v any) Filter      { return condition(f.Field, Equal, v) }
-func (f NumberFilterField) Diferente(v any) Filter  { return condition(f.Field, NotEqual, v) }
-func (f NumberFilterField) Maior(v any) Filter      { return condition(f.Field, GreaterThan, v) }
-func (f NumberFilterField) MaiorIgual(v any) Filter { return condition(f.Field, GreaterOrEqual, v) }
-func (f NumberFilterField) Menor(v any) Filter      { return condition(f.Field, LessThan, v) }
-func (f NumberFilterField) MenorIgual(v any) Filter { return condition(f.Field, LessOrEqual, v) }
-func (f NumberFilterField) Entre(min, max any) Filter {
+func (f NumberFilterField) Equal(v any) Condition       { return condition(f.Field, Equal, v) }
+func (f NumberFilterField) NotEqual(v any) Condition    { return condition(f.Field, NotEqual, v) }
+func (f NumberFilterField) GreaterThan(v any) Condition { return condition(f.Field, GreaterThan, v) }
+func (f NumberFilterField) GreaterOrEqual(v any) Condition {
+	return condition(f.Field, GreaterOrEqual, v)
+}
+func (f NumberFilterField) LessThan(v any) Condition    { return condition(f.Field, LessThan, v) }
+func (f NumberFilterField) LessOrEqual(v any) Condition { return condition(f.Field, LessOrEqual, v) }
+func (f NumberFilterField) Between(min, max any) Condition {
 	return condition(f.Field, Between, min, max)
 }
-func (f NumberFilterField) Em(vs ...any) Filter { return condition(f.Field, In, vs...) }
-func (f NumberFilterField) Nulo() Filter        { return condition(f.Field, IsNull) }
-func (f NumberFilterField) NaoNulo() Filter     { return condition(f.Field, IsNotNull) }
+func (f NumberFilterField) In(vs ...any) Condition { return condition(f.Field, In, vs...) }
+func (f NumberFilterField) IsNull() Condition      { return condition(f.Field, IsNull) }
+func (f NumberFilterField) IsNotNull() Condition   { return condition(f.Field, IsNotNull) }
 
 // --- Data ---
-// Todos os métodos passam o valor por ValorData: time.Time, *time.Time, Valor e
+// Todos os métodos passam o valor por DateValue: time.Time, *time.Time, Value e
 // texto em formato conhecido ("2006-01-02", RFC3339...) chegam ao driver já como
 // time.Time. É o tratamento genérico — o autor da pesquisa informa a data no
 // formato que tem em mão e o motor resolve.
-func (f DateFilterField) Igual(v any) Filter     { return condition(f.Field, Equal, ValorData(v)) }
-func (f DateFilterField) Diferente(v any) Filter { return condition(f.Field, NotEqual, ValorData(v)) }
-func (f DateFilterField) Antes(v any) Filter     { return condition(f.Field, LessThan, ValorData(v)) }
-func (f DateFilterField) Depois(v any) Filter    { return condition(f.Field, GreaterThan, ValorData(v)) }
+func (f DateFilterField) Equal(v any) Condition    { return condition(f.Field, Equal, DateValue(v)) }
+func (f DateFilterField) NotEqual(v any) Condition { return condition(f.Field, NotEqual, DateValue(v)) }
+func (f DateFilterField) Before(v any) Condition   { return condition(f.Field, LessThan, DateValue(v)) }
+func (f DateFilterField) After(v any) Condition    { return condition(f.Field, GreaterThan, DateValue(v)) }
 
-// AntesOuEm / DeOuDepois são os comparadores inclusivos (<= e >=), úteis em
+// OnOrBefore / OnOrAfter são os comparadores inclusivos (<= e >=), úteis em
 // intervalo aberto de um lado: "até 31/12" ou "a partir de 01/01".
-func (f DateFilterField) AntesOuEm(v any) Filter {
-	return condition(f.Field, LessOrEqual, ValorData(v))
+func (f DateFilterField) OnOrBefore(v any) Condition {
+	return condition(f.Field, LessOrEqual, DateValue(v))
 }
-func (f DateFilterField) DeOuDepois(v any) Filter {
-	return condition(f.Field, GreaterOrEqual, ValorData(v))
+func (f DateFilterField) OnOrAfter(v any) Condition {
+	return condition(f.Field, GreaterOrEqual, DateValue(v))
 }
 
-// Entre é o intervalo FECHADO (inclui as duas pontas): BETWEEN inicio AND fim.
-func (f DateFilterField) Entre(inicio, fim any) Filter {
-	return condition(f.Field, Between, ValorData(inicio), ValorData(fim))
+// Between é o intervalo FECHADO (inclui as duas pontas): BETWEEN inicio AND fim.
+func (f DateFilterField) Between(inicio, fim any) Condition {
+	return condition(f.Field, Between, DateValue(inicio), DateValue(fim))
 }
-func (f DateFilterField) Em(vs ...any) Filter { return condition(f.Field, In, valoresData(vs)...) }
-func (f DateFilterField) Nulo() Filter        { return condition(f.Field, IsNull) }
-func (f DateFilterField) NaoNulo() Filter     { return condition(f.Field, IsNotNull) }
+func (f DateFilterField) In(vs ...any) Condition { return condition(f.Field, In, dateValues(vs)...) }
+func (f DateFilterField) IsNull() Condition      { return condition(f.Field, IsNull) }
+func (f DateFilterField) IsNotNull() Condition   { return condition(f.Field, IsNotNull) }
 
 // --- Booleano ---
-func (f BoolFilterField) Igual(v bool) Filter { return condition(f.Field, Equal, v) }
-func (f BoolFilterField) Verdadeiro() Filter  { return condition(f.Field, Equal, true) }
-func (f BoolFilterField) Falso() Filter       { return condition(f.Field, Equal, false) }
-func (f BoolFilterField) Nulo() Filter        { return condition(f.Field, IsNull) }
-func (f BoolFilterField) NaoNulo() Filter     { return condition(f.Field, IsNotNull) }
+func (f BoolFilterField) Equal(v bool) Condition { return condition(f.Field, Equal, v) }
+func (f BoolFilterField) IsTrue() Condition      { return condition(f.Field, Equal, true) }
+func (f BoolFilterField) IsFalse() Condition     { return condition(f.Field, Equal, false) }
+func (f BoolFilterField) IsNull() Condition      { return condition(f.Field, IsNull) }
+func (f BoolFilterField) IsNotNull() Condition   { return condition(f.Field, IsNotNull) }
 
 func textsToAny(vs []string) []any {
 	out := make([]any, len(vs))
@@ -322,7 +324,7 @@ func (q Query[T]) withAll(relations []Relation) Query[T] {
 // aninhamento vêm dos combinadores orm.Or(...) / orm.And(...) passados como
 // argumento, mantendo a precedência explícita:
 //
-//	user.DB.Where(f.Ativo.Verdadeiro(), orm.Or(f.Uf.Igual("MT"), f.Uf.Igual("SP")))
+//	user.DB.Where(f.Ativo.IsTrue(), orm.Or(f.Uf.Equal("MT"), f.Uf.Equal("SP")))
 //	// → WHERE ativo = ? AND (uf = ? OR uf = ?)
 //
 // Chamar Where mais de uma vez também acumula por AND (seguro: AND é associativo).
@@ -625,7 +627,7 @@ func compileItems(items []item, ctx *compileCtx) (string, error) {
 
 func compileExpression(e Expression, ctx *compileCtx) (string, error) {
 	switch v := e.(type) {
-	case Filter:
+	case Condition:
 		return compileFilter(v, ctx)
 	case Group:
 		inner, err := compileItems(v.items, ctx)
@@ -643,7 +645,7 @@ func compileExpression(e Expression, ctx *compileCtx) (string, error) {
 	}
 }
 
-func compileFilter(f Filter, ctx *compileCtx) (string, error) {
+func compileFilter(f Condition, ctx *compileCtx) (string, error) {
 	column := quoteIdentFor(ctx.dialect, f.Field.Column)
 	switch f.Operator {
 	case Equal, NotEqual, GreaterThan, GreaterOrEqual, LessThan, LessOrEqual:

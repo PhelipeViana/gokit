@@ -29,12 +29,12 @@ var defaultRunner Runner
 // UseDefault instala a conexão padrão global. Chamado por db.Connect.
 func UseDefault(r Runner) { defaultRunner = r }
 
-// ErrSemConexao indica que não há conexão padrão nem Runner explícito.
-var ErrSemConexao = errors.New("orm: nenhuma conexão ativa — chame db.Connect(ctx) ou use os métodos *With")
+// ErrNoConnection indica que não há conexão padrão nem Runner explícito.
+var ErrNoConnection = errors.New("orm: nenhuma conexão ativa — chame db.Connect(ctx) ou use os métodos *With")
 
-// ErrNaoEncontrado é devolvido por First/Find quando a pesquisa não traz linha.
-// É sentinela: use errors.Is(err, orm.ErrNaoEncontrado).
-var ErrNaoEncontrado = errors.New("orm: registro não encontrado")
+// ErrNotFound é devolvido por First/Find quando a pesquisa não traz linha.
+// É sentinela: use errors.Is(err, orm.ErrNotFound).
+var ErrNotFound = errors.New("orm: registro não encontrado")
 
 // Record é uma linha genérica (map), chaveada pelo nome da coluna em minúsculas.
 // Serve de retorno "sem tipo" quando não há struct gerada — o código gerado usa
@@ -46,7 +46,7 @@ func resolveRunner(r Runner) (Runner, error) {
 		r = defaultRunner
 	}
 	if r == nil {
-		return nil, ErrSemConexao
+		return nil, ErrNoConnection
 	}
 	return r, nil
 }
@@ -92,7 +92,7 @@ func (q Query[T]) GetWith(ctx context.Context, r Runner) ([]T, error) {
 }
 
 // First devolve a primeira linha. Quando não há nenhuma, devolve
-// ErrNaoEncontrado — trate com errors.Is(err, orm.ErrNaoEncontrado). Assim a
+// ErrNotFound — trate com errors.Is(err, orm.ErrNotFound). Assim a
 // assinatura fica idiomática (valor, erro) e o responder deriva o 404 do erro.
 func (q Query[T]) First(ctx context.Context) (T, error) { return q.FirstWith(ctx, nil) }
 
@@ -103,7 +103,7 @@ func (q Query[T]) FirstWith(ctx context.Context, r Runner) (T, error) {
 		return zero, err
 	}
 	if len(rows) == 0 {
-		return zero, ErrNaoEncontrado
+		return zero, ErrNotFound
 	}
 	return rows[0], nil
 }
@@ -196,43 +196,43 @@ func normalizeCell(v any) any {
 
 // aggScalar roda a agregação e lê o resultado CRU (any). Ler em any — e não em
 // float64 — é o que permite MIN/MAX em coluna de data ou texto.
-func (q Query[T]) aggScalar(ctx context.Context, r Runner, fn string, col Column) (Valor, error) {
+func (q Query[T]) aggScalar(ctx context.Context, r Runner, fn string, col Column) (Value, error) {
 	run, err := resolveRunner(r)
 	if err != nil {
-		return Valor{}, err
+		return Value{}, err
 	}
 	qq := q.clone()
 	qq.agg = &aggregate{fn: fn, col: col.columnField()}
 	compiled, err := qq.Compile(Select, options(run))
 	if err != nil {
-		return Valor{}, err
+		return Value{}, err
 	}
 	var bruto any
 	if err := run.QueryRowContext(ctx, compiled.SQL, compiled.Args...).Scan(&bruto); err != nil {
-		return Valor{}, err
+		return Value{}, err
 	}
-	return NovoValor(bruto), nil // sem linhas → Valor.Nulo() == true
+	return NewValue(bruto), nil // sem linhas → Value.IsNull() == true
 }
 
-// Sum/Avg/Min/Max devolvem Valor: extraia com .Float(), .Int(), .Tempo() ou
-// .Texto() conforme a coluna. Valor.Nulo() indica agregação sem linhas.
-func (q Query[T]) Sum(ctx context.Context, col Column) (Valor, error) {
+// Sum/Avg/Min/Max devolvem Value: extraia com .Float(), .Int(), .Tempo() ou
+// .Texto() conforme a coluna. Value.IsNull() indica agregação sem linhas.
+func (q Query[T]) Sum(ctx context.Context, col Column) (Value, error) {
 	return q.aggScalar(ctx, nil, "SUM", col)
 }
-func (q Query[T]) Avg(ctx context.Context, col Column) (Valor, error) {
+func (q Query[T]) Avg(ctx context.Context, col Column) (Value, error) {
 	return q.aggScalar(ctx, nil, "AVG", col)
 }
-func (q Query[T]) Min(ctx context.Context, col Column) (Valor, error) {
+func (q Query[T]) Min(ctx context.Context, col Column) (Value, error) {
 	return q.aggScalar(ctx, nil, "MIN", col)
 }
-func (q Query[T]) Max(ctx context.Context, col Column) (Valor, error) {
+func (q Query[T]) Max(ctx context.Context, col Column) (Value, error) {
 	return q.aggScalar(ctx, nil, "MAX", col)
 }
 
-func (m Model[T]) Sum(ctx context.Context, col Column) (Valor, error) { return m.All().Sum(ctx, col) }
-func (m Model[T]) Avg(ctx context.Context, col Column) (Valor, error) { return m.All().Avg(ctx, col) }
-func (m Model[T]) Min(ctx context.Context, col Column) (Valor, error) { return m.All().Min(ctx, col) }
-func (m Model[T]) Max(ctx context.Context, col Column) (Valor, error) { return m.All().Max(ctx, col) }
+func (m Model[T]) Sum(ctx context.Context, col Column) (Value, error) { return m.All().Sum(ctx, col) }
+func (m Model[T]) Avg(ctx context.Context, col Column) (Value, error) { return m.All().Avg(ctx, col) }
+func (m Model[T]) Min(ctx context.Context, col Column) (Value, error) { return m.All().Min(ctx, col) }
+func (m Model[T]) Max(ctx context.Context, col Column) (Value, error) { return m.All().Max(ctx, col) }
 
 // ------------------------------------------------------------ Paginação
 
@@ -286,7 +286,7 @@ func primaryKeyOf(e EntityFields) (Field, bool) {
 }
 
 // Find busca uma linha pela chave primária. found=false quando não existe.
-// Find busca pela chave primária. Sem linha, devolve ErrNaoEncontrado.
+// Find busca pela chave primária. Sem linha, devolve ErrNotFound.
 func (m Model[T]) Find(ctx context.Context, id any) (T, error) { return m.FindWith(ctx, nil, id) }
 
 func (m Model[T]) FindWith(ctx context.Context, r Runner, id any) (T, error) {
@@ -295,17 +295,17 @@ func (m Model[T]) FindWith(ctx context.Context, r Runner, id any) (T, error) {
 		var zero T
 		return zero, fmt.Errorf("orm: entidade %q não tem chave primária para Find", m.Entity.Name)
 	}
-	return m.Where(Filter{Field: pk, Operator: Equal, Values: []any{id}, Active: true}).FirstWith(ctx, r)
+	return m.Where(Condition{Field: pk, Operator: Equal, Values: []any{id}, Active: true}).FirstWith(ctx, r)
 }
 
-// Pluck devolve os valores de UMA coluna como []Valor — extraia com .Int(),
+// Pluck devolve os valores de UMA coluna como []Value — extraia com .Int(),
 // .Texto(), .Tempo()... Para os casos comuns há PluckInt/PluckTexto, que já
 // devolvem o slice tipado.
-func (q Query[T]) Pluck(ctx context.Context, col Column) ([]Valor, error) {
+func (q Query[T]) Pluck(ctx context.Context, col Column) ([]Value, error) {
 	return q.PluckWith(ctx, nil, col)
 }
 
-func (q Query[T]) PluckWith(ctx context.Context, r Runner, col Column) ([]Valor, error) {
+func (q Query[T]) PluckWith(ctx context.Context, r Runner, col Column) ([]Value, error) {
 	run, err := resolveRunner(r)
 	if err != nil {
 		return nil, err
@@ -321,13 +321,13 @@ func (q Query[T]) PluckWith(ctx context.Context, r Runner, col Column) ([]Valor,
 		return nil, err
 	}
 	defer rows.Close()
-	out := []Valor{}
+	out := []Value{}
 	for rows.Next() {
 		var v any
 		if err := rows.Scan(&v); err != nil {
 			return nil, err
 		}
-		out = append(out, NovoValor(v))
+		out = append(out, NewValue(v))
 	}
 	return out, rows.Err()
 }
@@ -345,19 +345,19 @@ func (q Query[T]) PluckInt(ctx context.Context, col Column) ([]int64, error) {
 	return out, nil
 }
 
-func (q Query[T]) PluckTexto(ctx context.Context, col Column) ([]string, error) {
+func (q Query[T]) PluckString(ctx context.Context, col Column) ([]string, error) {
 	vs, err := q.Pluck(ctx, col)
 	if err != nil {
 		return nil, err
 	}
 	out := make([]string, 0, len(vs))
 	for _, v := range vs {
-		out = append(out, v.Texto())
+		out = append(out, v.Text())
 	}
 	return out, nil
 }
 
-func (m Model[T]) Pluck(ctx context.Context, col Column) ([]Valor, error) {
+func (m Model[T]) Pluck(ctx context.Context, col Column) ([]Value, error) {
 	return m.All().Pluck(ctx, col)
 }
 
@@ -365,21 +365,21 @@ func (m Model[T]) PluckInt(ctx context.Context, col Column) ([]int64, error) {
 	return m.All().PluckInt(ctx, col)
 }
 
-func (m Model[T]) PluckTexto(ctx context.Context, col Column) ([]string, error) {
-	return m.All().PluckTexto(ctx, col)
+func (m Model[T]) PluckString(ctx context.Context, col Column) ([]string, error) {
+	return m.All().PluckString(ctx, col)
 }
 
 // Variantes *With das agregações (conexão explícita), para paridade com os
 // demais terminais.
-func (q Query[T]) SumWith(ctx context.Context, r Runner, col Column) (Valor, error) {
+func (q Query[T]) SumWith(ctx context.Context, r Runner, col Column) (Value, error) {
 	return q.aggScalar(ctx, r, "SUM", col)
 }
-func (q Query[T]) AvgWith(ctx context.Context, r Runner, col Column) (Valor, error) {
+func (q Query[T]) AvgWith(ctx context.Context, r Runner, col Column) (Value, error) {
 	return q.aggScalar(ctx, r, "AVG", col)
 }
-func (q Query[T]) MinWith(ctx context.Context, r Runner, col Column) (Valor, error) {
+func (q Query[T]) MinWith(ctx context.Context, r Runner, col Column) (Value, error) {
 	return q.aggScalar(ctx, r, "MIN", col)
 }
-func (q Query[T]) MaxWith(ctx context.Context, r Runner, col Column) (Valor, error) {
+func (q Query[T]) MaxWith(ctx context.Context, r Runner, col Column) (Value, error) {
 	return q.aggScalar(ctx, r, "MAX", col)
 }

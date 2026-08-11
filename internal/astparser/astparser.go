@@ -7,6 +7,8 @@ import (
 	"go/parser"
 	"go/token"
 	"strconv"
+
+	"github.com/PhelipeViana/gokit/internal/i18n"
 )
 
 // Call representa uma chamada de método em uma cadeia com seu nome e argumentos avaliados.
@@ -44,7 +46,7 @@ func IdentName(expr ast.Expr) string {
 func StringLiteral(expr ast.Expr) (string, error) {
 	lit, ok := expr.(*ast.BasicLit)
 	if !ok || lit.Kind != token.STRING {
-		return "", fmt.Errorf("esperado texto entre aspas")
+		return "", i18n.Errf("ast_expect_quoted")
 	}
 	return strconv.Unquote(lit.Value)
 }
@@ -53,7 +55,7 @@ func StringLiteral(expr ast.Expr) (string, error) {
 func IntLiteral(expr ast.Expr) (int, error) {
 	lit, ok := expr.(*ast.BasicLit)
 	if !ok || lit.Kind != token.INT {
-		return 0, fmt.Errorf("esperado número inteiro")
+		return 0, i18n.Errf("ast_expect_int")
 	}
 	return strconv.Atoi(lit.Value)
 }
@@ -147,5 +149,5 @@ func evaluateCallChainRecursive(expr ast.Expr) (CallChain, error) {
 		}
 	}
 
-	return CallChain{}, fmt.Errorf("expressão não reconhecida como cadeia de chamadas")
+	return CallChain{}, i18n.Errf("ast_not_call_chain")
 }
