@@ -110,10 +110,12 @@ var vocabulario = map[string]chamadaFake{
 		return migrate.FakeNameIndexLength(index, length, genders...)
 	}),
 
-	"FakeDate":     semArgumentos(func() any { return migrate.FakeDate() }),
-	"FakeDateTime": semArgumentos(func() any { return migrate.FakeDateTime() }),
-	"FakeBytes":    umInteiro(func(length int) any { return migrate.FakeBytes(length) }),
-	"FakeValue":    semArgumentos(func() any { return migrate.FakeValue() }),
+	"FakeDate":          semArgumentos(func() any { return migrate.FakeDate() }),
+	"FakeDateTime":      semArgumentos(func() any { return migrate.FakeDateTime() }),
+	"FakeDateIndex":     umInteiro(func(index int) any { return migrate.FakeDateIndex(index) }),
+	"FakeDateTimeIndex": umInteiro(func(index int) any { return migrate.FakeDateTimeIndex(index) }),
+	"FakeBytes":         umInteiro(func(length int) any { return migrate.FakeBytes(length) }),
+	"FakeValue":         semArgumentos(func() any { return migrate.FakeValue() }),
 }
 
 // nomesConhecidos devolve o vocabulário em ordem, para mensagens de erro.

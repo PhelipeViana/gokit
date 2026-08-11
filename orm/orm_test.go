@@ -3,6 +3,7 @@ package orm_test
 import (
 	"reflect"
 	"testing"
+	"time"
 
 	orm "github.com/PhelipeViana/gokit/orm"
 )
@@ -126,6 +127,41 @@ func TestNulosEOrdenacaoEPaginacao(t *testing.T) {
 	want := `SELECT "ID", "NOME", "IDADE", "ATIVO" FROM "USERS" WHERE "NOME" IS NOT NULL ORDER BY "ID" DESC, "NOME" ASC OFFSET 40 ROWS FETCH NEXT 20 ROWS ONLY`
 	if c.SQL != want {
 		t.Fatalf("SQL:\n got %q\nwant %q", c.SQL, want)
+	}
+}
+
+func TestFiltroDinamico(t *testing.T) {
+	m, f := testModel()
+	q := m.Where(
+		orm.Filtro(f.Nome, orm.Contains, ""),       // vazio → ignorado
+		orm.Filtro(f.Nome, orm.Contains, "silva"),  // LIKE (texto)
+		orm.Filtro(f.Idade, orm.GreaterThan, "18"), // integer convertido
+		orm.Filtro(f.Id, orm.In, "1, 2 ,3"),        // IN por vírgula (com espaços)
+		orm.Filtro(f.Idade, orm.Equal, "abc"),      // parse inválido → ignorado
+	)
+	c := mustCompile(t, q, orm.Select)
+	want := `WHERE "NOME" LIKE :1 AND "IDADE" > :2 AND "ID" IN (:3, :4, :5)`
+	if !contains(c.SQL, want) {
+		t.Fatalf("SQL sem %q:\n%s", want, c.SQL)
+	}
+	if !reflect.DeepEqual(c.Args, []any{"%silva%", int64(18), int64(1), int64(2), int64(3)}) {
+		t.Fatalf("Args: %#v", c.Args)
+	}
+}
+
+func TestWhenCondicional(t *testing.T) {
+	m, f := testModel()
+	c := mustCompile(t, m.Where(
+		f.Ativo.Verdadeiro(),
+		orm.When(false, f.Id.Igual(9)),    // ignorado
+		orm.When(true, f.Nome.Igual("x")), // incluído
+	), orm.Select)
+	want := `WHERE "ATIVO" = :1 AND "NOME" = :2`
+	if !contains(c.SQL, want) {
+		t.Fatalf("SQL sem %q:\n%s", want, c.SQL)
+	}
+	if !reflect.DeepEqual(c.Args, []any{true, "x"}) {
+		t.Fatalf("Args: %#v", c.Args)
 	}
 }
 
@@ -280,4 +316,38 @@ func indexOf(s, sub string) int {
 		}
 	}
 	return -1
+}
+
+func TestFiltroDataEIntervalo(t *testing.T) {
+	dt := orm.Field{Name: "Criado", Entity: "users", Table: "users", Column: "criado_em", DataType: "datetime"}
+	d := orm.DateFilter(dt)
+	m := orm.NewModel[orm.Record](orm.EntityFields{Name: "users", Fields: []orm.Field{dt}}, orm.ScanRecords)
+
+	// intervalo fechado com time.Time
+	ini := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	fim := time.Date(2024, 12, 31, 0, 0, 0, 0, time.UTC)
+	c, err := m.Where(d.Entre(ini, fim)).Compile(orm.Select, orm.CompileOptions{Dialect: orm.Oracle})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := `WHERE "CRIADO_EM" BETWEEN :1 AND :2`; !contains(c.SQL, want) {
+		t.Fatalf("SQL sem %q: %s", want, c.SQL)
+	}
+	if len(c.Args) != 2 || c.Args[0] != any(ini) {
+		t.Fatalf("Args: %#v", c.Args)
+	}
+
+	// valor CRU (query string) convertido para time.Time, não string
+	c2, _ := m.Where(orm.Filtro(d, orm.GreaterOrEqual, "2024-06-15")).Compile(orm.Select, orm.CompileOptions{Dialect: orm.Oracle})
+	if len(c2.Args) != 1 {
+		t.Fatalf("esperava 1 arg: %#v", c2.Args)
+	}
+	if _, ok := c2.Args[0].(time.Time); !ok {
+		t.Fatalf("arg deveria ser time.Time, veio %T", c2.Args[0])
+	}
+	// data inválida é ignorada (filtro dinâmico)
+	c3, _ := m.Where(orm.Filtro(d, orm.Equal, "não-é-data")).Compile(orm.Select, orm.CompileOptions{Dialect: orm.Oracle})
+	if contains(c3.SQL, "WHERE") {
+		t.Fatalf("data inválida não deveria filtrar: %s", c3.SQL)
+	}
 }

@@ -349,6 +349,28 @@ func FakeDateTime() time.Time {
 	return time.Date(2024, 1, 1, 9, 30, 0, 0, time.Local)
 }
 
+// FakeDateIndex devolve data que VARIA com o índice (um mês por índice, a partir
+// de 2024-01-01), determinística como as demais Fake*. FakeDate é constante e
+// por isso não exercita intervalo, ordenação nem MIN/MAX por data.
+func FakeDateIndex(index int) time.Time {
+	return FakeDate().AddDate(0, normalizaIndiceData(index), 0)
+}
+
+// FakeDateTimeIndex é a versão com hora: avança mês e hora conforme o índice.
+func FakeDateTimeIndex(index int) time.Time {
+	i := normalizaIndiceData(index)
+	return FakeDateTime().AddDate(0, i, 0).Add(time.Duration(i) * time.Hour)
+}
+
+// normalizaIndiceData mantém o índice em 0..11 para as datas ficarem no mesmo
+// ano-base, mesmo com factories de contagem alta.
+func normalizaIndiceData(index int) int {
+	if index < 0 {
+		index = -index
+	}
+	return index % 12
+}
+
 func FakeBytes(length int) []byte {
 	if length <= 0 {
 		return []byte{}

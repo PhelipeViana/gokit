@@ -173,16 +173,31 @@ func (f NumberFilterField) Nulo() Filter        { return condition(f.Field, IsNu
 func (f NumberFilterField) NaoNulo() Filter     { return condition(f.Field, IsNotNull) }
 
 // --- Data ---
-func (f DateFilterField) Igual(v any) Filter { return condition(f.Field, Equal, v) }
-func (f DateFilterField) Antes(v any) Filter { return condition(f.Field, LessThan, v) }
-func (f DateFilterField) Depois(v any) Filter {
-	return condition(f.Field, GreaterThan, v)
+// Todos os métodos passam o valor por ValorData: time.Time, *time.Time, Valor e
+// texto em formato conhecido ("2006-01-02", RFC3339...) chegam ao driver já como
+// time.Time. É o tratamento genérico — o autor da pesquisa informa a data no
+// formato que tem em mão e o motor resolve.
+func (f DateFilterField) Igual(v any) Filter     { return condition(f.Field, Equal, ValorData(v)) }
+func (f DateFilterField) Diferente(v any) Filter { return condition(f.Field, NotEqual, ValorData(v)) }
+func (f DateFilterField) Antes(v any) Filter     { return condition(f.Field, LessThan, ValorData(v)) }
+func (f DateFilterField) Depois(v any) Filter    { return condition(f.Field, GreaterThan, ValorData(v)) }
+
+// AntesOuEm / DeOuDepois são os comparadores inclusivos (<= e >=), úteis em
+// intervalo aberto de um lado: "até 31/12" ou "a partir de 01/01".
+func (f DateFilterField) AntesOuEm(v any) Filter {
+	return condition(f.Field, LessOrEqual, ValorData(v))
 }
+func (f DateFilterField) DeOuDepois(v any) Filter {
+	return condition(f.Field, GreaterOrEqual, ValorData(v))
+}
+
+// Entre é o intervalo FECHADO (inclui as duas pontas): BETWEEN inicio AND fim.
 func (f DateFilterField) Entre(inicio, fim any) Filter {
-	return condition(f.Field, Between, inicio, fim)
+	return condition(f.Field, Between, ValorData(inicio), ValorData(fim))
 }
-func (f DateFilterField) Nulo() Filter    { return condition(f.Field, IsNull) }
-func (f DateFilterField) NaoNulo() Filter { return condition(f.Field, IsNotNull) }
+func (f DateFilterField) Em(vs ...any) Filter { return condition(f.Field, In, valoresData(vs)...) }
+func (f DateFilterField) Nulo() Filter        { return condition(f.Field, IsNull) }
+func (f DateFilterField) NaoNulo() Filter     { return condition(f.Field, IsNotNull) }
 
 // --- Booleano ---
 func (f BoolFilterField) Igual(v bool) Filter { return condition(f.Field, Equal, v) }
@@ -288,9 +303,16 @@ func (q Query[T]) Select(columns ...Column) Query[T] {
 }
 
 // With agenda o eager load das relações informadas (e das aninhadas nelas).
-func (m Model[T]) With(relations ...Relation) Query[T] { return m.All().With(relations...) }
+// Aceita tanto uma Relation quanto os caminhos tipados gerados
+// (orm.Users.Relation.Cidade.Estado), que embutem Relation.
+func (m Model[T]) With(relations ...RelationSource) Query[T] { return m.All().With(relations...) }
 
-func (q Query[T]) With(relations ...Relation) Query[T] {
+func (q Query[T]) With(relations ...RelationSource) Query[T] {
+	return q.withAll(relationsDe(relations))
+}
+
+// withAll é a versão interna, já com as relações resolvidas.
+func (q Query[T]) withAll(relations []Relation) Query[T] {
 	next := q.clone()
 	next.withs = append(next.withs, relations...)
 	return next
@@ -729,4 +751,12 @@ func qualifyFor(d Dialect, schema, table string) string {
 		return quoteIdentFor(d, table)
 	}
 	return quoteIdentFor(d, schema) + "." + quoteIdentFor(d, table)
+}
+
+// selectFields define a projeção a partir de campos já resolvidos (uso interno:
+// projeção de nó de relação).
+func (q Query[T]) selectFields(fs []Field) Query[T] {
+	next := q.clone()
+	next.selects = append([]Field(nil), fs...)
+	return next
 }

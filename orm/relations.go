@@ -1,6 +1,9 @@
 package orm
 
-import "context"
+import (
+	"context"
+	"strings"
+)
 
 // Relation é um nó da árvore de eager load. É opaco: carrega um loader tipado
 // (gerado por tabela), os filhos (relação de relação) e as CONSTRAINTS a aplicar
@@ -17,9 +20,47 @@ type Relation struct {
 	childCol   string // coluna de correlação no FILHO
 
 	// constraints aplicadas à query da relação (o "sub-query" do .With)
-	wheres []Expression
-	orders []ordering
-	limit  int // hasMany: máximo POR PAI (corte em memória); belongsTo: ignorado
+	wheres  []Expression
+	orders  []ordering
+	limit   int     // hasMany: máximo POR PAI (corte em memória); belongsTo: ignorado
+	selects []Field // projeção do nó (vazio = todas as colunas). A chave de
+	// junção é injetada automaticamente na carga.
+}
+
+// NodeArg é o que pode ir dentro de um nó de relação, em qualquer ordem:
+//   - outra relação → aninhamento (cr.Estado(), cr.Status())
+//   - uma coluna    → projeção do retorno DAQUELE nó (cr.Field.Nome)
+//
+// Só relações e colunas implementam a interface, então o compilador rejeita
+// qualquer outro argumento.
+type NodeArg interface{ nodeArg() }
+
+func (Relation) nodeArg()          {}
+func (Field) nodeArg()             {}
+func (StringFilterField) nodeArg() {}
+func (NumberFilterField) nodeArg() {}
+func (DateFilterField) nodeArg()   {}
+func (BoolFilterField) nodeArg()   {}
+
+// Node configura o nó: separa os argumentos entre relações aninhadas e colunas
+// de projeção. É o que o código gerado chama em cada relação —
+// pr.Cidade(cr.Estado(), cr.Field.Nome).
+func (rel Relation) Node(args ...NodeArg) Relation {
+	if len(args) == 0 {
+		return rel
+	}
+	next := rel
+	next.nested = append([]Relation(nil), rel.nested...)
+	next.selects = append([]Field(nil), rel.selects...)
+	for _, a := range args {
+		switch v := a.(type) {
+		case RelationSource:
+			next.nested = append(next.nested, v.relation())
+		case Column:
+			next.selects = append(next.selects, v.columnField())
+		}
+	}
+	return next
 }
 
 // RelationLoader executa a carga de UMA relação para um conjunto de linhas-pai
@@ -92,10 +133,30 @@ func toItems(exprs []Expression) []item {
 	return its
 }
 
+// RelationSource é qualquer coisa que represente uma relação: a própria
+// Relation ou os tipos de CAMINHO gerados (usersRelCidadeEstado etc.), que
+// embutem Relation e por isso herdam relation(). É o que permite escrever
+// orm.Users.Relation.Cidade.Estado.Pais direto no With, sem .With() aninhado.
+type RelationSource interface{ relation() Relation }
+
+func (rel Relation) relation() Relation { return rel }
+
+// relationsDe resolve uma lista de fontes para Relation.
+func relationsDe(fontes []RelationSource) []Relation {
+	out := make([]Relation, 0, len(fontes))
+	for _, f := range fontes {
+		if f == nil {
+			continue
+		}
+		out = append(out, f.relation())
+	}
+	return out
+}
+
 // With aninha relações do destino (users → cidade → estado). Devolve cópia.
-func (rel Relation) With(children ...Relation) Relation {
+func (rel Relation) With(children ...RelationSource) Relation {
 	next := rel
-	next.nested = append(append([]Relation(nil), rel.nested...), children...)
+	next.nested = append(append([]Relation(nil), rel.nested...), relationsDe(children)...)
 	return next
 }
 
@@ -126,6 +187,36 @@ func (rel Relation) Limit(n int) Relation {
 	next := rel
 	next.limit = n
 	return next
+}
+
+// mergeRelations funde relações repetidas na mesma lista, unindo recursivamente
+// os filhos. Sem isso, dois caminhos que compartilham prefixo
+// (cidade.estado.pais e cidade.estado.codigo_verificacao) rodariam em sequência e
+// o segundo SOBRESCREVERIA a costura do primeiro — o pais desapareceria da
+// resposta. As constraints (Where/OrderBy/Limit) do primeiro pedido prevalecem.
+func mergeRelations(rels []Relation) []Relation {
+	if len(rels) == 0 {
+		return rels
+	}
+	ordem := make([]string, 0, len(rels))
+	grupo := make(map[string]Relation, len(rels))
+	for _, r := range rels {
+		anterior, existe := grupo[r.name]
+		if !existe {
+			grupo[r.name] = r
+			ordem = append(ordem, r.name)
+			continue
+		}
+		anterior.nested = append(anterior.nested, r.nested...)
+		grupo[r.name] = anterior
+	}
+	out := make([]Relation, 0, len(ordem))
+	for _, nome := range ordem {
+		r := grupo[nome]
+		r.nested = mergeRelations(r.nested)
+		out = append(out, r)
+	}
+	return out
 }
 
 // maxIn é o teto de itens por lista IN. O Oracle não aceita mais que 1000 numa
@@ -219,6 +310,26 @@ func HasMany[P any, C any](
 	return nil
 }
 
+// campoPorColuna acha o Field de uma coluna na entidade (case-insensitive).
+func campoPorColuna(e EntityFields, coluna string) (Field, bool) {
+	for _, f := range e.Fields {
+		if strings.EqualFold(f.Column, coluna) {
+			return f, true
+		}
+	}
+	return Field{}, false
+}
+
+// comChave garante a coluna de junção na projeção do nó.
+func comChave(cols []Field, chave Field) []Field {
+	for _, c := range cols {
+		if strings.EqualFold(c.Column, chave.Column) {
+			return cols
+		}
+	}
+	return append(append([]Field(nil), cols...), chave)
+}
+
 // distinctKeys colhe os valores de chave não-nulos e distintos dos pais.
 func distinctKeys[P any](parents []P, key func(P) (int64, bool)) []any {
 	ids := make([]any, 0, len(parents))
@@ -250,7 +361,20 @@ func loadChildren[C any](ctx context.Context, r Runner, child Model[C], keyField
 		if len(rel.orders) > 0 {
 			q = q.appendOrders(rel.orders)
 		}
-		q = q.With(rel.nested...)
+		if len(rel.selects) > 0 {
+			// Chaves entram sempre, senão a costura falha em silêncio:
+			//  - a que liga este nó ao PAI (keyField);
+			//  - a que liga este nó a cada FILHO aninhado (parentCol do filho) —
+			//    sem ela, projetar o nó apagaria as relações de dentro dele.
+			cols := comChave(rel.selects, keyField.Field)
+			for _, filho := range rel.nested {
+				if f, ok := campoPorColuna(child.Entity, filho.parentCol); ok {
+					cols = comChave(cols, f)
+				}
+			}
+			q = q.selectFields(cols)
+		}
+		q = q.withAll(rel.nested)
 		lote, err := q.GetWith(ctx, r)
 		if err != nil {
 			return nil, err

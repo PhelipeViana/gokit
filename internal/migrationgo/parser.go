@@ -295,6 +295,27 @@ func coerceSeedValue(value any, kind string) (any, error) {
 				return number, nil
 			}
 		}
+
+	case "boolean":
+		// 0/1 em coluna booleana: MySQL, Oracle e SQL Server aceitam o número, mas
+		// o pgx recusa ("unable to encode 0 into binary format for bool"). Como as
+		// factories produzem o booleano com FakeIntIndex(index, 0, 1), a conversão
+		// é conhecimento do motor — não do autor da factory.
+		switch typed := value.(type) {
+		case bool:
+			return typed, nil
+		case int:
+			return typed != 0, nil
+		case int64:
+			return typed != 0, nil
+		case float64:
+			return typed != 0, nil
+		case string:
+			if b, err := strconv.ParseBool(typed); err == nil {
+				return b, nil
+			}
+			return nil, fmt.Errorf("%q não é um booleano válido (use true/false ou 0/1)", typed)
+		}
 	}
 	return value, nil
 }
