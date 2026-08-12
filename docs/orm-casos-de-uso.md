@@ -13,7 +13,7 @@ Validado nos **4 dialetos** (MySQL, PostgreSQL, Oracle, SQL Server):
 | Camada | O que é | Onde |
 |---|---|---|
 | **ORM** | motor genérico: query, operadores, relações, execução | `gokit/orm` |
-| **Fields** | o ORM já conhecendo o schema (gerado das migrations) | `internal/gokit/core/orm/fields.gen.go` |
+| **Fields** | o ORM já conhecendo o schema (gerado das migrations) | `internal/gokit/core/core.gen.go` |
 | **Services** | escritas + regras de negócio | *(a fazer)* |
 
 > Regra: usar sempre a camada mais **alta** que resolve. Service → Fields → ORM.
@@ -37,13 +37,13 @@ do gokit.
 ## 2. O handle da entidade
 
 ```go
-u := orm.Users        // entidade
-f := u.Field          // operadores por coluna
+u := core.Users       // entidade
+f := u.Column         // operadores por coluna
 ur := u.Relation      // relações
 ```
 
 - `u.<verbo>` → `Where`, `Select`, `OrderBy`, `Limit`, `Get`, `Count`…
-- `u.Field.<Coluna>.<operador>()` → `f.Nome.Contains("silva")`
+- `u.Column.<Coluna>.<operador>()` → `f.Nome.Contains("silva")`
 - `u.Relation.<Rel>(...)` → `ur.Cidade(...)`
 
 ---
@@ -280,25 +280,30 @@ app.RespondErrorr(w, r, app.BadRequest("id inválido"))  // 400
 | Coluna/relação de outra entidade | compila, falha em runtime com erro claro |
 | Duas FKs pra mesma tabela | nomes desambiguados (`PedidosByUser`/`PedidosByAprovador`) |
 | `Value` em JSON | extraia o tipo (`.Float()`), não devolva cru |
-| Binário do gokit defasado | regerar com `.exe` antigo **rebaixa** o `fields.gen.go` |
+| Binário do gokit defasado | regerar com `.exe` antigo **rebaixa** o `core.gen.go` |
 
 ---
 
 ## 15. O que ainda **não** existe
 
-- **Escritas**: `INSERT`/`UPDATE`/`DELETE`, transações (próximo passo)
-- `GroupBy`/`Having`, `withCount`
-- m2m (pivot), relações polimórficas
-- `.Join` achatado (a estratégia é eager)
-- streaming (`chunk`/`cursor`), locking (`FOR UPDATE`), SQL cru
-- PK composta ou não-`id`; chaves não-inteiras
+> Este documento cobre a camada de **leitura**. Tudo que era listado aqui como
+> ausente — escritas, transação, `GroupBy`/`Having`, `Join`, subconsultas,
+> `Chunk`/`Lock`, `Upsert`, expressões cross-dialect, `Raw` contido, PK composta
+> e não-`id` — **existe hoje** e está documentado no
+> [README](../README.md#casos-de-uso).
+
+Segue fora do escopo:
+
+- m2m (pivot) e relações polimórficas
+- cursor de banco (o percurso em lote é `Chunk`, por chave)
+- camada de **Services** (escritas + regras de negócio)
 
 ---
 
 ## 16. Como validar
 
 ```bash
-cd teste && go run ./cmd/ormdemo             # catálogo executável (16 seções)
+cd teste && go run ./cmd/ormdemo             # catálogo executável (21 seções)
 cd teste && go run ./cmd/conform             # conformidade nos 4 dialetos
 cd teste && go run ./cmd/conform -bench      # performance bruta
 cd teste && docker compose up -d app         # API + internal/gokit/test/api.gen.http
