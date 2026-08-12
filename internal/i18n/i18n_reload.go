@@ -406,9 +406,9 @@ func init() {
 			EN: "Failed to generate the ORM: %v",
 		},
 		"rel_orm_done": {
-			PT: "%d entidade(s) mapeada(s) em fields.gen.go.",
-			ES: "%d entidad(es) mapeada(s) en fields.gen.go.",
-			EN: "%d entity(ies) mapped in fields.gen.go.",
+			PT: "%d entidade(s) mapeada(s) em core.gen.go.",
+			ES: "%d entidad(es) mapeada(s) en core.gen.go.",
+			EN: "%d entity(ies) mapped in core.gen.go.",
 		},
 		"rel_catalog_failed": {
 			PT: "Falha ao reconstruir catálogo: %v",

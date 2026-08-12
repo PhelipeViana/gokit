@@ -1,6 +1,7 @@
 package migrationgo
 
 import (
+	"go/parser"
 	"os"
 	"path/filepath"
 	"testing"
@@ -63,5 +64,62 @@ func Migration() migrate.Definition {
 
 	if op.Columns[1].Name != "name" || op.Columns[1].Type != "string" || op.Columns[1].Length != 255 || !op.Columns[1].Nullable {
 		t.Errorf("segunda coluna incorreta: %+v", op.Columns[1])
+	}
+}
+
+// A referência de tabela aceita as duas formas: o pacote dedicado (alias.X, a
+// antiga) e o pacote core unificado (core.Table.X, a nova). Aceitar as duas é o
+// que evita um dia de virada em que nenhuma migration do corpus compila.
+func TestReferenciaDeCatalogoAceitaAsDuasFormas(t *testing.T) {
+	casos := []struct {
+		fonte     string
+		esperado  string
+		aceito    bool
+		descricao string
+	}{
+		{"alias.Users", "Users", true, "forma antiga, pacote alias"},
+		{"table.Users", "Users", true, "forma antiga, pacote table (legado anterior)"},
+		{"core.Table.Users", "Users", true, "forma nova, pacote core unificado"},
+		// O apelido do import é livre, então o identificador do pacote não é
+		// validado — só o agrupador Table.
+		{"app.Table.Users", "Users", true, "forma nova com outro apelido de import"},
+		{"core.Column.Users", "", false, "agrupador errado não passa por tabela"},
+		{"outro.Users", "", false, "pacote desconhecido na forma antiga"},
+		{"Users", "", false, "identificador solto, sem seletor"},
+		{`"users"`, "", false, "texto cru em vez de referência"},
+	}
+
+	for _, caso := range casos {
+		expressao, err := parser.ParseExpr(caso.fonte)
+		if err != nil {
+			t.Fatalf("%s: fonte inválida %q: %v", caso.descricao, caso.fonte, err)
+		}
+		obtido, ok := referenciaDeCatalogo(expressao, "Table", []string{"alias", "table"})
+		if ok != caso.aceito {
+			t.Errorf("%s: %q aceito=%v, esperado %v", caso.descricao, caso.fonte, ok, caso.aceito)
+			continue
+		}
+		if ok && obtido != caso.esperado {
+			t.Errorf("%s: %q devolveu %q, esperado %q", caso.descricao, caso.fonte, obtido, caso.esperado)
+		}
+	}
+}
+
+// A view segue a mesma regra, com o agrupador próprio: view.X e core.View.X.
+func TestReferenciaDeCatalogoDeView(t *testing.T) {
+	casos := map[string]bool{
+		"view.SaldoAtual":       true,
+		"core.View.SaldoAtual":  true,
+		"core.Table.SaldoAtual": false, // agrupador de tabela não vale para view
+		"alias.SaldoAtual":      false,
+	}
+	for fonte, aceito := range casos {
+		expressao, err := parser.ParseExpr(fonte)
+		if err != nil {
+			t.Fatalf("fonte inválida %q: %v", fonte, err)
+		}
+		if _, ok := referenciaDeCatalogo(expressao, "View", []string{"view"}); ok != aceito {
+			t.Errorf("%q aceito=%v, esperado %v", fonte, ok, aceito)
+		}
 	}
 }

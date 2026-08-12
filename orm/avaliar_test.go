@@ -175,24 +175,24 @@ func TestMatchesIgnoraCondicaoInativa(t *testing.T) {
 	}
 }
 
-// O EXISTS de relação precisa do banco: Avaliavel avisa antes, e Matches não
+// O EXISTS de relação precisa do banco: Evaluable avisa antes, e Matches não
 // inventa resposta.
 func TestExistsDeRelacaoNaoEAvaliavelEmMemoria(t *testing.T) {
 	users := entidadeUsers()
 	nome := StringColumn{campo(users, "nome")}
 
-	if !Avaliavel(nome.Contains("Ana")) {
+	if !Evaluable(nome.Contains("Ana")) {
 		t.Error("condição simples deveria ser avaliável")
 	}
-	if !Avaliavel(And(nome.Contains("Ana"), nome.IsNotNull())) {
+	if !Evaluable(And(nome.Contains("Ana"), nome.IsNotNull())) {
 		t.Error("grupo de condições simples deveria ser avaliável")
 	}
 
 	relacao := Relation{}
-	if Avaliavel(relacao.Exists()) {
+	if Evaluable(relacao.Exists()) {
 		t.Error("EXISTS de relação não deveria ser avaliável em memória")
 	}
-	if Avaliavel(And(nome.Contains("Ana"), relacao.Exists())) {
+	if Evaluable(And(nome.Contains("Ana"), relacao.Exists())) {
 		t.Error("grupo contendo EXISTS não deveria ser avaliável")
 	}
 }

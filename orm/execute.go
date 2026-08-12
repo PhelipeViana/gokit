@@ -64,7 +64,7 @@ func (q Query[T]) GetWith(ctx context.Context, r Runner) ([]T, error) {
 	// + SUM(saldo) não é um UsersRow. Recusar aqui é melhor que devolver a linha
 	// com os campos zerados e a agregação descartada em silêncio.
 	if len(q.aggSelects) > 0 || len(q.groups) > 0 {
-		return nil, ErrProjecaoAgregada
+		return nil, ErrAggregateProjection
 	}
 	run, err := resolveRunner(r)
 	if err != nil {

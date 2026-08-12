@@ -145,8 +145,26 @@ func conditionActive(op Operator, values []any) bool {
 }
 
 // --- Texto ---
-func (f StringColumn) Equal(v string) Condition      { return condition(f.Field, Equal, v) }
-func (f StringColumn) NotEqual(v string) Condition   { return condition(f.Field, NotEqual, v) }
+func (f StringColumn) Equal(v string) Condition    { return condition(f.Field, Equal, v) }
+func (f StringColumn) NotEqual(v string) Condition { return condition(f.Field, NotEqual, v) }
+
+// Contains, StartsWith e EndsWith compilam para LIKE puro, e portanto seguem a
+// COLLATION da coluna. É a única coisa na ORM que não responde igual nos quatro:
+//
+//	Postgres, Oracle       sensíveis à caixa (LIKE do padrão)
+//	MySQL, SQL Server      insensíveis, por collation padrão do banco
+//
+// A decisão (2026-08-12) foi manter assim e documentar, em vez de embrulhar toda
+// comparação de texto em LOWER: LOWER na coluna descarta o índice comum, e forçar
+// collation binária depende do charset da coluna — frágil em schema legado, e
+// falharia no banco em vez de na compilação.
+//
+// Quem precisa da MESMA resposta nos quatro pede em voz alta, com o bloco 5:
+//
+//	orm.Lower(u.Column.Nome).Contains("ana")   // LOWER(nome) LIKE '%ana%'
+//
+// A bateria de escrita registra essa divergência como esperada, para que uma nova
+// não se confunda com ela.
 func (f StringColumn) Contains(v string) Condition   { return condition(f.Field, Contains, v) }
 func (f StringColumn) StartsWith(v string) Condition { return condition(f.Field, StartsWith, v) }
 func (f StringColumn) EndsWith(v string) Condition {
@@ -227,9 +245,11 @@ func (f NumberColumn) columnField() Field { return f.Field }
 func (f DateColumn) columnField() Field   { return f.Field }
 func (f BoolColumn) columnField() Field   { return f.Field }
 
+// ordering guarda a Column, não o Field resolvido: é o que permite ordenar por
+// expressão (ORDER BY LOWER("nome")) sem um caminho paralelo.
 type ordering struct {
-	field Field
-	desc  bool
+	coluna Column
+	desc   bool
 }
 
 // Query é a pesquisa em construção, parametrizada pelo tipo da linha (T). É
@@ -247,11 +267,11 @@ type Query[T any] struct {
 	distinct bool
 	agg      *aggregate // quando != nil, SELECT vira fn(col) (Sum/Avg/Min/Max)
 	// irrestrita libera UPDATE/DELETE sem Where. Nasce falso: a escrita sem
-	// filtro precisa ser dita em voz alta com .Todas().
+	// filtro precisa ser dita em voz alta com .Unrestricted().
 	irrestrita bool
 	joins      []juncao // JOIN/LEFT JOIN por relação declarada
 	travar     bool     // Lock(): FOR UPDATE / WITH (UPDLOCK)
-	groups     []Field  // GROUP BY
+	groups     []Column // GROUP BY (Column para aceitar expressão: GROUP BY YEAR(data))
 	havings    []item   // HAVING (mesma gramática do Where)
 	aggSelects []Column // projeção agrupada: colunas e agregações juntas
 }
@@ -287,12 +307,12 @@ func (q Query[T]) clone() Query[T] {
 		selects:  append([]Field(nil), q.selects...),
 		distinct: q.distinct,
 		agg:      q.agg,
-		// irrestrita atravessa o clone: quem disse .Todas() antes de acrescentar
+		// irrestrita atravessa o clone: quem disse .Unrestricted() antes de acrescentar
 		// OrderBy ou Limit não precisa dizer de novo.
 		irrestrita: q.irrestrita,
 		joins:      append([]juncao(nil), q.joins...),
 		travar:     q.travar,
-		groups:     append([]Field(nil), q.groups...),
+		groups:     append([]Column(nil), q.groups...),
 		havings:    append([]item(nil), q.havings...),
 		aggSelects: append([]Column(nil), q.aggSelects...),
 	}
@@ -323,11 +343,14 @@ func (m Model[T]) Select(columns ...Column) Query[T] { return m.All().Select(col
 // silêncio.
 func (q Query[T]) Select(columns ...Column) Query[T] {
 	next := q.clone()
+	// Agregação e expressão vão pelo mesmo caminho: nenhuma das duas tem a forma da
+	// linha da entidade (SUM("saldo") e LOWER("nome") não são colunas de UsersRow),
+	// então a projeção inteira passa a ser lida como Record.
 	temAgregacao := false
 	for _, c := range columns {
-		if _, ok := c.(Aggregation); ok {
+		switch c.(type) {
+		case Aggregation, Expr, Raw:
 			temAgregacao = true
-			break
 		}
 	}
 	if temAgregacao {
@@ -376,13 +399,13 @@ func (q Query[T]) and(expressions ...Expression) Query[T] {
 
 func (q Query[T]) OrderBy(o Column) Query[T] {
 	next := q.clone()
-	next.orders = append(next.orders, ordering{field: o.columnField()})
+	next.orders = append(next.orders, ordering{coluna: o})
 	return next
 }
 
 func (q Query[T]) OrderByDesc(o Column) Query[T] {
 	next := q.clone()
-	next.orders = append(next.orders, ordering{field: o.columnField(), desc: true})
+	next.orders = append(next.orders, ordering{coluna: o, desc: true})
 	return next
 }
 
@@ -469,6 +492,21 @@ func (c *compileCtx) col(f Field) string {
 	return colunaQualificada(c.dialect, tabela, f.Column)
 }
 
+// expr resolve qualquer Column para o texto SQL: expressão do bloco 5 quando o
+// tipo souber se compilar, coluna simples caso contrário.
+//
+// É o mesmo movimento que o ctx.col fez pelo JOIN: concentrar a decisão num
+// método só é o que permite Where, Select, OrderBy e GroupBy aceitarem expressão
+// com uma linha de mudança cada, em vez de um caminho paralelo em cada cláusula.
+func (c *compileCtx) expr(col Column) (string, error) {
+	if expressao, ok := col.(interface {
+		expressao(*compileCtx) (string, error)
+	}); ok {
+		return expressao.expressao(c)
+	}
+	return c.col(col.columnField()), nil
+}
+
 func (c *compileCtx) bind(v any) string {
 	c.args = append(c.args, v)
 	return placeholderFor(c.dialect, len(c.args))
@@ -479,7 +517,7 @@ func (c *compileCtx) bind(v any) string {
 func (q Query[T]) Compile(operation Operation, options CompileOptions) (CompiledQuery, error) {
 	d := options.Dialect
 	if !supportedDialect(d) {
-		return CompiledQuery{}, fmt.Errorf("dialeto %q ainda não suportado", d)
+		return CompiledQuery{}, errDialetoNaoSuportado(d)
 	}
 	if q.Entity.Name == "" {
 		return CompiledQuery{}, fmt.Errorf("model sem tabela")
@@ -495,33 +533,28 @@ func (q Query[T]) Compile(operation Operation, options CompileOptions) (Compiled
 		dialect: d, parentTable: q.Entity.Name, schema: options.Schema,
 		qualificar: len(q.joins) > 0, tabelaBase: q.Entity.Name,
 	}
-	where, err := compileItems(q.items, ctx)
-	if err != nil {
-		return CompiledQuery{}, err
-	}
+	// A ordem em que as cláusulas são COMPILADAS tem de ser a ordem em que
+	// aparecem no TEXTO — projeção, WHERE, GROUP BY, HAVING, ORDER BY — porque cada
+	// valor vinculado consome o placeholder seguinte. Enquanto só o WHERE tinha
+	// valores, a ordem não importava; com as expressões do bloco 5, um Coalesce na
+	// projeção e outro no ORDER BY passam a vincular, e compilar fora de ordem
+	// ligaria o valor de uma cláusula ao placeholder de outra. O SQL continuaria
+	// válido — é o mesmo bug silencioso do SET antes do WHERE no UPDATE.
 
-	// Agregação: SELECT fn(col) FROM ... WHERE ...  (uma linha; sem order/limit/distinct).
+	// Agregação escalar: SELECT fn(col) FROM ... WHERE ... (uma linha; sem
+	// order/limit/distinct).
 	if operation == OpSelect && q.agg != nil {
-		sql := "SELECT " + q.agg.fn + "(" + ctx.col(q.agg.col) + ")" +
+		projecao := q.agg.fn + "(" + ctx.col(q.agg.col) + ")"
+		where, err := compileItems(q.items, ctx)
+		if err != nil {
+			return CompiledQuery{}, err
+		}
+		sql := "SELECT " + projecao +
 			" FROM " + qualifyFor(d, options.Schema, q.Entity.Name)
 		if where != "" {
 			sql += " WHERE " + where
 		}
 		return CompiledQuery{SQL: sql, Args: ctx.args}, nil
-	}
-
-	// ORDER BY (só faz sentido no Select).
-	orderClause := ""
-	if operation == OpSelect && len(q.orders) > 0 {
-		parts := make([]string, 0, len(q.orders))
-		for _, o := range q.orders {
-			direction := "ASC"
-			if o.desc {
-				direction = "DESC"
-			}
-			parts = append(parts, ctx.col(o.field)+" "+direction)
-		}
-		orderClause = "ORDER BY " + strings.Join(parts, ", ")
 	}
 
 	// Colunas do SELECT: projeção explícita (.Select) ou todas as da entidade.
@@ -534,9 +567,13 @@ func (q Query[T]) Compile(operation Operation, options CompileOptions) (Compiled
 	top := sqlServerTop(operation, d, offset, limit)
 	prefix := selectPrefix(operation, ctx, cols, top, q.distinct)
 	// Projeção agrupada substitui a lista de colunas: um SELECT de chave do grupo
-	// mais agregação não tem a forma da linha da entidade.
+	// mais agregação ou expressão não tem a forma da linha da entidade.
 	if operation == OpSelect {
-		if partes := q.projecaoAgrupada(ctx); len(partes) > 0 {
+		partes, err := q.projecaoAgrupada(ctx)
+		if err != nil {
+			return CompiledQuery{}, err
+		}
+		if len(partes) > 0 {
 			prefix = "SELECT " + strings.Join(partes, ", ")
 		}
 	}
@@ -545,18 +582,29 @@ func (q Query[T]) Compile(operation Operation, options CompileOptions) (Compiled
 	if err != nil {
 		return CompiledQuery{}, err
 	}
+	where, err := compileItems(q.items, ctx)
+	if err != nil {
+		return CompiledQuery{}, err
+	}
+
 	sql := prefix + " FROM " + qualifyFor(d, options.Schema, q.Entity.Name) +
 		dicaDeTabela(d, q.travar && operation == OpSelect) + juncoes
 	if where != "" {
 		sql += " WHERE " + where
 	}
 
-	// GROUP BY e HAVING entram entre o WHERE e o ORDER BY. O HAVING compila com o
-	// mesmo contexto de argumentos, então a numeração dos placeholders continua.
+	// GROUP BY e HAVING entram entre o WHERE e o ORDER BY.
 	if operation == OpSelect && len(q.groups) > 0 {
 		chaves := make([]string, 0, len(q.groups))
 		for _, grupo := range q.groups {
-			chaves = append(chaves, ctx.col(grupo))
+			if expressao, ok := grupo.(Expr); ok && expressao.temValor() {
+				return CompiledQuery{}, ErrValueInGroupBy
+			}
+			chave, err := ctx.expr(grupo)
+			if err != nil {
+				return CompiledQuery{}, err
+			}
+			chaves = append(chaves, chave)
 		}
 		sql += " GROUP BY " + strings.Join(chaves, ", ")
 	}
@@ -570,6 +618,24 @@ func (q Query[T]) Compile(operation Operation, options CompileOptions) (Compiled
 		}
 	}
 
+	// ORDER BY (só faz sentido no Select), compilado por último para que os
+	// placeholders de uma expressão ordenada venham depois dos das outras cláusulas.
+	orderClause := ""
+	if operation == OpSelect && len(q.orders) > 0 {
+		parts := make([]string, 0, len(q.orders))
+		for _, o := range q.orders {
+			direction := "ASC"
+			if o.desc {
+				direction = "DESC"
+			}
+			coluna, err := ctx.expr(o.coluna)
+			if err != nil {
+				return CompiledQuery{}, err
+			}
+			parts = append(parts, coluna+" "+direction)
+		}
+		orderClause = "ORDER BY " + strings.Join(parts, ", ")
+	}
 	// SQL Server exige ORDER BY para usar OFFSET/FETCH; sintetiza um estável.
 	if d == SQLServer && offset > 0 && orderClause == "" {
 		orderClause = "ORDER BY (SELECT NULL)"
@@ -583,7 +649,7 @@ func (q Query[T]) Compile(operation Operation, options CompileOptions) (Compiled
 	// diz o que fazer, é melhor que deixar o código do Oracle vazar para quem
 	// escreveu a pesquisa.
 	if operation == OpSelect && q.travar && d == Oracle && (limit > 0 || offset > 0) {
-		return CompiledQuery{}, ErrTravaComLimiteNoOracle
+		return CompiledQuery{}, ErrLockWithLimitOnOracle
 	}
 	sql += paginationTail(operation, d, offset, limit)
 	// A trava vai depois da paginação: FOR UPDATE é a última cláusula do comando.
@@ -746,6 +812,10 @@ func compileExpression(e Expression, ctx *compileCtx) (string, error) {
 		return compileColumnCondition(v, ctx)
 	case subqueryCondition:
 		return compileSubquery(v, ctx)
+	case exprCondition:
+		return compileExprCondition(v, ctx)
+	case Raw:
+		return compileRaw(v, ctx)
 	case havingCondition:
 		// A esquerda é a expressão de agregação, não uma coluna: SUM("saldo") > ?.
 		return v.agg.expressao(ctx) + " " + comparator(v.op) + " " + ctx.bind(v.valor), nil
@@ -755,44 +825,51 @@ func compileExpression(e Expression, ctx *compileCtx) (string, error) {
 }
 
 func compileFilter(f Condition, ctx *compileCtx) (string, error) {
-	column := ctx.col(f.Field)
-	switch f.Operator {
+	return compileComparacao(ctx.col(f.Field), f.Operator, f.Values, ctx)
+}
+
+// compileComparacao rende "<esquerda> <operador> <valor>". A esquerda chega já
+// pronta em texto — coluna, no caso do Condition, ou expressão, no caso do
+// bloco 5. Separar isto do compileFilter é o que evita implementar cada operador
+// duas vezes: expressão e coluna dividem exatamente a mesma tabela de operadores.
+func compileComparacao(esquerda string, operador Operator, valores []any, ctx *compileCtx) (string, error) {
+	switch operador {
 	case Equal, NotEqual, GreaterThan, GreaterOrEqual, LessThan, LessOrEqual:
-		if len(f.Values) != 1 {
-			return "", fmt.Errorf("operador %s exige um valor", f.Operator)
+		if len(valores) != 1 {
+			return "", fmt.Errorf("operador %s exige um valor", operador)
 		}
-		return fmt.Sprintf("%s %s %s", column, comparator(f.Operator), ctx.bind(f.Values[0])), nil
+		return fmt.Sprintf("%s %s %s", esquerda, comparator(operador), ctx.bind(valores[0])), nil
 	case Contains, StartsWith, EndsWith:
-		if len(f.Values) != 1 {
-			return "", fmt.Errorf("operador %s exige um valor", f.Operator)
+		if len(valores) != 1 {
+			return "", fmt.Errorf("operador %s exige um valor", operador)
 		}
-		text, ok := f.Values[0].(string)
+		text, ok := valores[0].(string)
 		if !ok {
-			return "", fmt.Errorf("operador %s exige texto", f.Operator)
+			return "", fmt.Errorf("operador %s exige texto", operador)
 		}
-		return fmt.Sprintf("%s LIKE %s", column, ctx.bind(likePattern(f.Operator, text))), nil
+		return fmt.Sprintf("%s LIKE %s", esquerda, ctx.bind(likePattern(operador, text))), nil
 	case In:
-		if len(f.Values) == 0 {
+		if len(valores) == 0 {
 			return "", nil
 		}
-		placeholders := make([]string, 0, len(f.Values))
-		for _, v := range f.Values {
+		placeholders := make([]string, 0, len(valores))
+		for _, v := range valores {
 			placeholders = append(placeholders, ctx.bind(v))
 		}
-		return fmt.Sprintf("%s IN (%s)", column, strings.Join(placeholders, ", ")), nil
+		return fmt.Sprintf("%s IN (%s)", esquerda, strings.Join(placeholders, ", ")), nil
 	case Between:
-		if len(f.Values) != 2 {
+		if len(valores) != 2 {
 			return "", fmt.Errorf("between exige dois valores")
 		}
-		low := ctx.bind(f.Values[0])
-		high := ctx.bind(f.Values[1])
-		return fmt.Sprintf("%s BETWEEN %s AND %s", column, low, high), nil
+		low := ctx.bind(valores[0])
+		high := ctx.bind(valores[1])
+		return fmt.Sprintf("%s BETWEEN %s AND %s", esquerda, low, high), nil
 	case IsNull:
-		return column + " IS NULL", nil
+		return esquerda + " IS NULL", nil
 	case IsNotNull:
-		return column + " IS NOT NULL", nil
+		return esquerda + " IS NOT NULL", nil
 	default:
-		return "", fmt.Errorf("operador %s ainda não compilado", f.Operator)
+		return "", fmt.Errorf("operador %s ainda não compilado", operador)
 	}
 }
 

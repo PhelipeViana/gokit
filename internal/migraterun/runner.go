@@ -2794,13 +2794,10 @@ func viewPhysicalName(alias string, root string, state config.ConfigState) strin
 	if pRoot == "" {
 		pRoot = root
 	}
-	viewFile := filepath.Join(pRoot, "internal", "gokit", "core", "migration", "view", "dsl.gen.go")
-	if data, err := os.ReadFile(viewFile); err == nil {
-		re := regexp.MustCompile(`(?m)^\s*var\s+` + regexp.QuoteMeta(alias) + `\s*=\s*migrate\.(?:RegisteredView|View)\("([^"]+)"\)`)
-		if m := re.FindStringSubmatch(string(data)); len(m) > 1 {
-			return m[1]
-		}
+	if fisico, tem := migrationgo.ViewPhysicalName(pRoot, alias); tem && fisico != "" {
+		return fisico
 	}
+	// Sem catálogo, a convenção do prefixo vw resolve o caso normal.
 	name := strings.ToLower(alias)
 	if strings.HasPrefix(name, "vw") && !strings.HasPrefix(name, "vw_") && len(name) > 2 {
 		name = "vw_" + name[2:]
@@ -2898,53 +2895,53 @@ func CreateScaffoldMigration(root string, state config.ConfigState, name string,
 		migrate.Col("created_at").Timestamp().DefaultExpr("CURRENT_TIMESTAMP"),
 	).Alias("` + lowerAlias + `")`
 	case "drop_table":
-		operationBody = `migrate.DropTable(alias.` + aliasRef + `)`
+		operationBody = `migrate.DropTable(core.Table.` + aliasRef + `)`
 	case "add_column":
-		operationBody = `migrate.AddColumn(alias.` + aliasRef + `,
+		operationBody = `migrate.AddColumn(core.Table.` + aliasRef + `,
 		migrate.Col("nova_coluna").Varchar(255).Nullable(),
 	)`
 	case "alter_column":
-		operationBody = `migrate.AlterColumn(alias.` + aliasRef + `,
+		operationBody = `migrate.AlterColumn(core.Table.` + aliasRef + `,
 		migrate.Col("coluna").Varchar(255).Nullable(),
 	)`
 	case "drop_column":
-		operationBody = `migrate.DropColumn(alias.` + aliasRef + `,
+		operationBody = `migrate.DropColumn(core.Table.` + aliasRef + `,
 		migrate.Col("coluna"),
 	)`
 	case "add_foreign_key":
-		operationBody = `migrate.AddForeignKey(alias.` + aliasRef + `,
+		operationBody = `migrate.AddForeignKey(core.Table.` + aliasRef + `,
 		migrate.Col("coluna_id").References("tabela_estrangeira", "id").OnDeleteCascade(),
 	)`
 	case "drop_foreign_key":
-		operationBody = `migrate.DropForeignKey(alias.` + aliasRef + `,
+		operationBody = `migrate.DropForeignKey(core.Table.` + aliasRef + `,
 		migrate.Col("coluna_id").References("tabela_estrangeira", "id"),
 	)`
 	case "create_index":
-		operationBody = `migrate.CreateIndex(alias.` + aliasRef + `, "idx_` + name + `_coluna", "coluna")`
+		operationBody = `migrate.CreateIndex(core.Table.` + aliasRef + `, "idx_` + name + `_coluna", "coluna")`
 	case "drop_index":
-		operationBody = `migrate.DropIndex(alias.` + aliasRef + `, "idx_` + name + `_coluna")`
+		operationBody = `migrate.DropIndex(core.Table.` + aliasRef + `, "idx_` + name + `_coluna")`
 	case "create_view":
-		operationBody = `migrate.CreateView(view.` + viewRef + `)`
+		operationBody = `migrate.CreateView(core.View.` + viewRef + `)`
 	case "alter_view":
-		operationBody = `migrate.AlterView(view.` + viewRef + `)`
+		operationBody = `migrate.AlterView(core.View.` + viewRef + `)`
 	case "drop_view":
-		operationBody = `migrate.DropView(view.` + viewRef + `)`
+		operationBody = `migrate.DropView(core.View.` + viewRef + `)`
 	case "create_sequence":
 		operationBody = `migrate.CreateSequence("sq_` + name + `")`
 	case "drop_sequence":
 		operationBody = `migrate.DropSequence("sq_` + name + `")`
 	case "rename_table":
-		operationBody = `migrate.RenameTable(alias.` + aliasRef + `, "novo_nome_tabela")`
+		operationBody = `migrate.RenameTable(core.Table.` + aliasRef + `, "novo_nome_tabela")`
 	case "rename_column":
-		operationBody = `migrate.RenameColumn(alias.` + aliasRef + `, "nome_antigo", "nome_novo")`
+		operationBody = `migrate.RenameColumn(core.Table.` + aliasRef + `, "nome_antigo", "nome_novo")`
 	case "add_primary_key":
-		operationBody = `migrate.AddPrimaryKey(alias.` + aliasRef + `, "pk_` + name + `", "id")`
+		operationBody = `migrate.AddPrimaryKey(core.Table.` + aliasRef + `, "pk_` + name + `", "id")`
 	case "add_unique":
-		operationBody = `migrate.AddUnique(alias.` + aliasRef + `, "uk_` + name + `_coluna", "coluna")`
+		operationBody = `migrate.AddUnique(core.Table.` + aliasRef + `, "uk_` + name + `_coluna", "coluna")`
 	case "add_check":
-		operationBody = `migrate.AddCheck(alias.` + aliasRef + `, "chk_` + name + `_coluna", "coluna > 0")`
+		operationBody = `migrate.AddCheck(core.Table.` + aliasRef + `, "chk_` + name + `_coluna", "coluna > 0")`
 	case "drop_constraint":
-		operationBody = `migrate.DropConstraint(alias.` + aliasRef + `, "constraint_nome")`
+		operationBody = `migrate.DropConstraint(core.Table.` + aliasRef + `, "constraint_nome")`
 	case "raw_sql":
 		// Usa o dialeto ativo como padrão do scaffold: o desenvolvedor vê
 		// imediatamente que está escrevendo SQL para um banco específico.
@@ -2960,11 +2957,12 @@ func CreateScaffoldMigration(root string, state config.ConfigState, name string,
 		return "", i18n.Errf("run_op_kind_unknown", method)
 	}
 
+	// Um import só: o pacote core traz o catálogo (core.Table.X / core.View.X) e as
+	// entidades da ORM. Antes eram dois pacotes dedicados, um para cada catálogo.
 	importsBlock := `import migrate "github.com/PhelipeViana/gokit/migration"`
 	if method != "todo" && method != "raw_sql" {
 		importsBlock = `import (
-	alias "` + moduleName + `/internal/gokit/core/migration/alias"
-	view "` + moduleName + `/internal/gokit/core/migration/view"
+	core "` + moduleName + `/internal/gokit/core"
 	migrate "github.com/PhelipeViana/gokit/migration"
 )`
 	}
@@ -3045,29 +3043,10 @@ func LoadCatalogTablesAndViews(root string, state config.ConfigState) ([]string,
 	// Atualiza o catálogo antes de carregar
 	_ = migrationgo.RefreshCatalog(pRoot, outputDir)
 
-	var tables []string
-	dslFile := filepath.Join(pRoot, "internal", "gokit", "core", "migration", "alias", "dsl.gen.go")
-	if data, err := os.ReadFile(dslFile); err == nil {
-		re := regexp.MustCompile(`(?m)^\s*var\s+([A-Za-z_][A-Za-z0-9_]*)\s*=\s*migrate\.Table`)
-		matches := re.FindAllStringSubmatch(string(data), -1)
-		for _, m := range matches {
-			tables = append(tables, m[1])
-		}
-	}
-
-	var views []string
-	viewFile := filepath.Join(pRoot, "internal", "gokit", "core", "migration", "view", "dsl.gen.go")
-	if data, err := os.ReadFile(viewFile); err == nil {
-		re := regexp.MustCompile(`(?m)^\s*var\s+([A-Za-z_][A-Za-z0-9_]*)\s*=`)
-		matches := re.FindAllStringSubmatch(string(data), -1)
-		for _, m := range matches {
-			views = append(views, m[1])
-		}
-	}
-
-	sort.Strings(tables)
-	sort.Strings(views)
-	return tables, views, nil
+	// A leitura do catálogo é do migrationgo, que já mescla os caminhos legados e
+	// mantém cache. Regex próprio aqui era um segundo lugar para esquecer de
+	// acompanhar quando a forma do arquivo gerado muda — e ela já mudou duas vezes.
+	return migrationgo.CatalogNames(pRoot), migrationgo.ViewNames(pRoot), nil
 }
 
 func GetModuleName(projectRoot string) (string, error) {

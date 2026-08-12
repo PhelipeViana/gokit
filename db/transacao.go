@@ -72,7 +72,7 @@ func (t *TxSession) Attempt(ctx context.Context, nome string, fn func(r orm.Runn
 	// O nome entra no SQL, então só identificador simples é aceito: savepoint não
 	// aceita parâmetro, e concatenar texto de fora seria injeção.
 	if !nomeDeSavepointValido(nome) {
-		return orm.ErrSavepointInvalido
+		return orm.ErrInvalidSavepoint
 	}
 	criar, voltar := comandosDeSavepoint(t.dialect, nome)
 	if _, err := t.ExecContext(ctx, criar); err != nil {

@@ -68,28 +68,141 @@ func (g Group) Matches(linha any) bool {
 // sem saber o tipo concreto — o caso de uma regra guardada numa variável.
 //
 // Expressão que depende do banco (o EXISTS de uma relação) não tem resposta em
-// memória e devolve falso. Use Avaliavel antes quando isso importar.
+// memória e devolve falso. Use Evaluable antes quando isso importar.
 func Matches(expressao Expression, linha any) bool {
 	switch v := expressao.(type) {
 	case Condition:
 		return v.Matches(linha)
 	case Group:
 		return v.Matches(linha)
+	case exprCondition:
+		return v.Matches(linha)
+	case Raw:
+		// Fragmento cru é SQL: não há como o Go respondê-lo. Devolver falso, e
+		// Evaluable dizer falso antes, é o que permite a camada de regras saber que
+		// aquela regra só o banco sabe avaliar.
+		_ = v
+		return false
 	default:
 		return false
 	}
 }
 
-// Avaliavel diz se a expressão pode ser resolvida sem o banco. É falso para o
+// Matches avalia a condição sobre expressão em memória.
+//
+// Existe para que o bloco 5 não fure a promessa do Matches: uma regra guardada
+// numa variável tem de responder igual no banco e no Go, e sem isto
+// orm.Lower(f.Nome).Contains("ana") passaria a ser uma regra que só o banco sabe
+// avaliar — e a camada de regras voltaria a escrever a mesma condição duas vezes.
+func (c exprCondition) Matches(linha any) bool {
+	if !c.active() {
+		return true
+	}
+	valor, ok := avaliarExpr(c.expr, linha)
+	if !ok {
+		return false
+	}
+	return avaliar(valor, c.op, c.values)
+}
+
+// avaliarExpr calcula a expressão sobre uma linha carregada. Devolve falso quando
+// não dá para calcular — coluna ausente da projeção, ou função sem equivalente em
+// memória.
+func avaliarExpr(e Expr, linha any) (any, bool) {
+	if e.fn == fnNow {
+		// O relógio do Go, não o do banco. É a única função do bloco cuja avaliação
+		// em memória não pode ser idêntica à do SQL, e está documentado no Now().
+		return time.Now(), true
+	}
+
+	entradas := make([]any, 0, len(e.args))
+	for _, arg := range e.args {
+		if arg.eValor {
+			entradas = append(entradas, arg.valor)
+			continue
+		}
+		if aninhada, ok := arg.coluna.(Expr); ok {
+			valor, ok := avaliarExpr(aninhada, linha)
+			if !ok {
+				return nil, false
+			}
+			entradas = append(entradas, valor)
+			continue
+		}
+		valor, ok := valorDaLinha(linha, arg.coluna.columnField())
+		if !ok {
+			return nil, false
+		}
+		entradas = append(entradas, valor)
+	}
+	if len(entradas) == 0 {
+		return nil, false
+	}
+
+	switch e.fn {
+	case fnLower:
+		return strings.ToLower(comoTexto(entradas[0])), true
+	case fnUpper:
+		return strings.ToUpper(comoTexto(entradas[0])), true
+	case fnTrim:
+		return strings.TrimSpace(comoTexto(entradas[0])), true
+	case fnLength:
+		// Contagem de caracteres, não de bytes: é o que LENGTH devolve nos bancos com
+		// charset multibyte, e acento em nome próprio é regra, não exceção.
+		return int64(len([]rune(comoTexto(entradas[0])))), true
+	case fnConcat:
+		var b strings.Builder
+		for _, entrada := range entradas {
+			// Nulo como vazio, igual à compilação.
+			if entrada == nil {
+				continue
+			}
+			b.WriteString(comoTexto(entrada))
+		}
+		return b.String(), true
+	case fnCoalesce:
+		for _, entrada := range entradas {
+			if entrada != nil {
+				return entrada, true
+			}
+		}
+		return nil, true
+	case fnAno, fnMes, fnDia:
+		instante, ok := comoInstante(entradas[0])
+		if !ok {
+			return nil, false
+		}
+		switch e.fn {
+		case fnAno:
+			return int64(instante.Year()), true
+		case fnMes:
+			return int64(instante.Month()), true
+		default:
+			return int64(instante.Day()), true
+		}
+	}
+	return nil, false
+}
+
+// Evaluable diz se a expressão pode ser resolvida sem o banco. É falso para o
 // EXISTS de relação, que precisa consultar a tabela filha.
-func Avaliavel(expressao Expression) bool {
+func Evaluable(expressao Expression) bool {
 	switch v := expressao.(type) {
 	case Condition:
 		_ = v
 		return true
+	case exprCondition:
+		// As expressões do bloco 5 têm equivalente em Go, então a condição é
+		// avaliável. A ressalva do Now() — relógio do Go em vez do banco — está no
+		// próprio construtor.
+		return true
+	case Raw:
+		// Fragmento cru precisa do banco. É o mesmo caso do EXISTS de relação.
+		_ = v
+		return false
 	case Group:
 		for _, it := range v.items {
-			if it.expr != nil && !Avaliavel(it.expr) {
+			if it.expr != nil && !Evaluable(it.expr) {
 				return false
 			}
 		}
@@ -106,7 +219,7 @@ func valorDaLinha(linha any, campo Field) (any, bool) {
 		if !registro.Has(campo) {
 			return nil, false
 		}
-		return registro.Valor(campo).Raw(), true
+		return registro.Value(campo).Raw(), true
 	}
 
 	refletido := reflect.ValueOf(linha)

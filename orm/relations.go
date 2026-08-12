@@ -171,13 +171,13 @@ func (rel Relation) Where(expressions ...Expression) Relation {
 // OrderBy/OrderByDesc ordenam a relação carregada.
 func (rel Relation) OrderBy(c Column) Relation {
 	next := rel
-	next.orders = append(append([]ordering(nil), rel.orders...), ordering{field: c.columnField()})
+	next.orders = append(append([]ordering(nil), rel.orders...), ordering{coluna: c})
 	return next
 }
 
 func (rel Relation) OrderByDesc(c Column) Relation {
 	next := rel
-	next.orders = append(append([]ordering(nil), rel.orders...), ordering{field: c.columnField(), desc: true})
+	next.orders = append(append([]ordering(nil), rel.orders...), ordering{coluna: c, desc: true})
 	return next
 }
 

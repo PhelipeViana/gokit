@@ -36,6 +36,11 @@ func (v Value) Text() string {
 		return ""
 	case string:
 		return t
+	case []byte:
+		// O driver do MySQL devolve texto e decimal como []byte quando o destino do
+		// Scan é any — o caso do Record. Sem isto, Text() daria a lista de bytes
+		// ("[66 97 ...]") e Float() daria zero, em silêncio.
+		return string(t)
 	case time.Time:
 		return t.Format(time.RFC3339)
 	default:
@@ -46,6 +51,8 @@ func (v Value) Text() string {
 // Int converte para int64 (trunca fracionário). Zero quando nulo/inconvertível.
 func (v Value) Int() int64 {
 	switch t := v.bruto.(type) {
+	case []byte:
+		return Value{bruto: string(t)}.Int()
 	case int64:
 		return t
 	case int:
@@ -72,6 +79,8 @@ func (v Value) Int() int64 {
 // Float converte para float64. Zero quando nulo/inconvertível.
 func (v Value) Float() float64 {
 	switch t := v.bruto.(type) {
+	case []byte:
+		return Value{bruto: string(t)}.Float()
 	case float64:
 		return t
 	case float32:
@@ -95,6 +104,8 @@ func (v Value) Float() float64 {
 // Bool converte para booleano (0/1, "true"/"false").
 func (v Value) Bool() bool {
 	switch t := v.bruto.(type) {
+	case []byte:
+		return Value{bruto: string(t)}.Bool()
 	case bool:
 		return t
 	case int64:
@@ -111,6 +122,8 @@ func (v Value) Bool() bool {
 // Tempo converte para time.Time, aceitando os formatos de data usuais em texto.
 func (v Value) Time() time.Time {
 	switch t := v.bruto.(type) {
+	case []byte:
+		return Value{bruto: string(t)}.Time()
 	case time.Time:
 		return t
 	case string:

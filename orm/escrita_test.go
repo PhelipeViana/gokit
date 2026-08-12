@@ -234,34 +234,34 @@ func TestUpdateEDeleteSemWhereFalham(t *testing.T) {
 	users := entidadeUsers()
 	m := modelo(users)
 
-	if _, err := m.All().Update(nil, Values{campo(users, "nome"): "x"}); !errors.Is(err, ErrSemWhere) {
-		t.Errorf("UPDATE sem Where deveria falhar com ErrSemWhere, veio: %v", err)
+	if _, err := m.All().Update(nil, Values{campo(users, "nome"): "x"}); !errors.Is(err, ErrMissingWhere) {
+		t.Errorf("UPDATE sem Where deveria falhar com ErrMissingWhere, veio: %v", err)
 	}
-	if _, err := m.All().Delete(nil); !errors.Is(err, ErrSemWhere) {
-		t.Errorf("DELETE sem Where deveria falhar com ErrSemWhere, veio: %v", err)
+	if _, err := m.All().Delete(nil); !errors.Is(err, ErrMissingWhere) {
+		t.Errorf("DELETE sem Where deveria falhar com ErrMissingWhere, veio: %v", err)
 	}
 }
 
-// .Todas() é o "sim, a tabela inteira". Sem conexão o erro passa a ser de
+// .Unrestricted() é o "sim, a tabela inteira". Sem conexão o erro passa a ser de
 // conexão, o que prova que a guarda de Where já não é mais o obstáculo.
 func TestTodasLiberaEscritaSemWhere(t *testing.T) {
 	users := entidadeUsers()
-	_, err := modelo(users).Todas().Delete(nil)
-	if errors.Is(err, ErrSemWhere) {
-		t.Error(".Todas() deveria liberar a escrita sem Where")
+	_, err := modelo(users).Unrestricted().Delete(nil)
+	if errors.Is(err, ErrMissingWhere) {
+		t.Error(".Unrestricted() deveria liberar a escrita sem Where")
 	}
 	if !errors.Is(err, ErrNoConnection) {
 		t.Errorf("esperado erro de conexão, veio: %v", err)
 	}
 }
 
-// .Todas() precisa sobreviver ao clone, senão acrescentar um OrderBy depois
+// .Unrestricted() precisa sobreviver ao clone, senão acrescentar um OrderBy depois
 // reativaria a guarda.
 func TestTodasSobreviveAoClone(t *testing.T) {
 	users := entidadeUsers()
-	q := modelo(users).Todas().OrderBy(campo(users, "id")).Limit(10)
-	if _, err := q.Delete(nil); errors.Is(err, ErrSemWhere) {
-		t.Error("a liberação de .Todas() se perdeu no clone")
+	q := modelo(users).Unrestricted().OrderBy(campo(users, "id")).Limit(10)
+	if _, err := q.Delete(nil); errors.Is(err, ErrMissingWhere) {
+		t.Error("a liberação de .Unrestricted() se perdeu no clone")
 	}
 }
 

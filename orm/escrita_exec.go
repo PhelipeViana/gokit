@@ -95,7 +95,7 @@ func (m Model[T]) InsertManyWith(ctx context.Context, r Runner, linhas []Values)
 // Update grava os valores nas linhas que a pesquisa selecionou.
 //
 // Recusa pesquisa sem Where: UPDATE na tabela inteira é quase sempre acidente, e
-// quando não é, .Todas() diz isso em voz alta.
+// quando não é, .Unrestricted() diz isso em voz alta.
 func (q Query[T]) Update(ctx context.Context, valores Values) (Result, error) {
 	return q.UpdateWith(ctx, nil, valores)
 }
@@ -173,13 +173,13 @@ func (m Model[T]) DeleteByKeyWith(ctx context.Context, r Runner, chave ...any) (
 	return m.Where(condicao).DeleteWith(ctx, r)
 }
 
-// Todas libera a escrita sem Where. É o "sim, eu quero a tabela inteira" —
+// Unrestricted libera a escrita sem Where. É o "sim, eu quero a tabela inteira" —
 // existe para que o caso legítimo seja possível e o acidental seja impossível.
-func (q Query[T]) Todas() Query[T] {
+func (q Query[T]) Unrestricted() Query[T] {
 	next := q.clone()
 	next.irrestrita = true
 	return next
 }
 
-// Todas no Model, para quem parte da entidade.
-func (m Model[T]) Todas() Query[T] { return m.All().Todas() }
+// Unrestricted no Model, para quem parte da entidade.
+func (m Model[T]) Unrestricted() Query[T] { return m.All().Unrestricted() }

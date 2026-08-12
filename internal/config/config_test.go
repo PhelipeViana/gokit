@@ -79,8 +79,11 @@ func TestCreateOnboardingScaffoldInitializesGoModule(t *testing.T) {
 		"- ../gokit:/gokit",
 	)
 	assertFileContains(filepath.Join("internal", "gokit", "migrate", "add_column", "2026_08_08_000003_add_cidade_to_users.go"),
-		`alias "projeto-vazio/internal/gokit/core/migration/alias"`,
+		`core "projeto-vazio/internal/gokit/core"`,
 		`migrate "`+gomodule.CanonicalGoKitModule+`/migration"`,
+		// A referência tem de casar com o apelido do import: o scaffold já sai na
+		// forma nova, e apelido e referência divergentes não compilariam.
+		`migrate.AddColumn(core.Table.Users,`,
 	)
 }
 

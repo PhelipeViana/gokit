@@ -100,7 +100,7 @@ func TestNomeDeSaidaPadraoDaAgregacao(t *testing.T) {
 		"total":     Sum(campo(users, "saldo")).As("total"),
 	}
 	for esperado, agregacao := range casos {
-		if obtido := agregacao.NomeDeSaida(); obtido != esperado {
+		if obtido := agregacao.OutputName(); obtido != esperado {
 			t.Errorf("esperado %q, obtido %q", esperado, obtido)
 		}
 	}
@@ -166,13 +166,13 @@ func TestGetRecusaProjecaoAgregada(t *testing.T) {
 	users := entidadeUsers()
 	cidade := campo(users, "cidade_id")
 
-	if _, err := modelo(users).Select(cidade, CountAll()).Get(nil); !errors.Is(err, ErrProjecaoAgregada) {
-		t.Errorf("esperado ErrProjecaoAgregada, veio: %v", err)
+	if _, err := modelo(users).Select(cidade, CountAll()).Get(nil); !errors.Is(err, ErrAggregateProjection) {
+		t.Errorf("esperado ErrAggregateProjection, veio: %v", err)
 	}
-	if _, err := modelo(users).GroupBy(cidade).Get(nil); !errors.Is(err, ErrProjecaoAgregada) {
+	if _, err := modelo(users).GroupBy(cidade).Get(nil); !errors.Is(err, ErrAggregateProjection) {
 		t.Errorf("GroupBy sem agregação explícita também não cabe no Get: %v", err)
 	}
-	if !strings.Contains(ErrProjecaoAgregada.Error(), "Rows") {
+	if !strings.Contains(ErrAggregateProjection.Error(), "Rows") {
 		t.Error("a mensagem deveria apontar o terminal certo")
 	}
 }
@@ -217,7 +217,7 @@ func TestGettersDoRecordRecebemColuna(t *testing.T) {
 	}
 
 	// A saída por texto continua existindo, explícita.
-	if linha.PorNome("total").Float() != 12.5 {
-		t.Error("PorNome deveria ler pelo nome cru")
+	if linha.ByName("total").Float() != 12.5 {
+		t.Error("ByName deveria ler pelo nome cru")
 	}
 }

@@ -1,6 +1,6 @@
 package i18n
 
-// Comentários emitidos no fields.gen.go (mapeamento ORM gerado das migrations).
+// Comentários emitidos no core.gen.go (mapeamento ORM gerado das migrations).
 // O texto sai no idioma do gokit.json no momento da GERAÇÃO — trocar o idioma
 // exige regerar. A tag de anotação (TODO/NOTE/...) fica em inglês de propósito:
 // é o que IDEs, linters e o todo-tree reconhecem.
@@ -14,6 +14,14 @@ func init() {
 			PT: "Gerado a partir das migrations pelo GoKit. Alterações aqui são perdidas na próxima geração.",
 			ES: "Generado a partir de las migraciones por GoKit. Los cambios aquí se pierden en la próxima generación.",
 			EN: "Generated from the migrations by GoKit. Changes here are lost on the next generation.",
+		},
+		// O pacote core reúne as entidades e os agrupadores Table/View. Tabela cujo
+		// nome colide com um agrupador não tem saída automática: renomear a entidade
+		// esconderia a colisão, e renomear o agrupador quebraria toda migration.
+		"gen_orm_reserved_name": {
+			PT: "a tabela %q gera a entidade core.%s, que colide com o agrupador core.%s do catálogo; dê um apelido à tabela com CreateTable(%q).Alias(\"outro_nome\")",
+			ES: "la tabla %q genera la entidad core.%s, que colisiona con el agrupador core.%s del catálogo; asigne un alias a la tabla con CreateTable(%q).Alias(\"otro_nombre\")",
+			EN: "table %q generates entity core.%s, which collides with the catalog group core.%s; give the table a nickname with CreateTable(%q).Alias(\"another_name\")",
 		},
 		"gen_orm_row": {
 			PT: "Linha tipada da entidade (retorno de Get/First). Coluna anulável vira ponteiro.",

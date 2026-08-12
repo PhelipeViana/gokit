@@ -15,25 +15,25 @@ import "fmt"
 
 // ── Comparação entre duas colunas da mesma tabela ──
 
+// columnCondition guarda as Column, não os Field resolvidos: é o que permite
+// comparar expressão com coluna, ou com outra expressão — WhereColumn(f.Vencimento,
+// orm.LessThan, orm.Now()) compara a coluna com o relógio do banco.
 type columnCondition struct {
-	esquerda Field
+	esquerda Column
 	op       Operator
-	direita  Field
+	direita  Column
 }
 
 func (columnCondition) expression()  {}
 func (columnCondition) active() bool { return true }
 
-// WhereColumn compara duas colunas entre si, em vez de coluna com valor.
+// WhereColumn compara dois lados entre si, em vez de coluna com valor. Cada lado
+// é uma coluna ou uma expressão do bloco 5.
 //
 // É o caso do "saldo acima do limite" ou "atualizado depois de criado", que sem
 // isso só saía em SQL escrito à mão.
 func WhereColumn(esquerda Column, op Operator, direita Column) Expression {
-	return columnCondition{
-		esquerda: esquerda.columnField(),
-		op:       op,
-		direita:  direita.columnField(),
-	}
+	return columnCondition{esquerda: esquerda, op: op, direita: direita}
 }
 
 func compileColumnCondition(c columnCondition, ctx *compileCtx) (string, error) {
@@ -45,8 +45,15 @@ func compileColumnCondition(c columnCondition, ctx *compileCtx) (string, error) 
 	default:
 		return "", fmt.Errorf("orm: operador %q não vale entre duas colunas; use igualdade ou comparação de ordem", c.op)
 	}
-	comparador := comparator(c.op)
-	return ctx.col(c.esquerda) + " " + comparador + " " + ctx.col(c.direita), nil
+	esquerda, err := ctx.expr(c.esquerda)
+	if err != nil {
+		return "", err
+	}
+	direita, err := ctx.expr(c.direita)
+	if err != nil {
+		return "", err
+	}
+	return esquerda + " " + comparator(c.op) + " " + direita, nil
 }
 
 // ── Subconsulta ──

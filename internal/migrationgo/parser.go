@@ -19,7 +19,12 @@ import (
 )
 
 var tableEntry = regexp.MustCompile(`(?m)^\s*(?:var\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*(?::|=)\s*migrate\.Table\("([^"]+)"\),?`)
-var viewEntry = regexp.MustCompile(`(?m)^\s*(?:var\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*migrate\.(?:RegisteredView|View)\("([^"]+)"\)`)
+// O `(?::|=)` e a vírgula opcional fazem o padrão casar tanto com a declaração
+// solta (`var X = migrate.RegisteredView("v")`, do pacote antigo) quanto com o
+// campo de struct (`X: migrate.RegisteredView("v"),`, do agrupador core.View). O
+// padrão de tabelas já era assim; alinhar os dois evita que a view fique sem
+// catálogo depois da mudança de forma.
+var viewEntry = regexp.MustCompile(`(?m)^\s*(?:var\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*(?::|=)\s*migrate\.(?:RegisteredView|View)\("([^"]+)"\),?`)
 var migrationIDEntry = regexp.MustCompile(`^(\d{4}_\d{2}_\d{2}_\d{6})`)
 
 // seedTimeLayout espelha migrate.SeedTimeLayout. O parser não importa o pacote
@@ -36,15 +41,16 @@ func ParseFile(path string) ([]acao.Operacao, error) {
 	}
 	views := map[string]string{}
 	if root := projectRoot(filepath.Dir(path)); root != "" {
-		core := loadCatalog(filepath.Join(root, "internal", "gokit", "core", "migration", "alias", "dsl.gen.go"))
-		legacyCore := loadCatalog(filepath.Join(root, "internal", "gokit", "core", "migration", "table", "dsl.gen.go"))
-		for name, alias := range legacyCore {
+		// catalogoAcumulado já mescla os caminhos legados com o atual, na ordem em que
+		// o atual tem a palavra final.
+		for name, alias := range catalogoAcumulado(root) {
 			catalog[name] = alias
 		}
-		for name, alias := range core {
-			catalog[name] = alias
+		for _, caminho := range append(caminhosLegadosDeViews(root), caminhoDoCatalogoDeViews(root)) {
+			for name, view := range loadViewCatalog(caminho) {
+				views[name] = view
+			}
 		}
-		views = loadViewCatalog(filepath.Join(root, "internal", "gokit", "core", "migration", "view", "dsl.gen.go"))
 	}
 
 	set := token.NewFileSet()
@@ -676,26 +682,62 @@ func columnOperation(kind acao.Tipo, table string, expressions []ast.Expr) (acao
 	return op, nil
 }
 
-func tableReference(expression ast.Expr, catalog map[string]string) (string, error) {
+// referenciaDeCatalogo aceita as duas formas de citar uma tabela ou view:
+//
+//	alias.Users        // pacote dedicado (forma antiga, ainda válida)
+//	core.Table.Users   // pacote core unificado (forma nova)
+//
+// A segunda é um seletor ANINHADO — core.Table.Users é SelectorExpr{X:
+// SelectorExpr{core, Table}, Sel: Users} —, então validar só o IdentName de
+// selector.X devolve vazio e recusaria a referência. Reconhecer as duas é o que
+// permite o corpus antigo continuar válido enquanto a forma nova entra: sem isso
+// haveria um dia de virada em que nenhuma migration compila.
+//
+// grupo é o nome do agrupador na forma nova ("Table" ou "View"); pacotes são os
+// identificadores aceitos na forma antiga.
+func referenciaDeCatalogo(expression ast.Expr, grupo string, pacotes []string) (string, bool) {
 	selector, ok := expression.(*ast.SelectorExpr)
-	if !ok || (astparser.IdentName(selector.X) != "alias" && astparser.IdentName(selector.X) != "table") {
+	if !ok {
+		return "", false
+	}
+	// Forma nova: o meio do caminho é o agrupador, e o que vem antes dele é o
+	// pacote — que pode receber qualquer apelido no import, então não é validado.
+	if interno, aninhado := selector.X.(*ast.SelectorExpr); aninhado {
+		if interno.Sel.Name == grupo && astparser.IdentName(interno.X) != "" {
+			return selector.Sel.Name, true
+		}
+		return "", false
+	}
+	// Forma antiga: o pacote dedicado, citado pelo nome.
+	nome := astparser.IdentName(selector.X)
+	for _, aceito := range pacotes {
+		if nome == aceito {
+			return selector.Sel.Name, true
+		}
+	}
+	return "", false
+}
+
+func tableReference(expression ast.Expr, catalog map[string]string) (string, error) {
+	referencia, ok := referenciaDeCatalogo(expression, "Table", []string{"alias", "table"})
+	if !ok {
 		return "", i18n.Errf("mgp_use_alias_ref")
 	}
-	name, ok := catalog[selector.Sel.Name]
+	name, ok := catalog[referencia]
 	if !ok {
-		return "", i18n.Errf("mgp_alias_not_in_catalog", selector.Sel.Name)
+		return "", i18n.Errf("mgp_alias_not_in_catalog", referencia)
 	}
 	return name, nil
 }
 
 func viewReference(expression ast.Expr, catalog map[string]string) (string, error) {
-	selector, ok := expression.(*ast.SelectorExpr)
-	if !ok || astparser.IdentName(selector.X) != "view" {
+	referencia, ok := referenciaDeCatalogo(expression, "View", []string{"view"})
+	if !ok {
 		return "", i18n.Errf("mgp_use_view_ref")
 	}
-	name, ok := catalog[selector.Sel.Name]
+	name, ok := catalog[referencia]
 	if !ok {
-		return "", i18n.Errf("mgp_view_not_in_catalog", selector.Sel.Name)
+		return "", i18n.Errf("mgp_view_not_in_catalog", referencia)
 	}
 	return name, nil
 }

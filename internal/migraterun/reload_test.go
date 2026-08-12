@@ -48,16 +48,16 @@ func Migration() migrate.Definition { return migrate.Define(migrate.CreateTable(
 	if err := os.WriteFile(filepath.Join(migrations, "2026_01_01_000001_users.go"), []byte(schema), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	state := config.ConfigState{Config: &config.Config{Output: config.OutputConfig{Migrate: "database/migrations", ORM: "internal/gokit/core/orm"}}}
+	state := config.ConfigState{Config: &config.Config{Output: config.OutputConfig{Migrate: "database/migrations", ORM: "internal/gokit/core"}}}
 	count, err := GenerateORM(root, state)
 	if err != nil || count != 1 {
 		t.Fatalf("GenerateORM: count=%d err=%v", count, err)
 	}
-	data, err := os.ReadFile(filepath.Join(root, "internal/gokit/core/orm/fields.gen.go"))
+	data, err := os.ReadFile(filepath.Join(root, "internal/gokit/core/core.gen.go"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, expected := range []string{"var Users =", "type usersEntity struct", "type usersColumnSet struct", "type UsersRow struct", "func scanUsers(", "gokitorm.Model[UsersRow]", "Column: \"id\"", "gokitorm.NumberCol("} {
+	for _, expected := range []string{"package core", "var Users =", "type usersEntity struct", "type usersColumnSet struct", "type UsersRow struct", "func scanUsers(", "gokitorm.Model[UsersRow]", "Column: \"id\"", "gokitorm.NumberCol("} {
 		if !strings.Contains(string(data), expected) {
 			t.Fatalf("gerado sem %q:\n%s", expected, data)
 		}

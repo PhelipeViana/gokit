@@ -69,13 +69,13 @@ func (v Values) ordenar(entity EntityFields) ([]Field, []any, error) {
 
 // CompileInsert monta o INSERT de uma ou mais linhas.
 //
-// Todas as linhas usam o mesmo conjunto de colunas — o da primeira. Linha com
+// Unrestricted as linhas usam o mesmo conjunto de colunas — o da primeira. Linha com
 // coluna faltando receberia NULL numa posição que o desenvolvedor não escreveu,
 // e isso é erro de autoria, não conveniência.
 func compileInsert(entity EntityFields, linhas []Values, options CompileOptions) (CompiledQuery, error) {
 	d := options.Dialect
 	if !supportedDialect(d) {
-		return CompiledQuery{}, fmt.Errorf("dialeto %q ainda não suportado", d)
+		return CompiledQuery{}, errDialetoNaoSuportado(d)
 	}
 	if len(linhas) == 0 {
 		return CompiledQuery{}, errSemValores("Insert")
@@ -143,7 +143,7 @@ func mesmasColunas(a, b []Field) bool {
 func compileUpdate[T any](q Query[T], valores Values, options CompileOptions) (CompiledQuery, error) {
 	d := options.Dialect
 	if !supportedDialect(d) {
-		return CompiledQuery{}, fmt.Errorf("dialeto %q ainda não suportado", d)
+		return CompiledQuery{}, errDialetoNaoSuportado(d)
 	}
 	campos, dados, err := valores.ordenar(q.Entity)
 	if err != nil {
@@ -181,7 +181,7 @@ func compileUpdate[T any](q Query[T], valores Values, options CompileOptions) (C
 func compileDelete[T any](q Query[T], options CompileOptions) (CompiledQuery, error) {
 	d := options.Dialect
 	if !supportedDialect(d) {
-		return CompiledQuery{}, fmt.Errorf("dialeto %q ainda não suportado", d)
+		return CompiledQuery{}, errDialetoNaoSuportado(d)
 	}
 	ctx := &compileCtx{dialect: d, parentTable: q.Entity.Name, schema: options.Schema}
 	where, err := compileItems(q.items, ctx)

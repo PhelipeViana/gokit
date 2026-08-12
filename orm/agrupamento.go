@@ -30,13 +30,13 @@ type Aggregation struct {
 // nome de saída como Column para que o scanner ache o valor pelo alias.
 func (a Aggregation) columnField() Field {
 	campo := a.col
-	campo.Column = a.NomeDeSaida()
+	campo.Column = a.OutputName()
 	return campo
 }
 
-// NomeDeSaida é o alias da coluna no resultado. Sem As explícito, o nome é
+// OutputName é o alias da coluna no resultado. Sem As explícito, o nome é
 // derivado da função e da coluna — previsível, e é a chave do Record.
-func (a Aggregation) NomeDeSaida() string {
+func (a Aggregation) OutputName() string {
 	if a.alias != "" {
 		return a.alias
 	}
@@ -104,7 +104,7 @@ func aggCondition(a Aggregation, op Operator, v any) Expression {
 func (q Query[T]) GroupBy(cols ...Column) Query[T] {
 	next := q.clone()
 	for _, col := range cols {
-		next.groups = append(next.groups, col.columnField())
+		next.groups = append(next.groups, col)
 	}
 	return next
 }
@@ -176,30 +176,46 @@ func (m Model[T]) Rows(ctx context.Context) ([]Record, error) { return m.All().R
 
 // projecaoAgrupada monta a lista do SELECT quando há agregação ou agrupamento.
 // Devolve vazio quando não é o caso, deixando a compilação normal seguir.
-func (q Query[T]) projecaoAgrupada(ctx *compileCtx) []string {
+func (q Query[T]) projecaoAgrupada(ctx *compileCtx) ([]string, error) {
 	itens := q.aggSelects
 	if len(itens) == 0 {
 		if len(q.groups) == 0 {
-			return nil
+			return nil, nil
 		}
 		// GroupBy sem projeção declarada: as chaves do grupo mais a contagem, que
 		// é o relatório que se espera por padrão.
-		for _, grupo := range q.groups {
-			itens = append(itens, grupo)
-		}
+		itens = append(itens, q.groups...)
 		itens = append(itens, CountAll())
 	}
 
 	partes := make([]string, 0, len(itens))
 	for _, item := range itens {
-		if agregacao, ok := item.(Aggregation); ok {
+		switch alvo := item.(type) {
+		case Aggregation:
 			partes = append(partes,
-				agregacao.expressao(ctx)+" AS "+quoteIdentFor(ctx.dialect, agregacao.NomeDeSaida()))
-			continue
+				alvo.expressao(ctx)+" AS "+quoteIdentFor(ctx.dialect, alvo.OutputName()))
+		case Expr:
+			// A expressão sai com alias porque é por ele que o Record acha o valor: o
+			// nome que o banco daria a LOWER("nome") é diferente em cada um.
+			texto, err := alvo.expressao(ctx)
+			if err != nil {
+				return nil, err
+			}
+			partes = append(partes, texto+" AS "+quoteIdentFor(ctx.dialect, alvo.OutputName()))
+		case Raw:
+			texto, err := alvo.expressao(ctx)
+			if err != nil {
+				return nil, err
+			}
+			if alvo.alias == "" {
+				return nil, errRawNaProjecaoSemAlias()
+			}
+			partes = append(partes, texto+" AS "+quoteIdentFor(ctx.dialect, alvo.OutputName()))
+		default:
+			partes = append(partes, ctx.col(item.columnField()))
 		}
-		partes = append(partes, ctx.col(item.columnField()))
 	}
-	return partes
+	return partes, nil
 }
 
 // Acesso ao Record por getter, em vez de asserção de tipo.
@@ -219,14 +235,14 @@ func (q Query[T]) projecaoAgrupada(ctx *compileCtx) []string {
 //	total := orm.Sum(u.Field.Saldo).As("total")
 //	linhas, _ := orm.Users.Select(u.Field.CidadeId, total).GroupBy(u.Field.CidadeId).Rows(ctx)
 //	linhas[0].Float(total)
-func (r Record) Valor(coluna Column) Value {
-	return r.PorNome(coluna.columnField().Column)
+func (r Record) Value(coluna Column) Value {
+	return r.ByName(coluna.columnField().Column)
 }
 
-// PorNome é a saída para quando só existe o nome em texto — relatório cujas
+// ByName é a saída para quando só existe o nome em texto — relatório cujas
 // colunas vêm de configuração, por exemplo. É explícita de propósito: quem a usa
 // está abrindo mão da checagem do compilador e o nome do método diz isso.
-func (r Record) PorNome(coluna string) Value {
+func (r Record) ByName(coluna string) Value {
 	procurado := strings.ToLower(coluna)
 	if bruto, tem := r[procurado]; tem {
 		return comoValue(bruto)
@@ -264,8 +280,8 @@ func (r Record) Has(coluna Column) bool {
 	return false
 }
 
-func (r Record) Int(coluna Column) int64     { return r.Valor(coluna).Int() }
-func (r Record) Float(coluna Column) float64 { return r.Valor(coluna).Float() }
-func (r Record) Text(coluna Column) string   { return r.Valor(coluna).Text() }
-func (r Record) Bool(coluna Column) bool     { return r.Valor(coluna).Bool() }
-func (r Record) IsNull(coluna Column) bool   { return r.Valor(coluna).IsNull() }
+func (r Record) Int(coluna Column) int64     { return r.Value(coluna).Int() }
+func (r Record) Float(coluna Column) float64 { return r.Value(coluna).Float() }
+func (r Record) Text(coluna Column) string   { return r.Value(coluna).Text() }
+func (r Record) Bool(coluna Column) bool     { return r.Value(coluna).Bool() }
+func (r Record) IsNull(coluna Column) bool   { return r.Value(coluna).IsNull() }

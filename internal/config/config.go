@@ -625,18 +625,18 @@ func Migration_2026_08_08_000002_CreateUsersTable() migrate.Definition {
 	fkMig := fmt.Sprintf(`package migrations
 
 import (
-	alias %q
+	core %q
 	migrate "github.com/PhelipeViana/gokit/migration"
 )
 
 func Migration_2026_08_08_000003_AddCidadeToUsers() migrate.Definition {
 	return migrate.Define(
-		migrate.AddColumn(alias.Users,
+		migrate.AddColumn(core.Table.Users,
 			migrate.Col("cidade_id").Integer().Nullable().References("cidades", "id").OnDeleteCascade(),
 		),
 	)
 }
-`, moduleResult.Module+"/internal/gokit/core/migration/alias")
+`, moduleResult.Module+"/internal/gokit/core")
 	_ = os.WriteFile(filepath.Join("internal", "gokit", "migrate", "add_column", "2026_08_08_000003_add_cidade_to_users.go"), []byte(fkMig), 0o644)
 
 	seederContent := `package users
@@ -911,7 +911,10 @@ func EnsureConfigExistsAndLoad() (*Config, string, []string, error) {
 		interpolatedConfig.Output.Settings = "internal/gokit/gokit.json"
 	}
 	if interpolatedConfig.Output.ORM == "" {
-		interpolatedConfig.Output.ORM = "internal/gokit/core/orm"
+		// O pacote core reúne a camada gerada inteira — entidades, catálogo de
+		// tabelas e envelope de resposta —, para que a aplicação tenha um import só.
+		// Projeto que fixou output.orm no gokit.json mantém o caminho dele.
+		interpolatedConfig.Output.ORM = "internal/gokit/core"
 	}
 	if interpolatedConfig.Output.Migrate == "" {
 		interpolatedConfig.Output.Migrate = "internal/gokit/migrate"
