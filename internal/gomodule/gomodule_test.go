@@ -199,3 +199,107 @@ func TestModoInferidoSegueAPastaIrma(t *testing.T) {
 		t.Errorf("sem o gokit ao lado o palpite deveria ser prod, veio %q", modo)
 	}
 }
+
+// O layout de simulação que o gokit precisa suportar:
+//
+//	PROJETO_DE_TESTE/
+//	  gokit/
+//	  projetoteste1/
+//	  projetoteste2/
+//
+// Cada projeto resolve o gokit pela pasta irmã e decide o seu modo sozinho — um
+// em dev não arrasta o outro.
+func TestProjetosIrmaosSaoIndependentes(t *testing.T) {
+	root := t.TempDir()
+	framework := filepath.Join(root, "gokit")
+	if err := os.MkdirAll(framework, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(framework, "go.mod"),
+		[]byte("module "+CanonicalGoKitModule+"\n\ngo 1.26\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	um := filepath.Join(root, "projetoteste1")
+	dois := filepath.Join(root, "projetoteste2")
+	for _, projeto := range []string{um, dois} {
+		if err := os.MkdirAll(projeto, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if modo := ModoInferido(projeto, CanonicalGoKitModule); modo != ModoDev {
+			t.Fatalf("%s deveria inferir dev pela pasta irmã, veio %q", filepath.Base(projeto), modo)
+		}
+		if _, err := Ensure(Options{Root: projeto, GoKitLocal: "auto", Mode: ModoDev}); err != nil {
+			t.Fatalf("%s em dev: %v", filepath.Base(projeto), err)
+		}
+	}
+
+	// Trocar um para prod não pode tocar no outro.
+	if _, err := Ensure(Options{Root: dois, GoKitLocal: "auto", Mode: ModoProd}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(dois, "go.work")); !os.IsNotExist(err) {
+		t.Error("projetoteste2 deveria ter perdido o go.work ao virar prod")
+	}
+	goWorkUm := leia(t, filepath.Join(um, "go.work"))
+	if !strings.Contains(goWorkUm, "../gokit") {
+		t.Errorf("projetoteste1 deveria seguir em dev:\n%s", goWorkUm)
+	}
+}
+
+// Um go.work acima dos projetos vale para quem não tem o seu próprio. Isso faz
+// um projeto declarado como prod compilar contra a pasta local sem avisar, e é
+// justamente o que ConferirModo existe para denunciar.
+func TestConferirModoDenunciaGoWorkAcimaDoProjeto(t *testing.T) {
+	root := t.TempDir()
+	framework := filepath.Join(root, "gokit")
+	projeto := filepath.Join(root, "projetoteste2")
+	if err := os.MkdirAll(framework, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(projeto, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(framework, "go.mod"),
+		[]byte("module "+CanonicalGoKitModule+"\n\ngo 1.26\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(projeto, "go.mod"),
+		[]byte("module projetoteste2\n\ngo 1.26\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Setenv("GOWORK", "")
+	if aviso := ConferirModo(projeto, ModoProd); aviso != "" {
+		t.Fatalf("sem go.work não há conflito, veio %q", aviso)
+	}
+
+	// Por use: o gokit entra como módulo do workspace do pai.
+	raizWork := filepath.Join(root, "go.work")
+	if err := os.WriteFile(raizWork, []byte("go 1.26\n\nuse (\n\t./gokit\n\t./projetoteste2\n)\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if aviso := ConferirModo(projeto, ModoProd); aviso != raizWork {
+		t.Errorf("esperado o caminho %q, veio %q", raizWork, aviso)
+	}
+
+	// Por replace: mesma consequência, forma diferente.
+	if err := os.WriteFile(raizWork, []byte("go 1.26\n\nuse ./projetoteste2\n\nreplace "+
+		CanonicalGoKitModule+" "+VersaoFixada+" => ./gokit\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if aviso := ConferirModo(projeto, ModoProd); aviso != raizWork {
+		t.Errorf("replace no go.work do pai deveria acusar, veio %q", aviso)
+	}
+
+	// Em dev o desvio é o esperado, então não há o que avisar.
+	if aviso := ConferirModo(projeto, ModoDev); aviso != "" {
+		t.Errorf("dev não deveria gerar aviso, veio %q", aviso)
+	}
+
+	// GOWORK=off desliga workspace no Go; o aviso tem de seguir a mesma regra.
+	t.Setenv("GOWORK", "off")
+	if aviso := ConferirModo(projeto, ModoProd); aviso != "" {
+		t.Errorf("com GOWORK=off não há workspace em escopo, veio %q", aviso)
+	}
+}

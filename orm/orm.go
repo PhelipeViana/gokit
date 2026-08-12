@@ -123,15 +123,15 @@ func Or(expressions ...Expression) Group {
 	return g
 }
 
-type StringFilterField struct{ Field Field }
-type NumberFilterField struct{ Field Field }
-type DateFilterField struct{ Field Field }
-type BoolFilterField struct{ Field Field }
+type StringColumn struct{ Field Field }
+type NumberColumn struct{ Field Field }
+type DateColumn struct{ Field Field }
+type BoolColumn struct{ Field Field }
 
-func StringFilter(f Field) StringFilterField { return StringFilterField{f} }
-func NumberFilter(f Field) NumberFilterField { return NumberFilterField{f} }
-func DateFilter(f Field) DateFilterField     { return DateFilterField{f} }
-func BoolFilter(f Field) BoolFilterField     { return BoolFilterField{f} }
+func StringCol(f Field) StringColumn { return StringColumn{f} }
+func NumberCol(f Field) NumberColumn { return NumberColumn{f} }
+func DateCol(f Field) DateColumn     { return DateColumn{f} }
+func BoolCol(f Field) BoolColumn     { return BoolColumn{f} }
 
 func condition(f Field, op Operator, values ...any) Condition {
 	return Condition{Field: f, Operator: op, Values: values, Active: conditionActive(op, values)}
@@ -145,68 +145,68 @@ func conditionActive(op Operator, values []any) bool {
 }
 
 // --- Texto ---
-func (f StringFilterField) Equal(v string) Condition      { return condition(f.Field, Equal, v) }
-func (f StringFilterField) NotEqual(v string) Condition   { return condition(f.Field, NotEqual, v) }
-func (f StringFilterField) Contains(v string) Condition   { return condition(f.Field, Contains, v) }
-func (f StringFilterField) StartsWith(v string) Condition { return condition(f.Field, StartsWith, v) }
-func (f StringFilterField) EndsWith(v string) Condition {
+func (f StringColumn) Equal(v string) Condition      { return condition(f.Field, Equal, v) }
+func (f StringColumn) NotEqual(v string) Condition   { return condition(f.Field, NotEqual, v) }
+func (f StringColumn) Contains(v string) Condition   { return condition(f.Field, Contains, v) }
+func (f StringColumn) StartsWith(v string) Condition { return condition(f.Field, StartsWith, v) }
+func (f StringColumn) EndsWith(v string) Condition {
 	return condition(f.Field, EndsWith, v)
 }
-func (f StringFilterField) In(vs ...string) Condition {
+func (f StringColumn) In(vs ...string) Condition {
 	return condition(f.Field, In, textsToAny(vs)...)
 }
-func (f StringFilterField) IsNull() Condition    { return condition(f.Field, IsNull) }
-func (f StringFilterField) IsNotNull() Condition { return condition(f.Field, IsNotNull) }
+func (f StringColumn) IsNull() Condition    { return condition(f.Field, IsNull) }
+func (f StringColumn) IsNotNull() Condition { return condition(f.Field, IsNotNull) }
 
 // --- Número ---
-func (f NumberFilterField) Equal(v any) Condition       { return condition(f.Field, Equal, v) }
-func (f NumberFilterField) NotEqual(v any) Condition    { return condition(f.Field, NotEqual, v) }
-func (f NumberFilterField) GreaterThan(v any) Condition { return condition(f.Field, GreaterThan, v) }
-func (f NumberFilterField) GreaterOrEqual(v any) Condition {
+func (f NumberColumn) Equal(v any) Condition       { return condition(f.Field, Equal, v) }
+func (f NumberColumn) NotEqual(v any) Condition    { return condition(f.Field, NotEqual, v) }
+func (f NumberColumn) GreaterThan(v any) Condition { return condition(f.Field, GreaterThan, v) }
+func (f NumberColumn) GreaterOrEqual(v any) Condition {
 	return condition(f.Field, GreaterOrEqual, v)
 }
-func (f NumberFilterField) LessThan(v any) Condition    { return condition(f.Field, LessThan, v) }
-func (f NumberFilterField) LessOrEqual(v any) Condition { return condition(f.Field, LessOrEqual, v) }
-func (f NumberFilterField) Between(min, max any) Condition {
+func (f NumberColumn) LessThan(v any) Condition    { return condition(f.Field, LessThan, v) }
+func (f NumberColumn) LessOrEqual(v any) Condition { return condition(f.Field, LessOrEqual, v) }
+func (f NumberColumn) Between(min, max any) Condition {
 	return condition(f.Field, Between, min, max)
 }
-func (f NumberFilterField) In(vs ...any) Condition { return condition(f.Field, In, vs...) }
-func (f NumberFilterField) IsNull() Condition      { return condition(f.Field, IsNull) }
-func (f NumberFilterField) IsNotNull() Condition   { return condition(f.Field, IsNotNull) }
+func (f NumberColumn) In(vs ...any) Condition { return condition(f.Field, In, vs...) }
+func (f NumberColumn) IsNull() Condition      { return condition(f.Field, IsNull) }
+func (f NumberColumn) IsNotNull() Condition   { return condition(f.Field, IsNotNull) }
 
 // --- Data ---
 // Todos os métodos passam o valor por DateValue: time.Time, *time.Time, Value e
 // texto em formato conhecido ("2006-01-02", RFC3339...) chegam ao driver já como
 // time.Time. É o tratamento genérico — o autor da pesquisa informa a data no
 // formato que tem em mão e o motor resolve.
-func (f DateFilterField) Equal(v any) Condition    { return condition(f.Field, Equal, DateValue(v)) }
-func (f DateFilterField) NotEqual(v any) Condition { return condition(f.Field, NotEqual, DateValue(v)) }
-func (f DateFilterField) Before(v any) Condition   { return condition(f.Field, LessThan, DateValue(v)) }
-func (f DateFilterField) After(v any) Condition    { return condition(f.Field, GreaterThan, DateValue(v)) }
+func (f DateColumn) Equal(v any) Condition    { return condition(f.Field, Equal, DateValue(v)) }
+func (f DateColumn) NotEqual(v any) Condition { return condition(f.Field, NotEqual, DateValue(v)) }
+func (f DateColumn) Before(v any) Condition   { return condition(f.Field, LessThan, DateValue(v)) }
+func (f DateColumn) After(v any) Condition    { return condition(f.Field, GreaterThan, DateValue(v)) }
 
 // OnOrBefore / OnOrAfter são os comparadores inclusivos (<= e >=), úteis em
 // intervalo aberto de um lado: "até 31/12" ou "a partir de 01/01".
-func (f DateFilterField) OnOrBefore(v any) Condition {
+func (f DateColumn) OnOrBefore(v any) Condition {
 	return condition(f.Field, LessOrEqual, DateValue(v))
 }
-func (f DateFilterField) OnOrAfter(v any) Condition {
+func (f DateColumn) OnOrAfter(v any) Condition {
 	return condition(f.Field, GreaterOrEqual, DateValue(v))
 }
 
 // Between é o intervalo FECHADO (inclui as duas pontas): BETWEEN inicio AND fim.
-func (f DateFilterField) Between(inicio, fim any) Condition {
+func (f DateColumn) Between(inicio, fim any) Condition {
 	return condition(f.Field, Between, DateValue(inicio), DateValue(fim))
 }
-func (f DateFilterField) In(vs ...any) Condition { return condition(f.Field, In, dateValues(vs)...) }
-func (f DateFilterField) IsNull() Condition      { return condition(f.Field, IsNull) }
-func (f DateFilterField) IsNotNull() Condition   { return condition(f.Field, IsNotNull) }
+func (f DateColumn) In(vs ...any) Condition { return condition(f.Field, In, dateValues(vs)...) }
+func (f DateColumn) IsNull() Condition      { return condition(f.Field, IsNull) }
+func (f DateColumn) IsNotNull() Condition   { return condition(f.Field, IsNotNull) }
 
 // --- Booleano ---
-func (f BoolFilterField) Equal(v bool) Condition { return condition(f.Field, Equal, v) }
-func (f BoolFilterField) IsTrue() Condition      { return condition(f.Field, Equal, true) }
-func (f BoolFilterField) IsFalse() Condition     { return condition(f.Field, Equal, false) }
-func (f BoolFilterField) IsNull() Condition      { return condition(f.Field, IsNull) }
-func (f BoolFilterField) IsNotNull() Condition   { return condition(f.Field, IsNotNull) }
+func (f BoolColumn) Equal(v bool) Condition { return condition(f.Field, Equal, v) }
+func (f BoolColumn) IsTrue() Condition      { return condition(f.Field, Equal, true) }
+func (f BoolColumn) IsFalse() Condition     { return condition(f.Field, Equal, false) }
+func (f BoolColumn) IsNull() Condition      { return condition(f.Field, IsNull) }
+func (f BoolColumn) IsNotNull() Condition   { return condition(f.Field, IsNotNull) }
 
 func textsToAny(vs []string) []any {
 	out := make([]any, len(vs))
@@ -221,11 +221,11 @@ func textsToAny(vs []string) []any {
 // uniforme (o dev sempre passa orm.Users.Field.<Coluna>).
 type Column interface{ columnField() Field }
 
-func (f Field) columnField() Field             { return f }
-func (f StringFilterField) columnField() Field { return f.Field }
-func (f NumberFilterField) columnField() Field { return f.Field }
-func (f DateFilterField) columnField() Field   { return f.Field }
-func (f BoolFilterField) columnField() Field   { return f.Field }
+func (f Field) columnField() Field        { return f }
+func (f StringColumn) columnField() Field { return f.Field }
+func (f NumberColumn) columnField() Field { return f.Field }
+func (f DateColumn) columnField() Field   { return f.Field }
+func (f BoolColumn) columnField() Field   { return f.Field }
 
 type ordering struct {
 	field Field
@@ -246,6 +246,14 @@ type Query[T any] struct {
 	selects  []Field // vazio = todas as colunas da entidade
 	distinct bool
 	agg      *aggregate // quando != nil, SELECT vira fn(col) (Sum/Avg/Min/Max)
+	// irrestrita libera UPDATE/DELETE sem Where. Nasce falso: a escrita sem
+	// filtro precisa ser dita em voz alta com .Todas().
+	irrestrita bool
+	joins      []juncao // JOIN/LEFT JOIN por relação declarada
+	travar     bool     // Lock(): FOR UPDATE / WITH (UPDLOCK)
+	groups     []Field  // GROUP BY
+	havings    []item   // HAVING (mesma gramática do Where)
+	aggSelects []Column // projeção agrupada: colunas e agregações juntas
 }
 
 // aggregate descreve uma função de agregação sobre uma coluna.
@@ -279,6 +287,14 @@ func (q Query[T]) clone() Query[T] {
 		selects:  append([]Field(nil), q.selects...),
 		distinct: q.distinct,
 		agg:      q.agg,
+		// irrestrita atravessa o clone: quem disse .Todas() antes de acrescentar
+		// OrderBy ou Limit não precisa dizer de novo.
+		irrestrita: q.irrestrita,
+		joins:      append([]juncao(nil), q.joins...),
+		travar:     q.travar,
+		groups:     append([]Field(nil), q.groups...),
+		havings:    append([]item(nil), q.havings...),
+		aggSelects: append([]Column(nil), q.aggSelects...),
 	}
 }
 
@@ -296,8 +312,28 @@ func (q Query[T]) Distinct() Query[T] {
 // combinar com .With, inclua a coluna da FK/chave usada pela relação.
 func (m Model[T]) Select(columns ...Column) Query[T] { return m.All().Select(columns...) }
 
+// Select declara a projeção. Aceita coluna e agregação na mesma lista, e decide
+// o caminho pelo que foi descrito: se houver uma agregação, a projeção inteira vai
+// para o caminho agrupado; se não houver, segue a projeção tipada de sempre.
+//
+// Não existe um Select separado para agregação porque Aggregation já é uma Column.
+// O que muda é o TERMINAL, que é onde o tipo de retorno é decidido: Get devolve a
+// linha da entidade, Rows devolve linha genérica. Uma projeção com SUM não cabe
+// num UsersRow, então nesse caso o Get recusa em vez de descartar a agregação em
+// silêncio.
 func (q Query[T]) Select(columns ...Column) Query[T] {
 	next := q.clone()
+	temAgregacao := false
+	for _, c := range columns {
+		if _, ok := c.(Aggregation); ok {
+			temAgregacao = true
+			break
+		}
+	}
+	if temAgregacao {
+		next.aggSelects = append(next.aggSelects, columns...)
+		return next
+	}
 	for _, c := range columns {
 		next.selects = append(next.selects, c.columnField())
 	}
@@ -380,10 +416,12 @@ func supportedDialect(d Dialect) bool {
 
 type Operation string
 
+// Prefixo Op para não ocupar os nomes Select, Count e Exists, que valem mais
+// na autoria: orm.Count(col) e orm.Sum(col) na projeção agregada.
 const (
-	Select Operation = "select"
-	Count  Operation = "count"
-	Exists Operation = "exists"
+	OpSelect Operation = "select"
+	OpCount  Operation = "count"
+	OpExists Operation = "exists"
 )
 
 type CompileOptions struct {
@@ -410,6 +448,25 @@ type compileCtx struct {
 	args        []any
 	parentTable string // tabela da query externa (para EXISTS correlacionado)
 	schema      string
+	// qualificar liga o prefixo de tabela em toda coluna. Só é verdadeiro quando a
+	// pesquisa tem JOIN: sem junção, "nome" é inequívoco e o SQL fica igual ao que
+	// sempre foi; com junção, "nome" seria ambíguo e o banco recusaria.
+	qualificar bool
+	tabelaBase string
+}
+
+// col devolve a coluna pronta para o SQL: qualificada quando há junção, crua
+// quando não há. Concentrar isso num método é o que permitiu acrescentar JOIN sem
+// reescrever cada ponto que emite coluna.
+func (c *compileCtx) col(f Field) string {
+	if !c.qualificar {
+		return quoteIdentFor(c.dialect, f.Column)
+	}
+	tabela := f.Table
+	if tabela == "" {
+		tabela = c.tabelaBase
+	}
+	return colunaQualificada(c.dialect, tabela, f.Column)
 }
 
 func (c *compileCtx) bind(v any) string {
@@ -434,15 +491,18 @@ func (q Query[T]) Compile(operation Operation, options CompileOptions) (Compiled
 	}
 	offset := q.offset
 
-	ctx := &compileCtx{dialect: d, parentTable: q.Entity.Name, schema: options.Schema}
+	ctx := &compileCtx{
+		dialect: d, parentTable: q.Entity.Name, schema: options.Schema,
+		qualificar: len(q.joins) > 0, tabelaBase: q.Entity.Name,
+	}
 	where, err := compileItems(q.items, ctx)
 	if err != nil {
 		return CompiledQuery{}, err
 	}
 
 	// Agregação: SELECT fn(col) FROM ... WHERE ...  (uma linha; sem order/limit/distinct).
-	if operation == Select && q.agg != nil {
-		sql := "SELECT " + q.agg.fn + "(" + quoteIdentFor(d, q.agg.col.Column) + ")" +
+	if operation == OpSelect && q.agg != nil {
+		sql := "SELECT " + q.agg.fn + "(" + ctx.col(q.agg.col) + ")" +
 			" FROM " + qualifyFor(d, options.Schema, q.Entity.Name)
 		if where != "" {
 			sql += " WHERE " + where
@@ -452,14 +512,14 @@ func (q Query[T]) Compile(operation Operation, options CompileOptions) (Compiled
 
 	// ORDER BY (só faz sentido no Select).
 	orderClause := ""
-	if operation == Select && len(q.orders) > 0 {
+	if operation == OpSelect && len(q.orders) > 0 {
 		parts := make([]string, 0, len(q.orders))
 		for _, o := range q.orders {
 			direction := "ASC"
 			if o.desc {
 				direction = "DESC"
 			}
-			parts = append(parts, quoteIdentFor(d, o.field.Column)+" "+direction)
+			parts = append(parts, ctx.col(o.field)+" "+direction)
 		}
 		orderClause = "ORDER BY " + strings.Join(parts, ", ")
 	}
@@ -472,11 +532,42 @@ func (q Query[T]) Compile(operation Operation, options CompileOptions) (Compiled
 
 	// Prefixo do SELECT. No SQL Server o TOP entra aqui (não existe LIMIT).
 	top := sqlServerTop(operation, d, offset, limit)
-	prefix := selectPrefix(operation, d, cols, top, q.distinct)
+	prefix := selectPrefix(operation, ctx, cols, top, q.distinct)
+	// Projeção agrupada substitui a lista de colunas: um SELECT de chave do grupo
+	// mais agregação não tem a forma da linha da entidade.
+	if operation == OpSelect {
+		if partes := q.projecaoAgrupada(ctx); len(partes) > 0 {
+			prefix = "SELECT " + strings.Join(partes, ", ")
+		}
+	}
 
-	sql := prefix + " FROM " + qualifyFor(d, options.Schema, q.Entity.Name)
+	juncoes, err := q.compilarJuncoes(d, options.Schema)
+	if err != nil {
+		return CompiledQuery{}, err
+	}
+	sql := prefix + " FROM " + qualifyFor(d, options.Schema, q.Entity.Name) +
+		dicaDeTabela(d, q.travar && operation == OpSelect) + juncoes
 	if where != "" {
 		sql += " WHERE " + where
+	}
+
+	// GROUP BY e HAVING entram entre o WHERE e o ORDER BY. O HAVING compila com o
+	// mesmo contexto de argumentos, então a numeração dos placeholders continua.
+	if operation == OpSelect && len(q.groups) > 0 {
+		chaves := make([]string, 0, len(q.groups))
+		for _, grupo := range q.groups {
+			chaves = append(chaves, ctx.col(grupo))
+		}
+		sql += " GROUP BY " + strings.Join(chaves, ", ")
+	}
+	if operation == OpSelect && len(q.havings) > 0 {
+		having, err := compileItems(q.havings, ctx)
+		if err != nil {
+			return CompiledQuery{}, err
+		}
+		if having != "" {
+			sql += " HAVING " + having
+		}
 	}
 
 	// SQL Server exige ORDER BY para usar OFFSET/FETCH; sintetiza um estável.
@@ -487,28 +578,39 @@ func (q Query[T]) Compile(operation Operation, options CompileOptions) (Compiled
 		sql += " " + orderClause
 	}
 
+	// Oracle não combina trava com limite: a limitação de linhas vira subconsulta e
+	// o FOR UPDATE não se aplica a ela (ORA-02014). Falhar aqui, com uma frase que
+	// diz o que fazer, é melhor que deixar o código do Oracle vazar para quem
+	// escreveu a pesquisa.
+	if operation == OpSelect && q.travar && d == Oracle && (limit > 0 || offset > 0) {
+		return CompiledQuery{}, ErrTravaComLimiteNoOracle
+	}
 	sql += paginationTail(operation, d, offset, limit)
+	// A trava vai depois da paginação: FOR UPDATE é a última cláusula do comando.
+	if operation == OpSelect {
+		sql += sufixoDeTrava(d, q.travar)
+	}
 
 	return CompiledQuery{SQL: sql, Args: ctx.args}, nil
 }
 
 // selectPrefix monta "SELECT [DISTINCT] [TOP n] <colunas|COUNT(*)|1>".
-func selectPrefix(operation Operation, d Dialect, cols []Field, top string, distinct bool) string {
+func selectPrefix(operation Operation, ctx *compileCtx, cols []Field, top string, distinct bool) string {
 	body := ""
 	switch operation {
-	case Count:
+	case OpCount:
 		body = "COUNT(*)"
-	case Exists:
+	case OpExists:
 		body = "1"
 	default:
 		columns := make([]string, 0, len(cols))
 		for _, f := range cols {
-			columns = append(columns, quoteIdentFor(d, f.Column))
+			columns = append(columns, ctx.col(f))
 		}
 		body = strings.Join(columns, ", ")
 	}
 	prefix := "SELECT "
-	if distinct && operation == Select {
+	if distinct && operation == OpSelect {
 		prefix += "DISTINCT "
 	}
 	if top != "" {
@@ -524,10 +626,10 @@ func sqlServerTop(operation Operation, d Dialect, offset, limit int) string {
 	if d != SQLServer {
 		return ""
 	}
-	if operation == Exists {
+	if operation == OpExists {
 		return "TOP 1"
 	}
-	if operation == Select && offset == 0 && limit > 0 {
+	if operation == OpSelect && offset == 0 && limit > 0 {
 		return fmt.Sprintf("TOP %d", limit)
 	}
 	return ""
@@ -535,7 +637,7 @@ func sqlServerTop(operation Operation, d Dialect, offset, limit int) string {
 
 // paginationTail rende a cláusula de limite/deslocamento que vai no fim do SQL.
 func paginationTail(operation Operation, d Dialect, offset, limit int) string {
-	if operation == Exists {
+	if operation == OpExists {
 		switch d {
 		case Oracle:
 			return " FETCH FIRST 1 ROWS ONLY"
@@ -545,7 +647,7 @@ func paginationTail(operation Operation, d Dialect, offset, limit int) string {
 			return ""
 		}
 	}
-	if operation != Select {
+	if operation != OpSelect {
 		return ""
 	}
 	switch d {
@@ -640,13 +742,20 @@ func compileExpression(e Expression, ctx *compileCtx) (string, error) {
 		return "(" + inner + ")", nil
 	case existsPredicate:
 		return compileExists(v, ctx)
+	case columnCondition:
+		return compileColumnCondition(v, ctx)
+	case subqueryCondition:
+		return compileSubquery(v, ctx)
+	case havingCondition:
+		// A esquerda é a expressão de agregação, não uma coluna: SUM("saldo") > ?.
+		return v.agg.expressao(ctx) + " " + comparator(v.op) + " " + ctx.bind(v.valor), nil
 	default:
 		return "", fmt.Errorf("expressão não suportada")
 	}
 }
 
 func compileFilter(f Condition, ctx *compileCtx) (string, error) {
-	column := quoteIdentFor(ctx.dialect, f.Field.Column)
+	column := ctx.col(f.Field)
 	switch f.Operator {
 	case Equal, NotEqual, GreaterThan, GreaterOrEqual, LessThan, LessOrEqual:
 		if len(f.Values) != 1 {

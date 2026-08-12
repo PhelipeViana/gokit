@@ -35,12 +35,12 @@ type Relation struct {
 // qualquer outro argumento.
 type NodeArg interface{ nodeArg() }
 
-func (Relation) nodeArg()          {}
-func (Field) nodeArg()             {}
-func (StringFilterField) nodeArg() {}
-func (NumberFilterField) nodeArg() {}
-func (DateFilterField) nodeArg()   {}
-func (BoolFilterField) nodeArg()   {}
+func (Relation) nodeArg()     {}
+func (Field) nodeArg()        {}
+func (StringColumn) nodeArg() {}
+func (NumberColumn) nodeArg() {}
+func (DateColumn) nodeArg()   {}
+func (BoolColumn) nodeArg()   {}
 
 // Node configura o nó: separa os argumentos entre relações aninhadas e colunas
 // de projeção. É o que o código gerado chama em cada relação —
@@ -231,7 +231,7 @@ func BelongsTo[P any, C any](
 	parents []P,
 	parentKey func(P) (int64, bool), // valor da FK no pai (ok=false se NULL)
 	child Model[C],
-	childKeyField NumberFilterField, // coluna-chave no filho (normalmente o id)
+	childKeyField NumberColumn, // coluna-chave no filho (normalmente o id)
 	childKeyOf func(C) int64,
 	set func(*P, *C),
 	rel Relation,
@@ -270,7 +270,7 @@ func HasMany[P any, C any](
 	parents []P,
 	parentKey func(P) int64, // normalmente o id do pai
 	child Model[C],
-	childFkField NumberFilterField, // coluna FK no filho
+	childFkField NumberColumn, // coluna FK no filho
 	childFkOf func(C) (int64, bool),
 	set func(*P, []C),
 	rel Relation,
@@ -347,7 +347,7 @@ func distinctKeys[P any](parents []P, key func(P) (int64, bool)) []any {
 // não estourar o limite de IN (Oracle). Aplica as constraints da relação
 // (Where/OrderBy) e as relações aninhadas. O Limit NÃO vai no SQL — é cortado
 // por grupo em memória (ver HasMany), para significar "N por pai".
-func loadChildren[C any](ctx context.Context, r Runner, child Model[C], keyField NumberFilterField, ids []any, rel Relation) ([]C, error) {
+func loadChildren[C any](ctx context.Context, r Runner, child Model[C], keyField NumberColumn, ids []any, rel Relation) ([]C, error) {
 	var out []C
 	for start := 0; start < len(ids); start += maxIn {
 		end := start + maxIn
@@ -382,4 +382,21 @@ func loadChildren[C any](ctx context.Context, r Runner, child Model[C], keyField
 		out = append(out, lote...)
 	}
 	return out, nil
+}
+
+// ladosParaJuncao expõe os metadados de correlação para o JOIN montar o ON.
+// Devolve a tabela de destino, a coluna dela e a coluna da tabela de origem.
+//
+// O par depende do tipo: em belongsTo a FK mora na própria tabela e aponta para a
+// chave do destino; em hasMany é o inverso. Errar isso gera junção invertida, que
+// devolve linhas silenciosamente erradas — por isso a informação vem do gerador e
+// não de quem escreve a pesquisa.
+func (rel Relation) ladosParaJuncao() (alvo, chaveAlvo, chavePropria string) {
+	switch rel.kind {
+	case "belongsTo":
+		return rel.childTable, rel.childCol, rel.parentCol
+	case "hasMany":
+		return rel.childTable, rel.childCol, rel.parentCol
+	}
+	return "", "", ""
 }

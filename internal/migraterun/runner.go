@@ -693,28 +693,23 @@ func migrationConnectionAdvice(connection config.ConnConfig, err error) (string,
 		strings.Contains(detail, "actively refused"),
 		strings.Contains(detail, "no connection could be made"):
 		if local {
-			return i18n.Tf("run_advice_local_refused", host,
-				),
+			return i18n.Tf("run_advice_local_refused", host),
 				i18n.T("run_advice_local_refused_fix")
 		}
-		return i18n.Tf("run_advice_remote_refused", host,
-			),
+		return i18n.Tf("run_advice_remote_refused", host),
 			i18n.T("run_advice_remote_refused_fix")
 	case strings.Contains(detail, "no such host"),
 		strings.Contains(detail, "server misbehaving"),
 		strings.Contains(detail, "name resolution"):
-		return i18n.Tf("run_advice_dns", host,
-			),
+		return i18n.Tf("run_advice_dns", host),
 			i18n.T("run_advice_dns_fix")
 	case strings.Contains(detail, "timeout"),
 		strings.Contains(detail, "deadline exceeded"):
 		if local {
-			return i18n.Tf("run_advice_local_timeout", host,
-				),
+			return i18n.Tf("run_advice_local_timeout", host),
 				i18n.T("run_advice_local_timeout_fix")
 		}
-		return i18n.Tf("run_advice_remote_timeout", host,
-			),
+		return i18n.Tf("run_advice_remote_timeout", host),
 			i18n.T("run_advice_remote_timeout_fix")
 	case strings.Contains(detail, "ora-12514"):
 		return i18n.T("run_advice_oracle_service"),
@@ -1264,6 +1259,15 @@ func runConnection(connection config.ConnConfig, historyTable string, files []mi
 	if err != nil {
 		return 0, 0, err
 	}
+
+	// Conciliação das FKs declaradas na coluna. Roda antes de aplicar o que está
+	// pendente e independe do histórico: migration já aplicada não roda de novo,
+	// então sem isso todo banco criado antes da correção ficaria sem constraint
+	// para sempre. É idempotente — a que já existe é ignorada.
+	if _, err := conciliarForeignKeys(ctx, db, dialect, connection.Schema, files); err != nil {
+		return 0, 0, err
+	}
+
 	batch++
 	applied, skipped := 0, 0
 	aliases := map[string]string{}
@@ -1393,6 +1397,12 @@ func executeOperation(ctx context.Context, db *sql.DB, dialect, schema string, o
 		}
 		cache.noteTable(operation.Table, operation.Columns)
 		created[operation.Table] = true
+		// O References declarado na coluna vira constraint aqui, depois de a tabela
+		// existir. Antes disso a declaração alimentava o grafo de relações e não
+		// criava integridade nenhuma no banco.
+		if err := criarForeignKeysDasColunas(ctx, db, dialect, schema, operation.Table, operation.Columns); err != nil {
+			return err
+		}
 	case "add_column":
 		if operation.Column == nil {
 			return i18n.Errf("run_op_add_column_invalid")
@@ -1409,6 +1419,9 @@ func executeOperation(ctx context.Context, db *sql.DB, dialect, schema string, o
 			return i18n.Errf("run_column_add_failed", operation.Table, operation.Column.Name, err)
 		}
 		cache.noteColumn(operation.Table, *operation.Column)
+		if err := criarForeignKeysDasColunas(ctx, db, dialect, schema, operation.Table, []acao.ColunaDefinicao{*operation.Column}); err != nil {
+			return err
+		}
 	case "alter_column":
 		if operation.Column == nil {
 			return i18n.Errf("run_op_alter_column_invalid")
@@ -1443,27 +1456,7 @@ func executeOperation(ctx context.Context, db *sql.DB, dialect, schema string, o
 			return i18n.Errf("run_op_add_fk_invalid")
 		}
 		fk := operation.ForeignKey
-		name := fk.ConstraintName
-		if name == "" {
-			name = foreignKeyName(operation.Table, fk.Column)
-		}
-		onDelete := ""
-		if fk.OnDelete != "" {
-			onDelete = " ON DELETE " + fk.OnDelete
-		}
-		columns, references := fk.Columns, fk.ReferenceColumns
-		if len(columns) == 0 {
-			columns = []string{fk.Column}
-		}
-		if len(references) == 0 {
-			references = []string{fk.ReferenceColumn}
-		}
-		query := fmt.Sprintf(
-			"ALTER TABLE %s ADD CONSTRAINT %s FOREIGN KEY (%s) REFERENCES %s (%s)%s",
-			qualified(dialect, schema, operation.Table), quote(dialect, name), strings.Join(quotedColumns(dialect, columns), ", "),
-			qualified(dialect, schema, fk.ReferenceTable), strings.Join(quotedColumns(dialect, references), ", "), onDelete,
-		)
-		if _, err := db.ExecContext(ctx, query); err != nil {
+		if _, err := db.ExecContext(ctx, foreignKeySQL(dialect, schema, operation.Table, *fk)); err != nil {
 			return i18n.Errf("run_fk_create_failed", operation.Table, fk.Column, err)
 		}
 	case "drop_foreign_key":

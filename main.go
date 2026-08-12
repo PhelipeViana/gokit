@@ -174,6 +174,10 @@ func main() {
 				atual := config.ModoDoProjeto(".", state.Config)
 				fmt.Printf(i18n.T("cli_mode_current"), atual)
 				fmt.Println()
+				if conflito := gomodule.ConferirModo(".", atual); conflito != "" {
+					fmt.Printf(i18n.T("cli_mode_conflito"), conflito)
+					fmt.Println()
+				}
 				fmt.Println(i18n.T("cli_mode_usage"))
 				os.Exit(0)
 			}
@@ -190,8 +194,31 @@ func main() {
 				fmt.Printf(i18n.T("cli_mode_prod_detail"), resultado.GoKitModule, resultado.GoKitVersion)
 			}
 			fmt.Println()
+			// Avisar depois de trocar é o momento em que o aviso serve: acabamos de
+			// remover o go.work do projeto, e se ainda há um acima dele o prod não
+			// é o que parece.
+			if conflito := gomodule.ConferirModo(".", resultado.Mode); conflito != "" {
+				fmt.Printf(i18n.T("cli_mode_conflito"), conflito)
+				fmt.Println()
+			}
 			os.Exit(0)
 		}
+		// gokit orm — regera só o mapeamento da ORM a partir das migrations.
+		//
+		// O reload completo faz isso, mas passa por Docker, migrations e seeds. Ao
+		// mexer no schema, regerar o mapa sozinho é o que se quer noventa por cento
+		// das vezes, e não depende de banco: a fonte é o corpus em AST.
+		if os.Args[1] == "orm" {
+			total, err := migraterun.GenerateORM(".", state)
+			if err != nil {
+				fmt.Printf("Erro: %v\n", err)
+				os.Exit(1)
+			}
+			fmt.Printf(i18n.T("rel_orm_done"), total)
+			fmt.Println()
+			os.Exit(0)
+		}
+
 		if os.Args[1] == "doctor" || os.Args[1] == "check" {
 			cliui.PrintTitle("GoKit · Doctor")
 			report := migraterun.RunDoctor(state)

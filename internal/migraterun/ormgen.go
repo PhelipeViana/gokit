@@ -154,9 +154,9 @@ func GenerateORM(root string, state config.ConfigState) (int, error) {
 		}
 		body.WriteString("}\n\n")
 
-		// Conjunto de operadores por coluna, exposto em orm.Users.Field.<Coluna>.
+		// Conjunto de operadores por coluna, exposto em orm.Users.Column.<Coluna>.
 		body.WriteString(doc("gen_orm_fieldset"))
-		fmt.Fprintf(&body, "type %sFieldSet struct {\n", unexported)
+		fmt.Fprintf(&body, "type %sColumnSet struct {\n", unexported)
 		for _, column := range shape.Columns {
 			fmt.Fprintf(&body, "\t%s %s\n", exportedORMIdentifier(column.Name), filterType(column.Type))
 		}
@@ -166,7 +166,7 @@ func GenerateORM(root string, state config.ConfigState) (int, error) {
 		// recebe, em qualquer ordem, relações do destino (aninhamento) e colunas
 		// do destino (projeção do retorno daquele nó):
 		//
-		//	pr.Cidade(cr.Estado(er.Field.Nome), cr.Field.Nome)
+		//	pr.Cidade(cr.Estado(er.Column.Nome), cr.Column.Nome)
 		//
 		// O aninhamento por parênteses alcança profundidade ilimitada usando só as
 		// relações próprias de cada entidade — por isso não geramos tipos por
@@ -183,10 +183,15 @@ func GenerateORM(root string, state config.ConfigState) (int, error) {
 		}
 
 		// Handle único: embute o Model[Row] (promove Where/Select/OrderBy/Get/...
-		// direto na entidade — orm.Users.Where(...)), + .Field (operadores) e
-		// .Relation (relações).
+		// direto na entidade — orm.Users.Where(...)), + .Column (operadores de
+		// banco) e .Relation (relações).
+		//
+		// O namespace se chama Column, e não Field, porque é vocabulário de banco:
+		// tabela tem coluna, e o que mora aqui só serve para virar SQL. "Field" é
+		// vocabulário de Go — struct tem field — e fica reservado para o lado da
+		// aplicação.
 		body.WriteString(doc("gen_orm_entity"))
-		fmt.Fprintf(&body, "type %sEntity struct {\n\tgokitorm.Model[%sRow]\n\tField    %sFieldSet\n\tRelation %sRelations\n}\n\n", unexported, entity, unexported, unexported)
+		fmt.Fprintf(&body, "type %sEntity struct {\n\tgokitorm.Model[%sRow]\n\tColumn   %sColumnSet\n\tRelation %sRelations\n}\n\n", unexported, entity, unexported, unexported)
 
 		// Scanner por NOME de coluna (robusto à ordem e à caixa que cada banco devolve).
 		body.WriteString(doc("gen_orm_scanner"))
@@ -217,7 +222,7 @@ func GenerateORM(root string, state config.ConfigState) (int, error) {
 			body.WriteString(localFieldVar(column.Name))
 		}
 		fmt.Fprintf(&body, "}}, scan%s),\n", entity)
-		fmt.Fprintf(&body, "\t\tField: %sFieldSet{\n", unexported)
+		fmt.Fprintf(&body, "\t\tColumn: %sColumnSet{\n", unexported)
 		for _, column := range shape.Columns {
 			fmt.Fprintf(&body, "\t\t\t%s: %s(%s),\n", exportedORMIdentifier(column.Name), filterConstructor(column.Type), localFieldVar(column.Name))
 		}
@@ -625,25 +630,25 @@ func rowGoType(column acao.ColunaDefinicao) string {
 func filterType(kind string) string {
 	switch strings.ToLower(kind) {
 	case "integer", "int", "decimal":
-		return "gokitorm.NumberFilterField"
+		return "gokitorm.NumberColumn"
 	case "boolean":
-		return "gokitorm.BoolFilterField"
+		return "gokitorm.BoolColumn"
 	case "date", "datetime", "timestamp":
-		return "gokitorm.DateFilterField"
+		return "gokitorm.DateColumn"
 	default:
-		return "gokitorm.StringFilterField"
+		return "gokitorm.StringColumn"
 	}
 }
 func filterConstructor(kind string) string {
 	switch filterType(kind) {
-	case "gokitorm.NumberFilterField":
-		return "gokitorm.NumberFilter"
-	case "gokitorm.BoolFilterField":
-		return "gokitorm.BoolFilter"
-	case "gokitorm.DateFilterField":
-		return "gokitorm.DateFilter"
+	case "gokitorm.NumberColumn":
+		return "gokitorm.NumberCol"
+	case "gokitorm.BoolColumn":
+		return "gokitorm.BoolCol"
+	case "gokitorm.DateColumn":
+		return "gokitorm.DateCol"
 	default:
-		return "gokitorm.StringFilter"
+		return "gokitorm.StringCol"
 	}
 }
 func exportedORMIdentifier(value string) string {
@@ -742,7 +747,7 @@ func emitLoader(b *strings.Builder, selfEntity, relName, kind, target, fkColumn 
 		} else {
 			fmt.Fprintf(b, "\t\tfunc(p %s) (int64, bool) { return p.%s, true },\n", selfRow, fkField)
 		}
-		fmt.Fprintf(b, "\t\t%s.Model, %s.Field.Id,\n", targetEntity, targetEntity)
+		fmt.Fprintf(b, "\t\t%s.Model, %s.Column.Id,\n", targetEntity, targetEntity)
 		fmt.Fprintf(b, "\t\tfunc(c %s) int64 { return c.Id },\n", targetRow)
 		fmt.Fprintf(b, "\t\tfunc(p *%s, c *%s) { p.%s = c },\n", selfRow, targetRow, relName)
 		b.WriteString("\t\trel)\n}\n\n")
@@ -752,7 +757,7 @@ func emitLoader(b *strings.Builder, selfEntity, relName, kind, target, fkColumn 
 	childFk := exportedORMIdentifier(fkColumn)
 	b.WriteString("\treturn gokitorm.HasMany(ctx, r, parents,\n")
 	fmt.Fprintf(b, "\t\tfunc(p %s) int64 { return p.Id },\n", selfRow)
-	fmt.Fprintf(b, "\t\t%s.Model, %s.Field.%s,\n", targetEntity, targetEntity, childFk)
+	fmt.Fprintf(b, "\t\t%s.Model, %s.Column.%s,\n", targetEntity, targetEntity, childFk)
 	if fkNullable {
 		fmt.Fprintf(b, "\t\tfunc(c %s) (int64, bool) {\n\t\t\tif c.%s == nil {\n\t\t\t\treturn 0, false\n\t\t\t}\n\t\t\treturn *c.%s, true\n\t\t},\n", targetRow, childFk, childFk)
 	} else {

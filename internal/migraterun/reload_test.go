@@ -57,7 +57,7 @@ func Migration() migrate.Definition { return migrate.Define(migrate.CreateTable(
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, expected := range []string{"var Users =", "type usersEntity struct", "type usersFieldSet struct", "type UsersRow struct", "func scanUsers(", "gokitorm.Model[UsersRow]", "Column: \"id\"", "gokitorm.NumberFilter"} {
+	for _, expected := range []string{"var Users =", "type usersEntity struct", "type usersColumnSet struct", "type UsersRow struct", "func scanUsers(", "gokitorm.Model[UsersRow]", "Column: \"id\"", "gokitorm.NumberCol("} {
 		if !strings.Contains(string(data), expected) {
 			t.Fatalf("gerado sem %q:\n%s", expected, data)
 		}

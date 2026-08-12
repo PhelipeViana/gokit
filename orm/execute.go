@@ -60,11 +60,17 @@ func (q Query[T]) Get(ctx context.Context) ([]T, error) { return q.GetWith(ctx, 
 
 // GetWith executa o SELECT numa conexão explícita.
 func (q Query[T]) GetWith(ctx context.Context, r Runner) ([]T, error) {
+	// Projeção com agregação não cabe na linha da entidade: um SELECT de cidade_id
+	// + SUM(saldo) não é um UsersRow. Recusar aqui é melhor que devolver a linha
+	// com os campos zerados e a agregação descartada em silêncio.
+	if len(q.aggSelects) > 0 || len(q.groups) > 0 {
+		return nil, ErrProjecaoAgregada
+	}
 	run, err := resolveRunner(r)
 	if err != nil {
 		return nil, err
 	}
-	compiled, err := q.Compile(Select, options(run))
+	compiled, err := q.Compile(OpSelect, options(run))
 	if err != nil {
 		return nil, err
 	}
@@ -116,7 +122,7 @@ func (q Query[T]) CountWith(ctx context.Context, r Runner) (int64, error) {
 	if err != nil {
 		return 0, err
 	}
-	compiled, err := q.Compile(Count, options(run))
+	compiled, err := q.Compile(OpCount, options(run))
 	if err != nil {
 		return 0, err
 	}
@@ -135,7 +141,7 @@ func (q Query[T]) ExistsWith(ctx context.Context, r Runner) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	compiled, err := q.Compile(Exists, options(run))
+	compiled, err := q.Compile(OpExists, options(run))
 	if err != nil {
 		return false, err
 	}
@@ -203,7 +209,7 @@ func (q Query[T]) aggScalar(ctx context.Context, r Runner, fn string, col Column
 	}
 	qq := q.clone()
 	qq.agg = &aggregate{fn: fn, col: col.columnField()}
-	compiled, err := qq.Compile(Select, options(run))
+	compiled, err := qq.Compile(OpSelect, options(run))
 	if err != nil {
 		return Value{}, err
 	}
@@ -312,7 +318,7 @@ func (q Query[T]) PluckWith(ctx context.Context, r Runner, col Column) ([]Value,
 	}
 	qq := q.clone()
 	qq.selects = []Field{col.columnField()}
-	compiled, err := qq.Compile(Select, options(run))
+	compiled, err := qq.Compile(OpSelect, options(run))
 	if err != nil {
 		return nil, err
 	}
@@ -347,6 +353,33 @@ func (q Query[T]) PluckInt(ctx context.Context, col Column) ([]int64, error) {
 
 func (q Query[T]) PluckString(ctx context.Context, col Column) ([]string, error) {
 	vs, err := q.Pluck(ctx, col)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]string, 0, len(vs))
+	for _, v := range vs {
+		out = append(out, v.Text())
+	}
+	return out, nil
+}
+
+// Variantes *With do Pluck tipado. Sem elas o contrato híbrido tinha um buraco:
+// dava para plucar dentro de uma transação só perdendo a tipagem, voltando para
+// []Value e convertendo à mão.
+func (q Query[T]) PluckIntWith(ctx context.Context, r Runner, col Column) ([]int64, error) {
+	vs, err := q.PluckWith(ctx, r, col)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]int64, 0, len(vs))
+	for _, v := range vs {
+		out = append(out, v.Int())
+	}
+	return out, nil
+}
+
+func (q Query[T]) PluckStringWith(ctx context.Context, r Runner, col Column) ([]string, error) {
+	vs, err := q.PluckWith(ctx, r, col)
 	if err != nil {
 		return nil, err
 	}

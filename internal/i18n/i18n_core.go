@@ -146,6 +146,11 @@ func init() {
 			ES: "Para cambiar: gokit mode dev  ·  gokit mode prod\n\n  dev   compila contra el gokit de la carpeta hermana, por go.work (no confirmado)\n  prod  fija la versión publicada de gokit en el go.mod, sin depender de carpeta local",
 			EN: "To switch: gokit mode dev  ·  gokit mode prod\n\n  dev   builds against the gokit in the sibling folder, through go.work (not committed)\n  prod  pins the published gokit version in go.mod, with no local folder involved",
 		},
+		"cli_mode_conflito": {
+			PT: "  ⚠️ %s redireciona o gokit para uma pasta local e vale para este projeto.\n     O modo diz prod, mas o build usa código não publicado. Remova a entrada do gokit desse go.work, ou rode com GOWORK=off para conferir.",
+			ES: "  ⚠️ %s redirige gokit a una carpeta local y aplica a este proyecto.\n     El modo dice prod, pero el build usa código no publicado. Quite la entrada de gokit de ese go.work, o ejecute con GOWORK=off para comprobar.",
+			EN: "  ⚠️ %s redirects gokit to a local folder and applies to this project.\n     The mode says prod, but the build uses unpublished code. Remove the gokit entry from that go.work, or run with GOWORK=off to check.",
+		},
 		"cli_mode_changed": {
 			PT: "Modo alterado para: %s",
 			ES: "Modo cambiado a: %s",

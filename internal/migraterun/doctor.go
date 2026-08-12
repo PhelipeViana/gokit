@@ -15,15 +15,15 @@ import (
 
 // DoctorReport agrupa o diagnóstico completo de uma conexão ativa
 type DoctorReport struct {
-	Dialect         string
-	Host            string
-	ConnSuccess     bool
-	ConnError       error
-	Version         string
-	VersionOK       bool
-	VersionWarning  string
-	DDLSuccess      bool
-	DDLError        error
+	Dialect        string
+	Host           string
+	ConnSuccess    bool
+	ConnError      error
+	Version        string
+	VersionOK      bool
+	VersionWarning string
+	DDLSuccess     bool
+	DDLError       error
 }
 
 // RunDoctor diagnostica a conexão de banco de dados ativa

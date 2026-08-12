@@ -26,9 +26,9 @@ func init() {
 			EN: "Relation fields: filled only when requested via .With; omitempty hides the absent ones in JSON.",
 		},
 		"gen_orm_fieldset": {
-			PT: "Operadores por coluna, expostos em orm.<Entidade>.Field.<Coluna>.",
+			PT: "Operadores por coluna, expostos em orm.<Entidade>.Column.<Coluna>.",
 			ES: "Operadores por columna, expuestos en orm.<Entidad>.Field.<Columna>.",
-			EN: "Per-column operators, exposed at orm.<Entity>.Field.<Column>.",
+			EN: "Per-column operators, exposed at orm.<Entity>.Column.<Column>.",
 		},
 		"gen_orm_relations": {
 			PT: "Relações da entidade. Cada relação é um método variádico que recebe, em qualquer ordem, relações do destino (aninhamento) e colunas do destino (projeção daquele nó). O aninhamento por parênteses alcança profundidade ilimitada usando só as relações próprias de cada entidade.",
@@ -36,9 +36,9 @@ func init() {
 			EN: "Entity relations. Each relation is a variadic method taking, in any order, target relations (nesting) and target columns (projection of that node). Nesting through parentheses reaches unlimited depth using only each entity's own relations.",
 		},
 		"gen_orm_entity": {
-			PT: "Handle único da entidade: embute o Model[Row] (promove Where/Select/OrderBy/Get/... direto na entidade), mais .Field (operadores) e .Relation (relações).",
-			ES: "Handle único de la entidad: incrusta el Model[Row] (promueve Where/Select/OrderBy/Get/... directo en la entidad), más .Field (operadores) y .Relation (relaciones).",
-			EN: "Single entity handle: embeds Model[Row] (promoting Where/Select/OrderBy/Get/... onto the entity), plus .Field (operators) and .Relation (relations).",
+			PT: "Handle único da entidade: embute o Model[Row] (promove Where/Select/OrderBy/Get/... direto na entidade), mais .Column (operadores de banco) e .Relation (relações).",
+			ES: "Handle único de la entidad: incrusta el Model[Row] (promueve Where/Select/OrderBy/Get/... directo en la entidad), más .Column (operadores de banco) y .Relation (relaciones).",
+			EN: "Single entity handle: embeds Model[Row] (promoting Where/Select/OrderBy/Get/... onto the entity), plus .Column (database operators) and .Relation (relations).",
 		},
 		"gen_orm_scanner": {
 			PT: "Scanner por NOME de coluna — robusto à ordem e à caixa que cada banco devolve.",

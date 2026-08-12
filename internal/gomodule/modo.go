@@ -217,6 +217,76 @@ func removerGoWorkDoGoKit(root, gokitLocal string) error {
 	return os.WriteFile(caminho, modfile.Format(arquivo.Syntax), 0o644)
 }
 
+// GoWorkEmEscopo devolve o go.work que o comando go vai usar a partir de root,
+// ou "" se não houver nenhum.
+//
+// A busca é a mesma do Go: a variável GOWORK manda (inclusive "off", que desliga
+// workspace), e sem ela o go.work é procurado subindo diretório por diretório.
+// Precisamos reproduzir isso porque um go.work acima do projeto — natural em
+// pasta de simulação com vários projetos irmãos — vale para o projeto sem que
+// haja arquivo nenhum dentro dele.
+func GoWorkEmEscopo(root string) string {
+	if definido := strings.TrimSpace(os.Getenv("GOWORK")); definido != "" {
+		if strings.EqualFold(definido, "off") {
+			return ""
+		}
+		return definido
+	}
+	atual, err := filepath.Abs(root)
+	if err != nil {
+		return ""
+	}
+	for {
+		candidato := filepath.Join(atual, "go.work")
+		if _, err := os.Stat(candidato); err == nil {
+			return candidato
+		}
+		pai := filepath.Dir(atual)
+		if pai == atual {
+			return ""
+		}
+		atual = pai
+	}
+}
+
+// ConferirModo compara o modo declarado com o que o Go vai realmente fazer e
+// devolve o caminho do go.work responsável por uma divergência, ou "".
+//
+// Só existe um jeito de divergir que importa: o projeto declara prod — ou seja,
+// promete compilar contra a versão publicada — e um go.work fora dele redireciona
+// o gokit para uma pasta local. O build passa, os testes passam, e o que está
+// sendo exercitado não é o código publicado. No sentido contrário não há risco:
+// o go.work do próprio projeto é o mais próximo e vence o do pai.
+func ConferirModo(root, modo string) string {
+	if NormalizarModo(modo) == ModoDev {
+		return ""
+	}
+	caminho := GoWorkEmEscopo(root)
+	if caminho == "" {
+		return ""
+	}
+	dados, err := os.ReadFile(caminho)
+	if err != nil {
+		return ""
+	}
+	arquivo, err := modfile.ParseWork(caminho, dados, nil)
+	if err != nil {
+		return ""
+	}
+	for _, replace := range arquivo.Replace {
+		if replace.Old.Path == CanonicalGoKitModule {
+			return caminho
+		}
+	}
+	base := filepath.Dir(caminho)
+	for _, uso := range arquivo.Use {
+		if ehGoKitLocal(base, uso.Path) {
+			return caminho
+		}
+	}
+	return ""
+}
+
 // ehGoKitLocal reconhece uma entrada de workspace que aponta para um checkout do
 // gokit, mesmo que o caminho não seja o que detectamos. Comparar pelo módulo
 // declarado é mais confiável que comparar strings de caminho.
