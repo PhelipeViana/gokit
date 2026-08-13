@@ -8,6 +8,15 @@ package factorygo
 // arquivo e a função de verdade é esta tabela. Uma função nova em
 // migration/fake.go só passa a existir para as factories depois de registrada
 // aqui.
+//
+// O ÍNDICE DA LINHA É IMPLÍCITO. Ele não aparece na chamada escrita: o motor já
+// sabe em que linha está e o injeta ao executar. Antes cada nome vinha em dois
+// sabores — `FakeName()` e `FakeNameIndex(index, ...)` — e o primeiro devolvia
+// constante, o que fazia dez linhas saírem idênticas sem avisar. Agora existe um
+// nome por conceito, e ele sempre varia por linha.
+//
+// A função pública correspondente em migration/fake.go, chamada de verdade fora
+// do gokit, devolve o valor da PRIMEIRA linha. É a mesma regra para todas.
 
 import (
 	"sort"
@@ -17,120 +26,84 @@ import (
 	migrate "github.com/PhelipeViana/gokit/migration"
 )
 
-// chamadaFake executa uma função do vocabulário com os argumentos já avaliados.
-type chamadaFake func(args []any) (any, error)
+// chamadaFake executa uma função do vocabulário. `index` é a linha corrente, que
+// o motor injeta; `args` são só os argumentos realmente escritos no arquivo.
+type chamadaFake func(index int, args []any) (any, error)
 
 // vocabulario mapeia o nome escrito na factory para a função correspondente.
+//
+// Onde há `length`, 0 significa "sem limite" — o gerador sempre passa o tamanho
+// declarado na migration, e quem escreve à mão pode passar 0.
 var vocabulario = map[string]chamadaFake{
-	"FakeChoice":      variadicos(func(values ...string) any { return migrate.FakeChoice(values...) }),
-	"FakeChoiceIndex": inteiroVariadicos(func(index int, values ...string) any { return migrate.FakeChoiceIndex(index, values...) }),
+	// ---------------------------------------------------------------- genéricos
+	"FakeChoice":     textos(func(index int, valores ...string) any { return migrate.FakeChoiceIndex(index, valores...) }),
+	"FakeInt":        doisInteiros(func(index, min, max int) any { return migrate.FakeIntIndex(index, min, max) }),
+	"FakeDecimal":    doisInteiros(func(index, precision, scale int) any { return migrate.FakeDecimalIndex(index, precision, scale) }),
+	"FakeString":     umInteiro(func(index, length int) any { return migrate.FakeStringIndex(index, length) }),
+	"FakeText":       umInteiro(func(index, length int) any { return migrate.FakeTextIndex(index, length) }),
+	"FakeBytes":      umInteiro(func(index, length int) any { return migrate.FakeBytesIndex(index, length) }),
+	"FakeValue":      semArgumentos(func(index int) any { return migrate.FakeValue() }),
+	"FakeUniqueText": textoInteiro(func(index int, prefix string, length int) any { return migrate.FakeUniqueTextIndex(index, prefix, length) }),
 
-	"FakeInt":      doisInteiros(func(min, max int) any { return migrate.FakeInt(min, max) }),
-	"FakeIntIndex": tresInteiros(func(index, min, max int) any { return migrate.FakeIntIndex(index, min, max) }),
-	"FakeDecimal":  doisInteiros(func(precision, scale int) any { return migrate.FakeDecimal(precision, scale) }),
+	// ------------------------------------------------------------------ códigos
+	"FakeCode":       umInteiro(func(index, length int) any { return migrate.FakeCodeIndex(index, length) }),
+	"FakeCodePrefix": textoInteiro(func(index int, prefix string, length int) any { return migrate.FakeCodePrefixIndex(index, prefix, length) }),
+	"FakeMatricula":  semArgumentos(func(index int) any { return migrate.FakeMatriculaIndex(index) }),
 
-	"FakeString":     umInteiro(func(length int) any { return migrate.FakeString(length) }),
-	"FakeText":       umInteiro(func(length int) any { return migrate.FakeText(length) }),
-	"FakeUniqueText": inteiroTextoInteiro(func(index int, prefix string, length int) any { return migrate.FakeUniqueText(index, prefix, length) }),
+	// ---------------------------------------------------------------- documentos
+	// A família Unique é a única que NÃO é dirigida pelo índice: ela precisa
+	// variar entre EXECUÇÕES para não colidir com documento que uma rodada
+	// anterior já gravou. Por isso o índice recebido aqui é ignorado.
+	"FakeUniqueCPF":  umInteiro(func(index, length int) any { return migrate.FakeUniqueCPF(length) }),
+	"FakeUniqueCNPJ": umInteiro(func(index, length int) any { return migrate.FakeUniqueCNPJ(length) }),
+	"FakeCPF":        umInteiro(func(index, length int) any { return migrate.FakeCPFIndexLength(index, length) }),
+	"FakeCNPJ":       umInteiro(func(index, length int) any { return migrate.FakeCNPJIndexLength(index, length) }),
 
-	"FakeCode":       doisInteiros(func(index, length int) any { return migrate.FakeCode(index, length) }),
-	"FakeCodeIndex":  doisInteiros(func(index, length int) any { return migrate.FakeCodeIndex(index, length) }),
-	"FakeCodePrefix": inteiroTextoInteiro(func(index int, prefix string, length int) any { return migrate.FakeCodePrefix(index, prefix, length) }),
-	"FakeMatricula":  umInteiro(func(index int) any { return migrate.FakeMatricula(index) }),
+	// ---------------------------------------------------------------- identidade
+	"FakeName":     inteiroTextos(func(index, length int, genders ...string) any { return migrate.FakeNameIndexLength(index, length, genders...) }),
+	"FakeUsername": umInteiro(func(index, length int) any { return migrate.FakeUsernameIndexLength(index, length) }),
+	"FakeEmail":    umInteiro(func(index, length int) any { return migrate.FakeEmailIndexLength(index, length) }),
+	"FakePhone":    umInteiro(func(index, length int) any { return migrate.FakePhoneIndexLength(index, length) }),
 
-	"FakeUniqueCPF":        semArgumentos(func() any { return migrate.FakeUniqueCPF() }),
-	"FakeUniqueCPFLength":  umInteiro(func(length int) any { return migrate.FakeUniqueCPFLength(length) }),
-	"FakeUniqueCNPJ":       semArgumentos(func() any { return migrate.FakeUniqueCNPJ() }),
-	"FakeUniqueCNPJLength": umInteiro(func(length int) any { return migrate.FakeUniqueCNPJLength(length) }),
+	// ------------------------------------------------------------------ endereço
+	"FakeCEP":      umInteiro(func(index, length int) any { return migrate.FakeCEPIndexLength(index, length) }),
+	"FakeUF":       semArgumentos(func(index int) any { return migrate.FakeUFIndex(index) }),
+	"FakeDistrict": umInteiro(func(index, length int) any { return migrate.FakeDistrictIndexLength(index, length) }),
+	"FakeStreet":   umInteiro(func(index, length int) any { return migrate.FakeStreetIndexLength(index, length) }),
+	"FakeCity":     umInteiro(func(index, length int) any { return migrate.FakeCityIndexLength(index, length) }),
+	"FakeCityCode": umInteiro(func(index, length int) any { return migrate.FakeCityCodeIndexLength(index, length) }),
+	"FakeState":    umInteiro(func(index, length int) any { return migrate.FakeStateIndexLength(index, length) }),
+	"FakeCountry":  umInteiro(func(index, length int) any { return migrate.FakeCountryIndexLength(index, length) }),
 
-	"FakeCPF":             semArgumentos(func() any { return migrate.FakeCPF() }),
-	"FakeCPFIndex":        umInteiro(func(index int) any { return migrate.FakeCPFIndex(index) }),
-	"FakeCPFIndexLength":  doisInteiros(func(index, length int) any { return migrate.FakeCPFIndexLength(index, length) }),
-	"FakeCNPJ":            semArgumentos(func() any { return migrate.FakeCNPJ() }),
-	"FakeCNPJIndex":       umInteiro(func(index int) any { return migrate.FakeCNPJIndex(index) }),
-	"FakeCNPJIndexLength": doisInteiros(func(index, length int) any { return migrate.FakeCNPJIndexLength(index, length) }),
+	// --------------------------------------------------------------------- datas
+	"FakeDate":     semArgumentos(func(index int) any { return migrate.FakeDateIndex(index) }),
+	"FakeDateTime": semArgumentos(func(index int) any { return migrate.FakeDateTimeIndex(index) }),
 
-	"FakeEmail":            semArgumentos(func() any { return migrate.FakeEmail() }),
-	"FakeEmailIndex":       umInteiro(func(index int) any { return migrate.FakeEmailIndex(index) }),
-	"FakeEmailIndexLength": doisInteiros(func(index, length int) any { return migrate.FakeEmailIndexLength(index, length) }),
-
-	"FakeCEP":            semArgumentos(func() any { return migrate.FakeCEP() }),
-	"FakeCEPIndex":       umInteiro(func(index int) any { return migrate.FakeCEPIndex(index) }),
-	"FakeCEPIndexLength": doisInteiros(func(index, length int) any { return migrate.FakeCEPIndexLength(index, length) }),
-
-	"FakePhone":            semArgumentos(func() any { return migrate.FakePhone() }),
-	"FakePhoneIndex":       umInteiro(func(index int) any { return migrate.FakePhoneIndex(index) }),
-	"FakePhoneIndexLength": doisInteiros(func(index, length int) any { return migrate.FakePhoneIndexLength(index, length) }),
-
-	"FakeUF":      semArgumentos(func() any { return migrate.FakeUF() }),
-	"FakeUFIndex": umInteiro(func(index int) any { return migrate.FakeUFIndex(index) }),
-
-	"FakeIPv4":      semArgumentos(func() any { return migrate.FakeIPv4() }),
-	"FakeUserAgent": semArgumentos(func() any { return migrate.FakeUserAgent() }),
-
-	"FakeUUID":      semArgumentos(func() any { return migrate.FakeUUID() }),
-	"FakeUUIDIndex": umInteiro(func(index int) any { return migrate.FakeUUIDIndex(index) }),
-
-	"FakeHash":            semArgumentos(func() any { return migrate.FakeHash() }),
-	"FakeHashIndex":       umInteiro(func(index int) any { return migrate.FakeHashIndex(index) }),
-	"FakeHashIndexLength": doisInteiros(func(index, length int) any { return migrate.FakeHashIndexLength(index, length) }),
-	"FakeHashPassword":    semArgumentos(func() any { return migrate.FakeHashPassword() }),
-
-	"FakeUsername":            semArgumentos(func() any { return migrate.FakeUsername() }),
-	"FakeUsernameIndex":       umInteiro(func(index int) any { return migrate.FakeUsernameIndex(index) }),
-	"FakeUsernameIndexLength": doisInteiros(func(index, length int) any { return migrate.FakeUsernameIndexLength(index, length) }),
-
-	"FakeFileName":            semArgumentos(func() any { return migrate.FakeFileName() }),
-	"FakeFileNameIndex":       umInteiro(func(index int) any { return migrate.FakeFileNameIndex(index) }),
-	"FakeFileNameIndexLength": doisInteiros(func(index, length int) any { return migrate.FakeFileNameIndexLength(index, length) }),
-
-	"FakeDistrict":            semArgumentos(func() any { return migrate.FakeDistrict() }),
-	"FakeDistrictIndex":       umInteiro(func(index int) any { return migrate.FakeDistrictIndex(index) }),
-	"FakeDistrictIndexLength": doisInteiros(func(index, length int) any { return migrate.FakeDistrictIndexLength(index, length) }),
-
-	"FakeStreet":            semArgumentos(func() any { return migrate.FakeStreet() }),
-	"FakeStreetIndex":       umInteiro(func(index int) any { return migrate.FakeStreetIndex(index) }),
-	"FakeStreetIndexLength": doisInteiros(func(index, length int) any { return migrate.FakeStreetIndexLength(index, length) }),
-
-	"FakeCity":            semArgumentos(func() any { return migrate.FakeCity() }),
-	"FakeCityIndex":       umInteiro(func(index int) any { return migrate.FakeCityIndex(index) }),
-	"FakeCityIndexLength": doisInteiros(func(index, length int) any { return migrate.FakeCityIndexLength(index, length) }),
-
-	"FakeCityCode":            semArgumentos(func() any { return migrate.FakeCityCode() }),
-	"FakeCityCodeIndex":       umInteiro(func(index int) any { return migrate.FakeCityCodeIndex(index) }),
-	"FakeCityCodeIndexLength": doisInteiros(func(index, length int) any { return migrate.FakeCityCodeIndexLength(index, length) }),
-
-	"FakeState":            semArgumentos(func() any { return migrate.FakeState() }),
-	"FakeStateIndex":       umInteiro(func(index int) any { return migrate.FakeStateIndex(index) }),
-	"FakeStateIndexLength": doisInteiros(func(index, length int) any { return migrate.FakeStateIndexLength(index, length) }),
-
-	"FakeName":      semArgumentos(func() any { return migrate.FakeName() }),
-	"FakeNameIndex": inteiroVariadicos(func(index int, genders ...string) any { return migrate.FakeNameIndex(index, genders...) }),
-	"FakeNameIndexLength": doisInteirosVariadicos(func(index, length int, genders ...string) any {
-		return migrate.FakeNameIndexLength(index, length, genders...)
-	}),
-
-	"FakeDate":          semArgumentos(func() any { return migrate.FakeDate() }),
-	"FakeDateTime":      semArgumentos(func() any { return migrate.FakeDateTime() }),
-	"FakeDateIndex":     umInteiro(func(index int) any { return migrate.FakeDateIndex(index) }),
-	"FakeDateTimeIndex": umInteiro(func(index int) any { return migrate.FakeDateTimeIndex(index) }),
-	"FakeBytes":         umInteiro(func(length int) any { return migrate.FakeBytes(length) }),
-	"FakeValue":         semArgumentos(func() any { return migrate.FakeValue() }),
+	// -------------------------------------------------------------------- técnicos
+	"FakeUUID":         semArgumentos(func(index int) any { return migrate.FakeUUIDIndex(index) }),
+	"FakeHash":         umInteiro(func(index, length int) any { return migrate.FakeHashIndexLength(index, length) }),
+	"FakeFileName":     umInteiro(func(index, length int) any { return migrate.FakeFileNameIndexLength(index, length) }),
+	"FakeIPv4":         semArgumentos(func(index int) any { return migrate.FakeIPv4Index(index) }),
+	"FakeUserAgent":    semArgumentos(func(index int) any { return migrate.FakeUserAgent() }),
+	"FakeHashPassword": semArgumentos(func(index int) any { return migrate.FakeHashPassword() }),
 }
 
 // nomesConhecidos devolve o vocabulário em ordem, para mensagens de erro.
 func nomesConhecidos() []string {
-	nomes := make([]string, 0, len(vocabulario)+2)
+	nomes := make([]string, 0, len(vocabulario)+3)
 	for nome := range vocabulario {
 		nomes = append(nomes, nome)
 	}
-	nomes = append(nomes, "FakeLocation", "Vinculo")
+	nomes = append(nomes, "FakeLocation", "Reference", "Seeder")
 	sort.Strings(nomes)
 	return nomes
 }
 
 // sugestaoDeNome procura o nome conhecido mais próximo do que foi escrito.
-// Erro de digitação em factory é comum e a lista inteira tem 90 entradas.
+// Erro de digitação em factory é comum, e a lista inteira não cabe na mensagem.
+//
+// É também o que orienta quem escreveu o nome antigo: `FakeNameIndexLength` cai
+// perto de `FakeName`, então a mensagem já aponta o substituto.
 func sugestaoDeNome(escrito string) string {
 	melhor := ""
 	menor := len(escrito)/2 + 2
@@ -174,18 +147,21 @@ func minimo(valores ...int) int {
 }
 
 // ------------------------------------------------- adaptadores de assinatura
+//
+// Cada adaptador confere a quantidade de argumentos ESCRITOS — o índice não
+// conta, porque não é escrito.
 
-func semArgumentos(f func() any) chamadaFake {
-	return func(args []any) (any, error) {
+func semArgumentos(f func(index int) any) chamadaFake {
+	return func(index int, args []any) (any, error) {
 		if err := exigeQuantidade(args, 0); err != nil {
 			return nil, err
 		}
-		return f(), nil
+		return f(index), nil
 	}
 }
 
-func umInteiro(f func(int) any) chamadaFake {
-	return func(args []any) (any, error) {
+func umInteiro(f func(index, a int) any) chamadaFake {
+	return func(index int, args []any) (any, error) {
 		if err := exigeQuantidade(args, 1); err != nil {
 			return nil, err
 		}
@@ -193,12 +169,12 @@ func umInteiro(f func(int) any) chamadaFake {
 		if err != nil {
 			return nil, err
 		}
-		return f(primeiro), nil
+		return f(index, primeiro), nil
 	}
 }
 
-func doisInteiros(f func(int, int) any) chamadaFake {
-	return func(args []any) (any, error) {
+func doisInteiros(f func(index, a, b int) any) chamadaFake {
+	return func(index int, args []any) (any, error) {
 		if err := exigeQuantidade(args, 2); err != nil {
 			return nil, err
 		}
@@ -210,81 +186,16 @@ func doisInteiros(f func(int, int) any) chamadaFake {
 		if err != nil {
 			return nil, err
 		}
-		return f(primeiro, segundo), nil
+		return f(index, primeiro, segundo), nil
 	}
 }
 
-func tresInteiros(f func(int, int, int) any) chamadaFake {
-	return func(args []any) (any, error) {
-		if err := exigeQuantidade(args, 3); err != nil {
+func textoInteiro(f func(index int, texto string, a int) any) chamadaFake {
+	return func(index int, args []any) (any, error) {
+		if err := exigeQuantidade(args, 2); err != nil {
 			return nil, err
 		}
-		valores := make([]int, 3)
-		for posicao := range valores {
-			valor, err := inteiroEm(args, posicao)
-			if err != nil {
-				return nil, err
-			}
-			valores[posicao] = valor
-		}
-		return f(valores[0], valores[1], valores[2]), nil
-	}
-}
-
-func inteiroTextoInteiro(f func(int, string, int) any) chamadaFake {
-	return func(args []any) (any, error) {
-		if err := exigeQuantidade(args, 3); err != nil {
-			return nil, err
-		}
-		primeiro, err := inteiroEm(args, 0)
-		if err != nil {
-			return nil, err
-		}
-		texto, err := textoEm(args, 1)
-		if err != nil {
-			return nil, err
-		}
-		terceiro, err := inteiroEm(args, 2)
-		if err != nil {
-			return nil, err
-		}
-		return f(primeiro, texto, terceiro), nil
-	}
-}
-
-func variadicos(f func(...string) any) chamadaFake {
-	return func(args []any) (any, error) {
-		textos, err := textosDe(args, 0)
-		if err != nil {
-			return nil, err
-		}
-		return f(textos...), nil
-	}
-}
-
-func inteiroVariadicos(f func(int, ...string) any) chamadaFake {
-	return func(args []any) (any, error) {
-		if len(args) < 1 {
-			return nil, i18n.Errf("fcp_needs_index")
-		}
-		primeiro, err := inteiroEm(args, 0)
-		if err != nil {
-			return nil, err
-		}
-		textos, err := textosDe(args, 1)
-		if err != nil {
-			return nil, err
-		}
-		return f(primeiro, textos...), nil
-	}
-}
-
-func doisInteirosVariadicos(f func(int, int, ...string) any) chamadaFake {
-	return func(args []any) (any, error) {
-		if len(args) < 2 {
-			return nil, i18n.Errf("fcp_needs_index_size")
-		}
-		primeiro, err := inteiroEm(args, 0)
+		texto, err := textoEm(args, 0)
 		if err != nil {
 			return nil, err
 		}
@@ -292,11 +203,37 @@ func doisInteirosVariadicos(f func(int, int, ...string) any) chamadaFake {
 		if err != nil {
 			return nil, err
 		}
-		textos, err := textosDe(args, 2)
+		return f(index, texto, segundo), nil
+	}
+}
+
+func textos(f func(index int, valores ...string) any) chamadaFake {
+	return func(index int, args []any) (any, error) {
+		lista, err := textosDe(args, 0)
 		if err != nil {
 			return nil, err
 		}
-		return f(primeiro, segundo, textos...), nil
+		if len(lista) == 0 {
+			return nil, i18n.Errf("fcp_needs_values")
+		}
+		return f(index, lista...), nil
+	}
+}
+
+func inteiroTextos(f func(index, a int, valores ...string) any) chamadaFake {
+	return func(index int, args []any) (any, error) {
+		if len(args) < 1 {
+			return nil, i18n.Errf("fcp_needs_size")
+		}
+		primeiro, err := inteiroEm(args, 0)
+		if err != nil {
+			return nil, err
+		}
+		lista, err := textosDe(args, 1)
+		if err != nil {
+			return nil, err
+		}
+		return f(index, primeiro, lista...), nil
 	}
 }
 

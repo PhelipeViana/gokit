@@ -115,6 +115,13 @@ func (m Model[T]) Chunk(ctx context.Context, tamanho int, fn func([]T) error) er
 	return m.All().Chunk(ctx, tamanho, fn)
 }
 
+func (m Model[T]) EachWith(ctx context.Context, r Runner, fn func(T) error) error {
+	return m.All().EachWith(ctx, r, fn)
+}
+func (m Model[T]) ChunkWith(ctx context.Context, r Runner, tamanho int, fn func([]T) error) error {
+	return m.All().ChunkWith(ctx, r, tamanho, fn)
+}
+
 // ── Trava de linha ──
 
 // Lock marca a pesquisa para travar as linhas lidas até o fim da transação.

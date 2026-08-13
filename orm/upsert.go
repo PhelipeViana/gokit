@@ -82,6 +82,9 @@ func (m Model[T]) ExplainInsertIgnore(valores Values, dialeto Dialect, chave ...
 }
 
 func (m Model[T]) gravarIdempotente(ctx context.Context, r Runner, valores Values, chave []Column, ignorar bool) (Result, error) {
+	if err := conferirAutoria(valores); err != nil {
+		return Result{}, err
+	}
 	alvo, exec, err := runnerParaEscrita(r)
 	if err != nil {
 		return Result{}, err

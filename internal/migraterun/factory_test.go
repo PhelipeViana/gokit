@@ -168,10 +168,10 @@ func TestExpressaoDeDominio(t *testing.T) {
 	if got := expressaoDeDominio([]string{"1", "2", "3"}); got != "migrate.FakeInt(1, 3)" {
 		t.Fatalf("faixa contígua veio %q", got)
 	}
-	if got := expressaoDeDominio([]string{"1", "5", "9"}); !strings.HasPrefix(got, "migrate.FakeChoiceIndex(index,") {
+	if got := expressaoDeDominio([]string{"1", "5", "9"}); !strings.HasPrefix(got, "migrate.FakeChoice(") {
 		t.Fatalf("faixa esparsa veio %q", got)
 	}
-	if got := expressaoDeDominio([]string{"S", "N"}); got != `migrate.FakeChoiceIndex(index, "S", "N")` {
+	if got := expressaoDeDominio([]string{"S", "N"}); got != `migrate.FakeChoice("S", "N")` {
 		t.Fatalf("texto veio %q", got)
 	}
 }
@@ -185,26 +185,26 @@ func TestExpressaoParaColuna(t *testing.T) {
 		semChar string
 	}{
 		{"chave de texto é única por índice",
-			acao.ColunaDefinicao{Name: "codigo", Type: "string", Length: 10, PrimaryKey: true}, "FakeCodeIndex", ""},
+			acao.ColunaDefinicao{Name: "codigo", Type: "string", Length: 10, PrimaryKey: true}, "FakeCode", ""},
 		{"chave numérica é única por índice",
-			acao.ColunaDefinicao{Name: "id", Type: "integer", Precision: 9, PrimaryKey: true}, "FakeIntIndex", ""},
-		{"chave estrangeira vira vínculo",
-			acao.ColunaDefinicao{Name: "cidade_id", Type: "integer", ReferenceTable: "cidades", ReferenceColumn: "cidade_id"}, "Vinculo", ""},
+			acao.ColunaDefinicao{Name: "id", Type: "integer", Precision: 9, PrimaryKey: true}, "FakeInt", ""},
+		{"chave estrangeira vira referência",
+			acao.ColunaDefinicao{Name: "cidade_id", Type: "integer", ReferenceTable: "cidades", ReferenceColumn: "cidade_id"}, "Reference", ""},
 		{"data usa o tipo, não o nome",
 			acao.ColunaDefinicao{Name: "criado_em", Type: "date"}, "FakeDate()", ""},
 		{"cnpj é detectado pelo nome",
-			acao.ColunaDefinicao{Name: "cnpj", Type: "string", Length: 20}, "FakeUniqueCNPJLength", ""},
+			acao.ColunaDefinicao{Name: "cnpj", Type: "string", Length: 20}, "FakeUniqueCNPJ", ""},
 		{"decimal respeita a escala",
 			acao.ColunaDefinicao{Name: "valor", Type: "decimal", Precision: 10, Scale: 2}, "FakeDecimal(10, 2)", ""},
 		{"coluna de um caractere vira flag",
-			acao.ColunaDefinicao{Name: "ativo", Type: "char", Length: 1}, "FakeChoiceIndex", ""},
+			acao.ColunaDefinicao{Name: "ativo", Type: "char", Length: 1}, "FakeChoice", ""},
 		{"sexo não vira flag S/N",
 			acao.ColunaDefinicao{Name: "sexo", Type: "char", Length: 1}, `"M", "F"`, ""},
 		{"texto genérico leva o tamanho da coluna",
 			acao.ColunaDefinicao{Name: "observacao", Type: "string", Length: 80}, "80", ""},
 	}
 	for _, caso := range casos {
-		got := expressaoParaColuna("TESTE", caso.coluna, nil, vazio)
+		got := expressaoParaColuna("TESTE", caso.coluna, nil, vazio, false)
 		if !strings.Contains(got, caso.contem) {
 			t.Fatalf("%s: veio %q, esperava conter %q", caso.nome, got, caso.contem)
 		}
@@ -215,7 +215,7 @@ func TestExpressaoParaColuna(t *testing.T) {
 // derrubaria o INSERT.
 func TestCheckVenceAHeuristica(t *testing.T) {
 	coluna := acao.ColunaDefinicao{Name: "status", Type: "string", Length: 20}
-	got := expressaoParaColuna("TESTE", coluna, []string{"ABERTO", "FECHADO"}, config.ConfigState{})
+	got := expressaoParaColuna("TESTE", coluna, []string{"ABERTO", "FECHADO"}, config.ConfigState{}, false)
 	if !strings.Contains(got, "ABERTO") {
 		t.Fatalf("o domínio do CHECK deveria mandar, veio %q", got)
 	}
@@ -229,12 +229,12 @@ func TestOverrideDoProjetoVenceTudo(t *testing.T) {
 		"hash":         "migrate.FakeHashPassword()",
 	}
 
-	got := expressaoParaColuna("TESTE", acao.ColunaDefinicao{Name: "status", Type: "string", Length: 5}, []string{"A", "B"}, state)
+	got := expressaoParaColuna("TESTE", acao.ColunaDefinicao{Name: "status", Type: "string", Length: 5}, []string{"A", "B"}, state, false)
 	if got != `migrate.FakeChoice("X")` {
 		t.Fatalf("override por tabela.coluna deveria vencer até o CHECK, veio %q", got)
 	}
 
-	got = expressaoParaColuna("OUTRA", acao.ColunaDefinicao{Name: "hash", Type: "string", Length: 60}, nil, state)
+	got = expressaoParaColuna("OUTRA", acao.ColunaDefinicao{Name: "hash", Type: "string", Length: 60}, nil, state, false)
 	if got != "migrate.FakeHashPassword()" {
 		t.Fatalf("override por coluna deveria valer em qualquer tabela, veio %q", got)
 	}
@@ -248,12 +248,12 @@ func TestRenderizaFactoryPreservaExpressoes(t *testing.T) {
 	}}
 	existentes := map[string]string{"NOME": `migrate.FakeChoice("Ajustado à mão")`}
 
-	texto := renderizaFactory(forma, nil, config.ConfigState{}, existentes, &migrate.Ruler{Count: 42, Update: true, Active: false})
+	texto := renderizaFactory(forma, nil, config.ConfigState{}, existentes, &migrate.Ruler{Count: 42, Active: false}, "")
 
 	if !strings.Contains(texto, `migrate.FakeChoice("Ajustado à mão")`) {
 		t.Fatal("a expressão existente deveria ser mantida")
 	}
-	if !strings.Contains(texto, "Count: 42, Update: true, Active: false") {
+	if !strings.Contains(texto, "Count: 42, Active: false") {
 		t.Fatal("o Ruler existente deveria ser mantido")
 	}
 	// A coluna nova, que não estava no arquivo, entra gerada.
@@ -265,6 +265,28 @@ func TestRenderizaFactoryPreservaExpressoes(t *testing.T) {
 	}
 }
 
+// Um arquivo escrito com core.Column.X.Y endereça a coluna pelo identificador Go,
+// não pelo nome físico. Enquanto a busca era só pelo nome físico, toda expressão
+// ajustada à mão era descartada na regeneração — e a regeneração é obrigatória.
+func TestRenderizaFactoryPreservaExpressaoEnderecadaPeloCatalogo(t *testing.T) {
+	forma := acao.Operacao{Table: "pedidos", Columns: []acao.ColunaDefinicao{
+		{Name: "aprovador_id", Type: "integer", Precision: 9},
+		{Name: "criado_em", Type: "datetime"},
+	}}
+	existentes := map[string]string{
+		"APROVADORID": `migrate.Seeder(core.Table.Users, 1, "2")`,
+		"CRIADOEM":    `migrate.FakeChoice("fixo")`,
+	}
+
+	texto := renderizaFactory(forma, nil, config.ConfigState{}, existentes, nil, "")
+
+	for _, esperado := range []string{`migrate.Seeder(core.Table.Users, 1, "2")`, `migrate.FakeChoice("fixo")`} {
+		if !strings.Contains(texto, esperado) {
+			t.Fatalf("esperava manter %s, saiu:\n%s", esperado, texto)
+		}
+	}
+}
+
 // A coluna de identidade é preenchida pelo banco; escrever nela obrigaria a
 // ligar IDENTITY_INSERT à toa.
 func TestIdentidadeFicaDeForaDoArquivoGerado(t *testing.T) {
@@ -272,7 +294,7 @@ func TestIdentidadeFicaDeForaDoArquivoGerado(t *testing.T) {
 		{Name: "raca_id", Type: "integer", PrimaryKey: true, AutoIncrement: true},
 		{Name: "nome", Type: "string", Length: 60},
 	}}
-	texto := renderizaFactory(forma, nil, config.ConfigState{}, nil, nil)
+	texto := renderizaFactory(forma, nil, config.ConfigState{}, nil, nil, "")
 	if strings.Contains(texto, "raca_id") {
 		t.Fatalf("a coluna de identidade não deveria aparecer:\n%s", texto)
 	}
@@ -286,7 +308,7 @@ func TestArquivoGeradoEValidoParaOAvaliador(t *testing.T) {
 		{Name: "uf", Type: "char", Length: 2},
 		{Name: "cnpj", Type: "string", Length: 20},
 	}}
-	texto := renderizaFactory(forma, nil, config.ConfigState{}, nil, nil)
+	texto := renderizaFactory(forma, nil, config.ConfigState{}, nil, nil, "")
 
 	caminho := t.TempDir() + "/racas_factory.go"
 	if err := writeFile(caminho, texto); err != nil {

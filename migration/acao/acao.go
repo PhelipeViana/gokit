@@ -6,7 +6,24 @@ import (
 	"regexp"
 )
 
-var physicalNamePattern = regexp.MustCompile(`^[a-z][a-z0-9]*(?:_[a-z0-9]+)*$`)
+// physicalNamePattern é o que um nome de objeto pode ser no corpus: começa por
+// letra minúscula e segue com letra minúscula, dígito ou underscore.
+//
+// O `\p{Ll}` aceita letra acentuada de propósito. A regra era ASCII estrita, e isso
+// a tornava mais rígida que os QUATRO BANCOS: `autenticação` e `data_` criam,
+// inserem e leem em MySQL, Postgres, Oracle e SQL Server — medido —, porque o gokit
+// cita todo identificador no DDL. Estrita, a regra bloqueava schema legado legítimo,
+// e o único jeito de importar era renomear coluna de uma aplicação em produção.
+//
+// O que ela continua recusando é o que realmente quebra ou engana:
+//
+//	espaço            "minha coluna"     quebra SQL escrito à mão
+//	símbolo           "<idx_algo>"       existe em banco legado por descuido
+//	MAIÚSCULA         "Autenticacao"     o Oracle dobra para maiúscula e o MySQL em
+//	                                     Linux diferencia caixa: o mesmo corpus
+//	                                     passaria a achar tabelas diferentes
+//	começar com dígito "2fa"             recusado por parte dos bancos
+var physicalNamePattern = regexp.MustCompile(`^\p{Ll}[\p{Ll}0-9_]*$`)
 
 // tiposSuportados espelha o mapa de dataType do executor. Um tipo fora desta
 // lista geraria DDL sem tipo, então é barrado ainda na pré-validação.
@@ -58,7 +75,6 @@ type ColunaDefinicao struct {
 	Precision       int    `json:"precision,omitempty"`
 	Scale           int    `json:"scale,omitempty"`
 	Unique          bool   `json:"unique,omitempty"`
-	Index           bool   `json:"index,omitempty"`
 	Default         string `json:"default,omitempty"`
 	ReferenceTable  string `json:"reference_table,omitempty"`
 	ReferenceColumn string `json:"reference_column,omitempty"`
@@ -127,7 +143,6 @@ func (c Coluna) AutoIncrement() Coluna       { c.value.AutoIncrement = true; ret
 func (c Coluna) Nullable() Coluna            { c.value.Nullable = true; return c }
 func (c Coluna) NotNull() Coluna             { c.value.Nullable = false; return c }
 func (c Coluna) Unique() Coluna              { c.value.Unique = true; return c }
-func (c Coluna) Index() Coluna               { c.value.Index = true; return c }
 func (c Coluna) Default(value string) Coluna { c.value.Default = value; return c }
 func (c Coluna) DefaultExpr(value string) Coluna {
 	c.value.Default, c.value.DefaultRaw = value, true
@@ -418,4 +433,14 @@ func aliasValido(alias string) bool {
 		}
 	}
 	return true
+}
+
+// NomeFisicoValido diz se um nome de objeto cabe na convenção do corpus.
+//
+// Exportada para que quem GERA migration — o import a partir de um banco legado —
+// possa conferir antes de escrever, em vez de produzir um arquivo que o próprio
+// validate recusa. É a mesma expressão que a validação usa, e não uma cópia: cópia
+// de regra sai de sincronia.
+func NomeFisicoValido(nome string) bool {
+	return physicalNamePattern.MatchString(nome)
 }

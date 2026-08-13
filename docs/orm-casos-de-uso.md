@@ -13,7 +13,7 @@ Validado nos **4 dialetos** (MySQL, PostgreSQL, Oracle, SQL Server):
 | Camada | O que é | Onde |
 |---|---|---|
 | **ORM** | motor genérico: query, operadores, relações, execução | `gokit/orm` |
-| **Fields** | o ORM já conhecendo o schema (gerado das migrations) | `internal/gokit/core/core.gen.go` |
+| **Fields** | o ORM já conhecendo o schema (gerado das migrations) | `internal/gokit/core/entities.gen.go` |
 | **Services** | escritas + regras de negócio | *(a fazer)* |
 
 > Regra: usar sempre a camada mais **alta** que resolve. Service → Fields → ORM.
@@ -280,7 +280,7 @@ app.RespondErrorr(w, r, app.BadRequest("id inválido"))  // 400
 | Coluna/relação de outra entidade | compila, falha em runtime com erro claro |
 | Duas FKs pra mesma tabela | nomes desambiguados (`PedidosByUser`/`PedidosByAprovador`) |
 | `Value` em JSON | extraia o tipo (`.Float()`), não devolva cru |
-| Binário do gokit defasado | regerar com `.exe` antigo **rebaixa** o `core.gen.go` |
+| Binário do gokit defasado | regerar com `.exe` antigo **rebaixa** o `entities.gen.go` |
 
 ---
 

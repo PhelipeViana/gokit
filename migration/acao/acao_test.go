@@ -58,3 +58,41 @@ func TestValidarRejectsUnsafeRenameTableName(t *testing.T) {
 	}
 }
 
+
+// A regra de nome foi relaxada para o que os QUATRO bancos aceitam, e não para o que
+// é bonito. Medido: `autenticação` e `data_` criam, inserem e leem em MySQL,
+// Postgres, Oracle e SQL Server, porque o gokit cita todo identificador.
+//
+// Coluna é o caso que obrigou: tabela com nome ruim tem saída pelo `.Alias()`, que
+// existe para isso; coluna não tem apelido nenhum.
+func TestNomeFisicoAceitaOQueOsBancosAceitam(t *testing.T) {
+	validos := []string{
+		"users", "eventos_bkp435037", "data_", "autenticação", "carta_concessão",
+		"linkarportaltransparência", "a", "tabela__dupla", "col1",
+	}
+	for _, nome := range validos {
+		if !NomeFisicoValido(nome) {
+			t.Errorf("%q deveria ser aceito: funciona nos quatro bancos", nome)
+		}
+	}
+}
+
+// O que ela continua recusando é o que quebra ou engana — cada caso com sua razão.
+func TestNomeFisicoRecusaOQueQuebra(t *testing.T) {
+	invalidos := map[string]string{
+		"minha coluna":  "espaço quebra SQL escrito à mão",
+		"<idx_algo>":    "símbolo; existe em banco legado por descuido",
+		"idx-algo":      "hífen é operador",
+		"Autenticacao":  "MAIÚSCULA: o Oracle dobra a caixa e o MySQL em Linux a diferencia",
+		"AUTENTICACAO":  "idem",
+		"2fa":           "começar por dígito é recusado por parte dos bancos",
+		"_interno":      "começar por underscore",
+		"":              "vazio",
+		"tabela.coluna": "ponto é separador de qualificação",
+	}
+	for nome, razao := range invalidos {
+		if NomeFisicoValido(nome) {
+			t.Errorf("%q deveria ser recusado (%s)", nome, razao)
+		}
+	}
+}

@@ -83,7 +83,7 @@ const DefaultScaffoldJSON = `{
   "factory": {
     "expressions": {
       "mappers": {
-        "tabela.campo": "gokit.FakeMetodo(index, 0, 1)"
+        "tabela.campo": "migrate.FakeInt(0, 1)"
       }
     }
   },
@@ -466,7 +466,7 @@ MYSQL_SCHEMA=gokit_onboarding
   "factory": {
     "expressions": {
       "mappers": {
-        "tabela.campo": "gokit.FakeMetodo(index, 0, 1)"
+        "tabela.campo": "migrate.FakeInt(0, 1)"
       }
     }
   }
@@ -652,45 +652,37 @@ func Seeder_2026_08_08_000001_Users() migrate.Rows {
 `
 	_ = os.WriteFile(filepath.Join("internal", "gokit", "seed", "users", "2026_08_08_000001_users_seeder.go"), []byte(seederContent), 0o644)
 
-	cidadesFact := `package factories
+	// Um arquivo só, com uma função por tabela: é a forma que o gerador mantém.
+	// O Active é por FUNÇÃO, então conviver no mesmo arquivo não acopla nada.
+	factories := `package factories
 
 import migrate "github.com/PhelipeViana/gokit/migration"
 
 func CidadesFactory() migrate.Factory {
 	return migrate.Factory{
 		Table: "CIDADES",
-		Ruler: migrate.Ruler{Count: 10, Update: true, Active: true},
-		Data: func(index int) migrate.Fields {
-			return migrate.Fields{
-				"id":   migrate.FakeIntIndex(index, 1, 99999999),
-				"nome": migrate.FakeCityIndexLength(index, 100),
-			}
+		Ruler: migrate.Ruler{Count: 10, Active: true},
+		Data: migrate.Fields{
+			"id":   migrate.FakeInt(1, 99999999),
+			"nome": migrate.FakeCity(100),
 		},
 	}
 }
-`
-	_ = os.WriteFile(filepath.Join("internal", "gokit", "factory", "cidades_factory.go"), []byte(cidadesFact), 0o644)
-
-	usersFact := `package factories
-
-import migrate "github.com/PhelipeViana/gokit/migration"
 
 func UsersFactory() migrate.Factory {
 	return migrate.Factory{
 		Table: "USERS",
-		Ruler: migrate.Ruler{Count: 20, Update: true, Active: true},
-		Data: func(index int) migrate.Fields {
-			return migrate.Fields{
-				"id":        migrate.FakeIntIndex(index, 1, 99999999),
-				"nome":      migrate.FakeNameIndexLength(index, 100),
-				"email":     migrate.FakeEmailIndexLength(index, 100),
-				"cidade_id": migrate.Vinculo("CIDADES", "ID"),
-			}
+		Ruler: migrate.Ruler{Count: 20, Active: true},
+		Data: migrate.Fields{
+			"id":        migrate.FakeInt(1, 99999999),
+			"nome":      migrate.FakeName(100),
+			"email":     migrate.FakeEmail(100),
+			"cidade_id": migrate.Reference("CIDADES", "ID"),
 		},
 	}
 }
 `
-	_ = os.WriteFile(filepath.Join("internal", "gokit", "factory", "users_factory.go"), []byte(usersFact), 0o644)
+	_ = os.WriteFile(filepath.Join("internal", "gokit", "factory", "factories.go"), []byte(factories), 0o644)
 
 	// Atualiza o catálogo do Core para gerar o dsl.gen.go contendo os aliases Cidades e Users recém-criados
 	_ = migrationgo.RefreshCatalog(".", filepath.Join("internal", "gokit", "migrate"))
@@ -844,7 +836,7 @@ func readEnvAndBuildGokitJSON() string {
   "factory": {
     "expressions": {
       "mappers": {
-        "tabela.campo": "gokit.FakeMetodo(index, 0, 1)"
+        "tabela.campo": "migrate.FakeInt(0, 1)"
       }
     }
   }

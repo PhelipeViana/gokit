@@ -53,7 +53,7 @@ func Migration() migrate.Definition { return migrate.Define(migrate.CreateTable(
 	if err != nil || count != 1 {
 		t.Fatalf("GenerateORM: count=%d err=%v", count, err)
 	}
-	data, err := os.ReadFile(filepath.Join(root, "internal/gokit/core/core.gen.go"))
+	data, err := os.ReadFile(filepath.Join(root, "internal/gokit/core/entities.gen.go"))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -273,3 +273,33 @@ func TestListaDeMetodosSeAdaptaAoTerminalPequeno(t *testing.T) {
 		t.Fatalf("seleção final e indicação de opções anteriores devem aparecer:\n%s", saida)
 	}
 }
+
+// O menu de migrations ganhou a leitura do banco. O teste guarda duas coisas: os
+// itens aparecem, e o "Voltar" continua sendo o ÚLTIMO — a execução das escolhas é
+// por índice, então inserir item no meio sem acertar os `case` faria "Voltar"
+// disparar um import.
+func TestMenuDeMigrationsOfereceLeituraDoBanco(t *testing.T) {
+	m := menuDeTeste()
+	m.migrationsChoices = opcoesDeMigration()
+	m.state = stateMigrationsMenu
+	saida := m.View()
+	for _, esperado := range []string{"Ler o banco", "Escrever migrations das tabelas"} {
+		if !strings.Contains(saida, esperado) {
+			t.Fatalf("faltou %q no menu de migrations:\n%s", esperado, saida)
+		}
+	}
+	if ultimo := m.migrationsChoices[len(m.migrationsChoices)-1]; !strings.Contains(ultimo, "Voltar") {
+		t.Fatalf("o último item deveria ser Voltar, é %q", ultimo)
+	}
+	// Índices que o switch de stateMigrationsMenu assume, escritos aqui para que
+	// mudar a ordem sem mudar o switch falhe.
+	esperados := []string{"Criar", "Validar", "Executar", "Desfazer", "Ler o banco", "Escrever migrations", "Voltar"}
+	if len(m.migrationsChoices) != len(esperados) {
+		t.Fatalf("o menu tem %d itens, o switch trata %d", len(m.migrationsChoices), len(esperados))
+	}
+	for posicao, prefixo := range esperados {
+		if !strings.Contains(m.migrationsChoices[posicao], prefixo) {
+			t.Fatalf("posição %d deveria conter %q, tem %q", posicao, prefixo, m.migrationsChoices[posicao])
+		}
+	}
+}

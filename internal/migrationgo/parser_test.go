@@ -4,6 +4,7 @@ import (
 	"go/parser"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -121,5 +122,48 @@ func TestReferenciaDeCatalogoDeView(t *testing.T) {
 		if _, ok := referenciaDeCatalogo(expressao, "View", []string{"view"}); ok != aceito {
 			t.Errorf("%q aceito=%v, esperado %v", fonte, ok, aceito)
 		}
+	}
+}
+
+// .Index() na coluna foi REMOVIDO do DSL. Ele era lido num único lugar e só
+// produzia índice no MySQL — nos outros três não fazia nada, então quem escrevia
+// esperando um índice em Postgres, Oracle ou SQL Server não recebia nenhum. A
+// forma portátil é migrate.CreateIndex(tabela, nome, colunas...), que é tratada no
+// executor, na validação e no rollback, e leva nome explícito (o Oracle trunca
+// identificador em 30 e o nome de índice é único por schema nele e no SQL Server).
+//
+// O teste garante que quem tinha .Index() escrito recebe erro NOMEADO no validate,
+// e não silêncio.
+func TestIndexNaColunaFoiRemovidoEAvisa(t *testing.T) {
+	tempDir, err := os.MkdirTemp("", "gokit_index_removido")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	src := `package migrations
+
+import migrate "github.com/PhelipeViana/gokit/migration"
+
+func Migration() migrate.Definition {
+	return migrate.Define(
+		migrate.CreateTable("users",
+			migrate.Col("id").Integer().PrimaryKey().AutoIncrement(),
+			migrate.Col("email").Varchar(255).Index(),
+		),
+	)
+}
+`
+	caminho := filepath.Join(tempDir, "2026_01_01_000001_users.go")
+	if err := os.WriteFile(caminho, []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = ParseFile(caminho)
+	if err == nil {
+		t.Fatal(".Index() na coluna deveria ser recusado pelo parser")
+	}
+	if !strings.Contains(err.Error(), "Index") {
+		t.Fatalf("o erro deveria citar o método recusado, veio: %v", err)
 	}
 }

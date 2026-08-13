@@ -238,6 +238,14 @@ func Run(root string, state config.ConfigState) error {
 		)
 	}
 
+	// O core é reescrito aqui: neste ponto o schema foi APLICADO, então as entidades
+	// descrevem o que o banco realmente tem. Na criação da migration seria cedo — o
+	// scaffold ainda traz coluna de exemplo, e o core gravaria um placeholder como
+	// se fosse schema.
+	for _, aviso := range regerarDerivados(root, state) {
+		fmt.Println(cliui.Warning(aviso.Error()))
+	}
+
 	fmt.Println("\n" + cliui.Success(i18n.T("run_migrations_updated")))
 	return nil
 }
@@ -836,6 +844,12 @@ func loadPlans(folder string) ([]migrationFile, error) {
 		if err := migrationgo.WriteCoreViewCatalog(projectRoot, views); err != nil {
 			return nil, i18n.Errf("run_view_catalog_gen", err)
 		}
+		// O catálogo de colunas sai no mesmo gatilho do de tabelas, e depois dele:
+		// ele resolve `core.Table.X` no primeiro argumento das operações usando o
+		// catálogo de tabelas que acabou de ser escrito.
+		if err := migrationgo.WriteCoreColumnCatalog(projectRoot, folder); err != nil {
+			return nil, i18n.Errf("run_column_catalog_gen", err)
+		}
 	}
 	return result, nil
 }
@@ -1291,11 +1305,19 @@ func runConnection(connection config.ConnConfig, historyTable string, files []mi
 			if err := executeOperation(ctx, db, dialect, connection.Schema, resolved, created, cache); err != nil {
 				return applied, skipped, fmt.Errorf("%s: %w", file.Name, err)
 			}
+			// O alias entra no registro assim que a operação roda, e não no fim do
+			// arquivo. Avançando por arquivo, o apelido declarado por um CreateTable
+			// só ficava resolvível na migration SEGUINTE: uma operação no mesmo
+			// arquivo — CreateIndex sobre a tabela recém-criada, por exemplo —
+			// recebia o apelido cru e o banco procurava uma tabela que não existe.
+			//
+			// Pior: o validador já observava por operação (keyIndex.observe), então
+			// `migrate validate` aprovava o que o `migrate run` recusava.
+			advanceAliases(aliases, []acao.Operacao{operation})
 		}
 		if err := insertHistory(ctx, db, dialect, connection.Schema, historyTable, file, batch); err != nil {
 			return applied, skipped, i18n.Errf("run_register_failed", file.Name, err)
 		}
-		advanceAliases(aliases, file.Plan.Operations)
 		applied++
 	}
 	return applied, skipped, nil
@@ -1622,6 +1644,16 @@ func executeOperation(ctx context.Context, db *sql.DB, dialect, schema string, o
 				return i18n.Errf("run_dialect_sql_failed", operation.Dialect, err)
 			}
 		}
+	case string(acao.Todo):
+		// migrate.TODO() é o corpo que o scaffold escreve numa migration nova. É um
+		// no-op deliberado: quem cria a migration e roda antes de preencher precisa
+		// receber "nada a fazer", não "operação desconhecida".
+		//
+		// ATENÇÃO: a migration ainda é gravada no histórico como aplicada, então
+		// preenchê-la depois é editar migration aplicada — e isso dispara drift de
+		// checksum. Enquanto não houver tratamento para isso, o caminho seguro é
+		// preencher antes de rodar.
+		return nil
 	default:
 		return i18n.Errf("run_op_unknown", operation.Kind)
 	}
@@ -2321,10 +2353,6 @@ func createTableSQL(dialect, schema, table string, columns []acao.ColunaDefinica
 			column.PrimaryKey = false
 		}
 		definitions = append(definitions, columnDefinition(dialect, column, true))
-		if dialect == "mysql" && column.Index && !column.PrimaryKey && !column.Unique {
-			definitions = append(definitions, fmt.Sprintf("INDEX %s (%s)",
-				quote(dialect, generatedIndexName(table, column.Name)), quote(dialect, column.Name)))
-		}
 	}
 	if composite {
 		definitions = append(definitions, fmt.Sprintf("CONSTRAINT %s PRIMARY KEY (%s)",
@@ -2987,6 +3015,32 @@ func ` + declarationName + `() migrate.Definition {
 	}
 
 	return filepath.ToSlash(filepath.Join(methodFolder, filename)), nil
+}
+
+// regerarDerivados reescreve o que deriva do corpus de migrations: as entidades da
+// ORM e a lista de colunas das factories. O catálogo (table/view) não entra aqui
+// porque o loadPlans já o reescreve em toda leitura.
+//
+// O gatilho é a APLICAÇÃO bem-sucedida das migrations, não a criação do arquivo.
+// A diferença importa: o scaffold recém-criado traz coluna de exemplo
+// ("nova_coluna"), e regerar ali gravaria esse placeholder no core como se fosse
+// schema — descrevendo uma coluna que ninguém pediu e que o banco não tem.
+//
+// Devolve AVISOS, não erros fatais: o schema já foi aplicado quando isto roda, e
+// falhar o comando depois disso diria que a migration não passou, o que é mentira.
+func regerarDerivados(root string, state config.ConfigState) []error {
+	var avisos []error
+
+	if _, err := GenerateORM(root, state); err != nil {
+		avisos = append(avisos, i18n.Errf("run_regen_orm_skipped", err))
+	}
+	// A factory preserva a expressão de cada coluna e o Ruler; só a lista de
+	// colunas é acertada contra a migration — e isso não é opcional, senão a
+	// factory continuaria citando coluna que a tabela não tem mais.
+	if err := FactoryCreate(root, state, ""); err != nil {
+		avisos = append(avisos, i18n.Errf("run_regen_factory_skipped", err))
+	}
+	return avisos
 }
 
 func tableIdentifier(name string) string {

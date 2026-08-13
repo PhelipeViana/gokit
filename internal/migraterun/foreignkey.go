@@ -153,8 +153,26 @@ func conciliarForeignKeys(ctx context.Context, db *sql.DB, dialect, schema strin
 				if !tem {
 					continue
 				}
+				// Conferir ANTES de tentar, em vez de depender do texto do erro.
+				//
+				// O SQL Server recusa a constraint duplicada com "Could not create
+				// constraint or index. See previous errors." — genérico, sem dizer
+				// que já existe. Acrescentar essa frase à lista de tolerância
+				// mascararia a falha que mais importa: FK sobre dado órfão, que
+				// chega com a MESMA mensagem. Medido importando um banco que já
+				// tinha as FKs: MySQL, Postgres e Oracle toleraram, o SQL Server
+				// abortou a migração inteira.
+				existe, err := constraintExiste(ctx, db, dialect, schema, nomeDaConstraint(operation.Table, fk))
+				if err != nil {
+					return criadas, i18n.Errf("run_fk_create_failed", operation.Table, fk.Column, err)
+				}
+				if existe {
+					continue
+				}
 				query := foreignKeySQL(dialect, schema, operation.Table, fk)
 				if _, err := db.ExecContext(ctx, query); err != nil {
+					// A tolerância por mensagem continua, agora só como rede para a
+					// corrida entre a checagem e o ALTER.
 					if constraintJaExiste(err) {
 						continue
 					}
@@ -165,4 +183,50 @@ func conciliarForeignKeys(ctx context.Context, db *sql.DB, dialect, schema strin
 		}
 	}
 	return criadas, nil
+}
+
+// nomeDaConstraint devolve o nome que foreignKeySQL usaria, para a checagem
+// prévia olhar exatamente o mesmo objeto que o ALTER criaria.
+func nomeDaConstraint(table string, fk acao.ForeignKey) string {
+	if fk.ConstraintName != "" {
+		return fk.ConstraintName
+	}
+	return foreignKeyName(table, fk.Column)
+}
+
+// constraintExiste pergunta ao catálogo se a constraint já está lá.
+//
+// O escopo do nome difere entre os bancos e é isso que a consulta reflete: no
+// Oracle e no SQL Server o nome é único por SCHEMA, no MySQL e no Postgres é por
+// TABELA. Consultar pelo nome no escopo certo é o que evita tanto o falso positivo
+// quanto o falso negativo.
+func constraintExiste(ctx context.Context, db *sql.DB, dialect, schema, nome string) (bool, error) {
+	var comando string
+	var argumentos []any
+
+	switch dialect {
+	case "postgres":
+		comando = `SELECT COUNT(*) FROM information_schema.table_constraints
+			WHERE constraint_schema = $1 AND constraint_name = $2`
+		argumentos = []any{schemaOr(schema, "public"), nome}
+	case "mysql":
+		comando = `SELECT COUNT(*) FROM information_schema.table_constraints
+			WHERE constraint_schema = DATABASE() AND constraint_name = ?`
+		argumentos = []any{nome}
+	case "sqlserver":
+		comando = `SELECT COUNT(*) FROM sys.objects o
+			JOIN sys.schemas s ON s.schema_id = o.schema_id
+			WHERE s.name = @p1 AND o.name = @p2`
+		argumentos = []any{schemaOr(schema, "dbo"), nome}
+	default:
+		// O Oracle guarda o nome em maiúsculas, como todo identificador não citado.
+		comando = `SELECT COUNT(*) FROM all_constraints WHERE owner = :1 AND constraint_name = :2`
+		argumentos = []any{strings.ToUpper(schema), strings.ToUpper(nome)}
+	}
+
+	var total int
+	if err := db.QueryRowContext(ctx, comando, argumentos...).Scan(&total); err != nil {
+		return false, err
+	}
+	return total > 0, nil
 }

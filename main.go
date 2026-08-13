@@ -84,7 +84,7 @@ func main() {
 				fmt.Println("Uso: gokit factory [run|validate|create] [tabela...]")
 				fmt.Println("\n  run       popula as tabelas com dados fake")
 				fmt.Println("  validate  confere as factories sem tocar no banco")
-				fmt.Println("  create    gera database/factories/<tabela>_factory.go a partir da migration")
+				fmt.Println("  create    gera internal/gokit/factory/factories.go a partir da migration")
 				fmt.Println("\n  gokit factory run              todas as factories ativas")
 				fmt.Println("  gokit factory run cidades      só cidades e as tabelas de que ela depende")
 				fmt.Println("  gokit factory create           gera as factories que faltam")
@@ -93,7 +93,19 @@ func main() {
 			var err error
 			switch os.Args[2] {
 			case "run":
-				err = migraterun.FactoryRun(".", state, os.Args[3:])
+				// --force repovoa tabela que já tem dados. Fora dele, tabela com
+				// linha é pulada: a factory começa apagando, e dado que ela não
+				// produziu não é dela para apagar.
+				forcar := false
+				var tabelas []string
+				for _, argumento := range os.Args[3:] {
+					if argumento == "--force" {
+						forcar = true
+						continue
+					}
+					tabelas = append(tabelas, argumento)
+				}
+				err = migraterun.FactoryRun(".", state, tabelas, forcar)
 			case "validate", "check":
 				err = migraterun.FactoryValidate(".", state)
 			case "create":
@@ -114,7 +126,7 @@ func main() {
 		}
 		if os.Args[1] == "migrate" {
 			if len(os.Args) < 3 {
-				fmt.Println("Uso: gokit migrate [run|rollback|validate|create]")
+				fmt.Println("Uso: gokit migrate [run|rollback|validate|scan|import|baseline|create]")
 				os.Exit(1)
 			}
 			var err error
@@ -134,6 +146,34 @@ func main() {
 				err = migraterun.RunDevelopmentRollback(".", state, confirmDelete, confirmFresh)
 			case "validate", "check":
 				err = migraterun.ValidateReport(".", state)
+			case "scan":
+				detalhar := false
+				for _, argumento := range os.Args[3:] {
+					if argumento == "--detail" || argumento == "--detalhe" {
+						detalhar = true
+					}
+				}
+				err = migraterun.MigrateScan(".", state, detalhar)
+			case "baseline":
+				// Marcar sem executar é escrever no histórico: exige confirmação
+				// explícita, como o rollback.
+				confirmar := false
+				for _, argumento := range os.Args[3:] {
+					if argumento == "--confirm" {
+						confirmar = true
+					}
+				}
+				err = migraterun.MigrateBaseline(".", state, confirmar)
+			case "import":
+				// Sem --confirm o import só mostra. Migration é histórico
+				// versionado: gerar arquivo não se desfaz sozinho.
+				confirmar := false
+				for _, argumento := range os.Args[3:] {
+					if argumento == "--confirm" {
+						confirmar = true
+					}
+				}
+				err = migraterun.MigrateImport(".", state, confirmar)
 			case "create":
 				if len(os.Args) < 4 {
 					fmt.Println("Uso: gokit migrate create <nome> [metodo]")

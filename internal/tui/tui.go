@@ -43,6 +43,9 @@ const (
 	stateMigrationRollbackConfirmDelete
 	stateMigrationRollbackConfirmFresh
 	stateMigrationValidating
+	stateMigrationScanning
+	stateMigrationImportPreview
+	stateMigrationImporting
 	stateSeedMenu
 	stateSeedSelectTable
 	stateSeedCreating
@@ -169,6 +172,23 @@ var (
 )
 
 // Start inicia o loop do aplicativo interativo Bubble Tea
+// opcoesDeMigration é a lista do menu de migrations, na ordem que o switch de
+// stateMigrationsMenu trata por ÍNDICE. Ela mora fora do Start porque o Start faz
+// I/O — lê configuração e checa atualização pela rede — e a ordem precisa poder
+// ser conferida por teste: inserir item no meio sem acertar os `case` faria
+// "Voltar" disparar outra ação.
+func opcoesDeMigration() []string {
+	return []string{
+		i18n.T("mig_create"),
+		i18n.T("mig_validate"),
+		i18n.T("mig_run"),
+		i18n.T("mig_rollback"),
+		i18n.T("mig_scan"),
+		i18n.T("mig_import"),
+		i18n.T("mig_back"),
+	}
+}
+
 func Start(version, commitHash string) error {
 	Version = version
 
@@ -215,13 +235,7 @@ func Start(version, commitHash string) error {
 			i18n.T("seed_run"),
 			i18n.T("mig_back"),
 		},
-		migrationsChoices: []string{
-			i18n.T("mig_create"),
-			i18n.T("mig_validate"),
-			i18n.T("mig_run"),
-			i18n.T("mig_rollback"),
-			i18n.T("mig_back"),
-		},
+		migrationsChoices: opcoesDeMigration(),
 		configData:      initialConfig,
 		updateStatus:    updateStatus,
 		updateMenuIndex: updateIndex,
@@ -333,6 +347,25 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if m.migrationError == nil {
 					return m, tea.Quit
 				}
+				return m, tea.ClearScreen
+			}
+			return m, nil
+		}
+		// A prévia do import é uma tela de confirmação: ela já mostrou o arquivo que
+		// seria escrito, e é daqui que sai a única gravação.
+		if m.state == stateMigrationImportPreview {
+			switch msg.String() {
+			case "ctrl+c":
+				return m, tea.Quit
+			case "esc", "n":
+				m.state = stateMigrationsMenu
+				m.cursor = 0
+				return m, tea.ClearScreen
+			case "enter", "y":
+				m.state = stateMigrationImporting
+				m.migrationOutput, m.migrationError = captureOutput(func() error {
+					return migraterun.MigrateImport(".", m.configData, true)
+				})
 				return m, tea.ClearScreen
 			}
 			return m, nil
@@ -742,7 +775,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				case 2:
 					m.state = stateFactoryRunning
 					m.migrationOutput, m.migrationError = captureOutput(func() error {
-						return migraterun.FactoryRun(".", m.configData, nil)
+						return migraterun.FactoryRun(".", m.configData, nil, false)
 					})
 					return m, tea.ClearScreen
 				case 3:
@@ -769,7 +802,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				table := m.factoryTables[m.factoryCursor]
 				m.state = stateFactoryRunning
 				m.migrationOutput, m.migrationError = captureOutput(func() error {
-					return migraterun.FactoryRun(".", m.configData, []string{table})
+					return migraterun.FactoryRun(".", m.configData, []string{table}, false)
 				})
 				return m, tea.ClearScreen
 			case stateSeedSelectTable:
@@ -819,6 +852,23 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.state = stateMigrationRollbackConfirmDelete
 					return m, tea.ClearScreen
 				case 4:
+					// Detalhe ligado na TUI: aqui há tela para mostrar coluna a
+					// coluna, e é justamente o que se quer ver ao olhar um banco
+					// que o gokit ainda não conhece.
+					m.state = stateMigrationScanning
+					m.migrationOutput, m.migrationError = captureOutput(func() error {
+						return migraterun.MigrateScan(".", m.configData, true)
+					})
+					return m, tea.ClearScreen
+				case 5:
+					// Prévia primeiro, sempre: o import escreve arquivo de
+					// histórico, então a confirmação vem depois de ver o que sai.
+					m.state = stateMigrationImportPreview
+					m.migrationOutput, m.migrationError = captureOutput(func() error {
+						return migraterun.MigrateImport(".", m.configData, false)
+					})
+					return m, tea.ClearScreen
+				case 6:
 					m.state = stateMainMenu
 					m.cursor = 0
 					m.configData = config.RunConfigChecks()
@@ -1130,6 +1180,19 @@ func (m model) View() string {
 
 	case stateMigrationRollingBack:
 		s.WriteString(m.renderActionResult(i18n.T("tui_rollback_done"), i18n.T("tui_rollback_failed")))
+
+	case stateMigrationScanning:
+		s.WriteString(m.renderActionResult(i18n.T("tui_scan_done"), i18n.T("tui_scan_failed")))
+
+	case stateMigrationImportPreview:
+		s.WriteString(m.renderActionResult(i18n.T("tui_import_preview"), i18n.T("tui_import_failed")))
+		if m.migrationError == nil {
+			s.WriteString(actionBoxStyle.Copy().BorderForeground(lipgloss.Color("#FFB86C")).
+				Render(i18n.T("tui_confirm_import")) + "\n")
+		}
+
+	case stateMigrationImporting:
+		s.WriteString(m.renderActionResult(i18n.T("tui_import_done"), i18n.T("tui_import_failed")))
 
 	case stateMigrationRollbackConfirmDelete:
 		plan, err := migraterun.PlanDevelopmentRollback(".")

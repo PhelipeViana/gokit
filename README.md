@@ -43,8 +43,8 @@ os quatro bancos reais e comparam o resultado:
 
 ```bash
 cd teste && go run ./cmd/conform    # 55 casos de leitura  · 0 divergências
-cd teste && go run ./cmd/escrita    # 72 casos de escrita  · 0 divergências + 1 esperada
-cd teste && go run ./cmd/ormdemo    # catálogo executável  · 21 seções
+cd teste && go run ./cmd/escrita    # 78 casos de escrita  · 0 divergências + 1 esperada
+cd teste && go run ./cmd/ormdemo    # catálogo executável  · 22 seções
 ```
 
 A divergência “esperada” é uma só, decidida e documentada: o `LIKE` cru segue a
@@ -64,7 +64,7 @@ pacote só:
 
 | arquivo | o que é | de onde vem |
 |---|---|---|
-| `core.gen.go` | entidades: `core.Users` com `Model`, `Column`, `Relation` | schema atual das migrations |
+| `entities.gen.go` | entidades: `core.Users` com `Model`, `Column`, `Relation` | schema atual das migrations |
 | `table.gen.go` | `core.Table.Users` — identidade **física**, para as migrations | catálogo acumulado |
 | `view.gen.go` | `core.View.X` — o mesmo, para views | catálogo acumulado |
 | `response.gen.go` | envelope JSON (`data`/`meta`/`error`) | template |
@@ -147,28 +147,62 @@ O catálogo completo da leitura está em
 
 ### Escrita
 
+O valor é checado pelo compilador: o tipo da coluna decide o que o método aceita.
+
 ```go
-res, err := u.Insert(ctx, orm.Values{
-    f.Nome:  "Ana",
-    f.Email: "ana@exemplo.com",
-})
+res, err := u.Insert(ctx, orm.Set(
+    f.Nome.Is("Ana"),                 // só string
+    f.Email.Is("ana@exemplo.com"),
+    f.Saldo.Is(10.5),                 // número (int ou float)
+    f.Ativo.Is(true),                 // só bool
+    f.Nascimento.Is("1990-05-17"),    // data em qualquer forma conhecida
+    f.CidadeId.SetNull(),             // NULL explícito
+))
 res.Affected  // linhas afetadas
 res.LastID    // chave gerada, quando o banco a fornece
 ```
 
-`Values` é `map[Column]any`, e a compilação **ordena pela posição da coluna na
-entidade** — mapa em Go itera aleatório, e SQL instável impede comparar
-dialetos.
+```go
+f.Nome.Is(123)      // não compila
+f.Ativo.Is("talvez") // não compila
+```
+
+A tipagem é a mesma que os **filtros** já adotaram, e isso é deliberado: texto e
+booleano são tipados; número aceita `int` e `float` sem conversão na autoria;
+data passa pelo `DateValue`. Divergir disso deixaria a escrita mais restrita que
+o filtro, sem ganho — e Go não permite parâmetro de tipo em método, então uma
+restrição numérica genérica não está disponível.
+
+Duas guardas que só a forma tipada consegue dar:
+
+- **coluna atribuída duas vezes** falha. Numa literal de mapa com chave não
+  constante, o Go aceita a repetição e fica com a última **em silêncio** —
+  `orm.Values{f.Nome: "a", f.Nome: "b"}` compila e grava `"b"`.
+- **`SetNull()` em coluna `NOT NULL`** falha na chamada, dizendo para omitir a
+  coluna se a intenção é o padrão do banco. Antes só quebrava no `INSERT`, com o
+  erro do driver.
+
+`orm.Values` continua existindo para o caso **dinâmico**, em que a lista de
+colunas é decidida em runtime (importação, formulário genérico) — mesmo papel do
+`Record.ByName`: a saída existe, e o nome diz que ali se abre mão da checagem.
 
 ```go
-u.Where(f.Id.Equal(7)).Update(ctx, orm.Values{f.Nome: "Ana Maria"})
-u.UpdateByKey(ctx, orm.Values{f.Nome: "Ana Maria"}, 7)
+u.Insert(ctx, orm.Values{f.Nome: valorVindoDeFora})
+```
+
+Nos dois casos a compilação **ordena pela posição da coluna na entidade** — mapa
+em Go itera aleatório, e SQL instável impede comparar dialetos.
+
+```go
+u.Where(f.Id.Equal(7)).Update(ctx, orm.Set(f.Nome.Is("Ana Maria")))
+u.UpdateByKey(ctx, orm.Set(f.Nome.Is("Ana Maria")), 7)
 
 u.Where(f.Id.Equal(7)).Delete(ctx)
 u.DeleteByKey(ctx, 7)
 
 u.InsertMany(ctx, []orm.Values{
-    {f.Nome: "Ana"}, {f.Nome: "Bia"},
+    orm.Set(f.Nome.Is("Ana")),
+    orm.Set(f.Nome.Is("Bia")),
 })
 ```
 
@@ -452,7 +486,7 @@ entre camadas (`Row`, scanner, `Column`) fica disponível sem re-export.
 
 - migrations: `alias.Users` → **`core.Table.Users`**; views: `view.X` → `core.View.X`
 - aplicação: `internal/gokit/core/orm` → `internal/gokit/core`
-- `fields.gen.go` → `core.gen.go`; default de `output.orm` → `internal/gokit/core`
+- `fields.gen.go` → `entities.gen.go`; default de `output.orm` → `internal/gokit/core`
 
 **Compatibilidade:** o parser continua aceitando `alias.X`, `table.X` e `view.X`,
 e os caminhos legados seguem sendo lidos e mesclados. Projeto que fixou
@@ -490,6 +524,19 @@ Entraram, nesta ordem: escrita e chave (incluindo PK composta e não-`id`),
 transação e erros tipados, `GroupBy`/`Having`/`Rows`, `Join`/`LeftJoin`,
 `WhereColumn` e subconsultas, `Chunk`/`Each`/`Lock`, `Upsert`/`InsertIgnore`,
 expressões cross-dialect e `Raw` contido.
+
+### Escrita tipada e paridade dos terminais
+
+- **`orm.Set`** move o erro de tipo do banco para o compilador, sem gerar uma
+  linha de código: são métodos nos tipos de coluna que já existiam, então vale
+  para toda entidade, presente e futura, e compõe com `Upsert`/`InsertIgnore` de
+  graça. `orm.Values` passou a ser a saída explícita para o caso dinâmico.
+- **Todo terminal promovido no `Model` ganhou a variante `*With`** — eram 15 sem
+  ela (`Count`, `Get`, `First`, `Exists`, `Rows`, `Sum`, `Avg`, `Min`, `Max`,
+  `Paginate`, os três `Pluck`, `Chunk`, `Each`). A assimetria obrigava a escrever
+  `u.All().CountWith(ctx, r)`, e doía dentro de transação — que é exatamente onde
+  se lê para decidir e gravar. Um teste trava a paridade: se um terminal novo
+  entrar sem `*With`, ele falha na **compilação**.
 
 ### Correções que valem citar
 

@@ -350,14 +350,24 @@ func init() {
 			EN: "aliases %q and %q generate the same identifier %s in the catalog; choose distinct nicknames",
 		},
 		"cat_gen_alias_note": {
-			PT: "// Table é a identidade FÍSICA de cada tabela, para as migrations.\n// A entidade de consulta do mesmo nome (core.Users) fica no core.gen.go.\n// Nome de tabela já derrubada continua aqui: a migration que a derrubou cita ele.\n",
-			ES: "// Table es la identidad FÍSICA de cada tabla, para las migraciones.\n// La entidad de consulta del mismo nombre (core.Users) está en core.gen.go.\n// El nombre de una tabla ya eliminada permanece aquí: la migración que la eliminó lo cita.\n",
-			EN: "// Table is each table's PHYSICAL identity, for migrations.\n// The query entity of the same name (core.Users) lives in core.gen.go.\n// A dropped table's name stays here: the migration that dropped it references it.\n",
+			PT: "// Identidade FÍSICA de cada tabela, para migration, seeder e factory.\n// ACUMULA e nunca remove: a migration que derrubou uma tabela cita o nome dela,\n// então o nome tem de continuar existindo para ela seguir compilando.\n// A entidade de consulta do mesmo nome (core.Users) fica no entities.gen.go,\n// reflete o schema atual e é OPCIONAL.\n",
+			ES: "// Identidad FÍSICA de cada tabla, para migración, seeder y factory.\n// ACUMULA y nunca elimina: la migración que eliminó una tabla cita su nombre,\n// así que el nombre debe seguir existiendo para que ella siga compilando.\n// La entidad de consulta del mismo nombre (core.Users) está en entities.gen.go,\n// refleja el esquema actual y es OPCIONAL.\n",
+			EN: "// Each table's PHYSICAL identity, for migration, seeder and factory.\n// ACCUMULATES and never removes: the migration that dropped a table references its\n// name, so the name must keep existing for that migration to still compile.\n// The query entity of the same name (core.Users) lives in entities.gen.go,\n// mirrors the current schema and is OPTIONAL.\n",
+		},
+		"cat_gen_column_note": {
+			PT: "// Identidade das COLUNAS, para migration, seeder e factory. Acumula e nunca remove.\n// Os operadores de consulta da mesma coluna (core.Users.Column.Nome) ficam no entities.gen.go e são OPCIONAIS.\n",
+			ES: "// Identidad de las COLUMNAS, para migración, seeder y factory. Acumula y nunca elimina.\n// Los operadores de consulta de la misma columna (core.Users.Column.Nome) están en entities.gen.go y son OPCIONALES.\n",
+			EN: "// COLUMN identity, for migration, seeder and factory. Accumulates and never removes.\n// The query operators for the same column (core.Users.Column.Nome) live in entities.gen.go and are OPTIONAL.\n",
+		},
+		"cat_column_collision": {
+			PT: "na tabela %s, as colunas %q e %q geram o mesmo identificador Go (%s) no catalogo; renomeie uma delas na migration",
+			ES: "en la tabla %s, las columnas %q y %q generan el mismo identificador Go (%s) en el catalogo; renombre una de ellas en la migracion",
+			EN: "in table %s, columns %q and %q generate the same Go identifier (%s) in the catalog; rename one of them in the migration",
 		},
 		"cat_gen_view_note": {
-			PT: "// View é a identidade física de cada view, para as migrations.\n",
-			ES: "// View es la identidad física de cada view, para las migraciones.\n",
-			EN: "// View is each view's physical identity, for migrations.\n",
+			PT: "// Identidade física de cada view, para as migrations. Acumula e nunca remove.\n",
+			ES: "// Identidad física de cada view, para las migraciones. Acumula y nunca elimina.\n",
+			EN: "// Each view's physical identity, for migrations. Accumulates and never removes.\n",
 		},
 	})
 }

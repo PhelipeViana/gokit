@@ -514,7 +514,7 @@ func executeFactories(step *ReloadStep, state config.ConfigState) error {
 		return nil
 	}
 	// Roda as factories (cria 10 linhas em cada tabela configurada)
-	err = FactoryRun(".", state, nil)
+	err = FactoryRun(".", state, nil, false)
 	if err != nil {
 		step.Message = i18n.Tf("rel_factories_failed", err)
 		return err

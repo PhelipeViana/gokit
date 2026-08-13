@@ -27,7 +27,22 @@ func Time(value string) time.Time {
 
 type Table string
 type View struct{ name string }
+
+// Column é o CONSTRUTOR de coluna, o que migrate.Col("id") devolve — o que se
+// declara numa migration.
 type Column = acao.Coluna
+
+// ColumnName é a IDENTIDADE de uma coluna existente: o nome físico, tipado.
+//
+// É o que o catálogo gerado expõe em core.Column.<Tabela>.<Coluna>, e o que a
+// factory e o seeder usam como endereço. Nome distinto de Column porque são
+// papéis opostos: Column DECLARA uma coluna nova, ColumnName APONTA para uma que
+// já existe.
+//
+// Sendo um tipo nomeado sobre string, literal continua compilando (constante sem
+// tipo converte) e string vinda de variável não — que é o ganho: nome de coluna
+// deixa de poder entrar por runtime.
+type ColumnName string
 type Operation = acao.Operacao
 
 // Row é uma linha de seed: coluna -> valor literal.

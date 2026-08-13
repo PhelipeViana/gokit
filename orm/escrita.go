@@ -28,6 +28,13 @@ type Values map[Column]any
 // ordenar devolve os pares na ordem de declaração da entidade, validando que
 // cada coluna pertence a ela.
 func (v Values) ordenar(entity EntityFields) ([]Field, []any, error) {
+	// Erro de autoria detectado no Set (coluna repetida, SetNull em coluna
+	// obrigatória) viaja dentro do próprio Values, porque mapa não tem onde
+	// guardar erro. Sai aqui, antes de qualquer outra validação, para que a
+	// mensagem seja a causa real e não um efeito dela.
+	if err := v.erroDeAutoria(); err != nil {
+		return nil, nil, err
+	}
 	if len(v) == 0 {
 		return nil, nil, nil
 	}

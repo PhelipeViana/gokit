@@ -307,6 +307,11 @@ func init() {
 			ES: "generar el catálogo de views en el core: %w",
 			EN: "generating the view catalog in the core: %w",
 		},
+		"run_column_catalog_gen": {
+			PT: "gerar catálogo de colunas no core: %w",
+			ES: "generar el catálogo de columnas en el core: %w",
+			EN: "generating the column catalog in the core: %w",
+		},
 		"run_dup_migration_id": {
 			PT: "ID de migration duplicado %s, já usado por %s",
 			ES: "ID de migración duplicado %s, ya usado por %s",
@@ -672,6 +677,19 @@ func init() {
 			PT: "registrar migration gerada: %w",
 			ES: "registrar la migración generada: %w",
 			EN: "registering the generated migration: %w",
+		},
+		// Avisos, não falhas: a migration já está criada quando isto acontece. O caso
+		// normal é o scaffold recém-criado ainda não estar preenchido, então o corpus
+		// não descreve um schema válido — e aí regerar de propósito não dá certo.
+		"run_regen_orm_skipped": {
+			PT: "a migration foi criada, mas o core não pôde ser regerado agora (%w); rode `gokit orm` depois de preencher a migration",
+			ES: "la migración fue creada, pero el core no pudo regenerarse ahora (%w); ejecute `gokit orm` después de completar la migración",
+			EN: "the migration was created, but the core could not be regenerated now (%w); run `gokit orm` after filling the migration in",
+		},
+		"run_regen_factory_skipped": {
+			PT: "a migration foi criada, mas as factories não pôderam ser atualizadas agora (%w); rode `gokit factory create` depois de preencher a migration",
+			ES: "la migración fue creada, pero las factories no pudieron actualizarse ahora (%w); ejecute `gokit factory create` después de completar la migración",
+			EN: "the migration was created, but the factories could not be updated now (%w); run `gokit factory create` after filling the migration in",
 		},
 		"run_module_not_found": {
 			PT: "nome do módulo não encontrado em go.mod",

@@ -58,6 +58,44 @@ func init() {
 			ES: " ignorada: la tabla no existe en la base",
 			EN: " skipped: the table does not exist in the database",
 		},
+		// Conferência de valor sem banco: cada uma diz o que o driver diria, antes.
+		"fck_null_not_allowed": {
+			PT: "a coluna não aceita nulo e a expressão devolveu nulo",
+			ES: "la columna no acepta nulo y la expresión devolvió nulo",
+			EN: "the column does not accept null and the expression returned null",
+		},
+		"fck_too_long": {
+			PT: "o valor tem %d caractere(s) e a coluna aceita %d",
+			ES: "el valor tiene %d carácter(es) y la columna acepta %d",
+			EN: "the value has %d character(s) and the column accepts %d",
+		},
+		"fck_check_violated": {
+			PT: "o valor %q não está no CHECK declarado (%s)",
+			ES: "el valor %q no está en el CHECK declarado (%s)",
+			EN: "value %q is not in the declared CHECK (%s)",
+		},
+		"fck_duplicate": {
+			PT: "o valor %q repete o da linha %d, e a coluna exige valor distinto",
+			ES: "el valor %q repite el de la fila %d, y la columna exige valor distinto",
+			EN: "value %q repeats the one from row %d, and the column requires a distinct value",
+		},
+		// A factory começa apagando a tabela. Dado que ela não produziu — de seed,
+		// de migration ou da aplicação — não é dela para apagar.
+		"fac_skipped_has_rows": {
+			PT: " ignorada: a tabela já tem dados (use --force para repovoar)",
+			ES: " ignorada: la tabla ya tiene datos (use --force para repoblar)",
+			EN: " skipped: the table already has data (use --force to repopulate)",
+		},
+		"fac_nothing_empty": {
+			PT: "nenhuma tabela vazia: as factories só povoam tabela sem dados. Use --force para repovoar.",
+			ES: "ninguna tabla vacía: las factories solo poblan tablas sin datos. Use --force para repoblar.",
+			EN: "no empty table: factories only populate tables without data. Use --force to repopulate.",
+		},
+		"fac_check_rows_failed": {
+			PT: "verificar se a tabela %s já tem dados: %w",
+			ES: "verificar si la tabla %s ya tiene datos: %w",
+			EN: "checking whether table %s already has data: %w",
+		},
 		"fac_no_table_exists": {
 			PT: "Nenhuma tabela das factories selecionadas existe no banco.",
 			ES: "Ninguna tabla de las factories seleccionadas existe en la base.",
@@ -126,9 +164,9 @@ func init() {
 			EN: "Could not read %s.%s to resolve the link: %v",
 		},
 		"fac_link_read_failed_fix": {
-			PT: "Confira se a tabela e a coluna do Vinculo estão escritas como na migration.",
-			ES: "Verifique que la tabla y la columna del Vinculo estén escritas como en la migración.",
-			EN: "Check that the table and column in Vinculo are spelled as in the migration.",
+			PT: "Confira se a tabela e a coluna da Reference estão escritas como na migration.",
+			ES: "Verifique que la tabla y la columna de la Reference estén escritas como en la migración.",
+			EN: "Check that the table and column in Reference are spelled as in the migration.",
 		},
 		"fac_link_parent_empty": {
 			PT: "A tabela %s está vazia e o vínculo com %s.%s não pode ser resolvido.",
@@ -148,9 +186,9 @@ func init() {
 
 		// ── Tradução de erro do driver em conselho ──
 		"fac_advice_fk": {
-			PT: "A tabela pai não tem a linha referenciada. Use migrate.Vinculo(\"TABELA_PAI\", \"COLUNA\") nessa coluna em vez de um valor fake.",
-			ES: "La tabla padre no tiene la fila referenciada. Use migrate.Vinculo(\"TABLA_PADRE\", \"COLUMNA\") en esa columna en vez de un valor fake.",
-			EN: "The parent table does not have the referenced row. Use migrate.Vinculo(\"PARENT_TABLE\", \"COLUMN\") on that column instead of a fake value.",
+			PT: "A tabela pai não tem a linha referenciada. Use migrate.Reference(\"TABELA_PAI\", \"COLUNA\") nessa coluna em vez de um valor fake.",
+			ES: "La tabla padre no tiene la fila referenciada. Use migrate.Reference(\"TABLA_PADRE\", \"COLUMNA\") en esa columna en vez de un valor fake.",
+			EN: "The parent table does not have the referenced row. Use migrate.Reference(\"PARENT_TABLE\", \"COLUMN\") on that column instead of a fake value.",
 		},
 		"fac_advice_check": {
 			PT: "O valor gerado não passa no CHECK da coluna. Troque por migrate.FakeChoiceIndex(index, ...) com os valores que o CHECK aceita.",

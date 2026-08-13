@@ -96,6 +96,16 @@ var translations = map[string]map[Language]string{
 		ES: "Deshacer archivos generados y reconstruir base (Development)",
 		EN: "Remove generated files and rebuild database (Development)",
 	},
+	"mig_scan": {
+		PT: "Ler o banco e comparar com as migrations",
+		ES: "Leer la base y comparar con las migrations",
+		EN: "Read the database and compare with the migrations",
+	},
+	"mig_import": {
+		PT: "Escrever migrations das tabelas que só existem no banco",
+		ES: "Escribir migrations de las tablas que solo existen en la base",
+		EN: "Write migrations for tables that exist only in the database",
+	},
 	"mig_back": {
 		PT: "Voltar ao menu principal",
 		ES: "Volver al menú principal",

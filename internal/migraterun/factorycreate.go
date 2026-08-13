@@ -21,6 +21,7 @@ import (
 	"github.com/PhelipeViana/gokit/internal/config"
 	"github.com/PhelipeViana/gokit/internal/factorygo"
 	"github.com/PhelipeViana/gokit/internal/i18n"
+	"github.com/PhelipeViana/gokit/internal/migrationgo"
 	migrate "github.com/PhelipeViana/gokit/migration"
 	"github.com/PhelipeViana/gokit/migration/acao"
 )
@@ -28,6 +29,15 @@ import (
 // FactoryCreate gera ou atualiza a factory de uma tabela. Sem tabela, percorre
 // todas as que ainda não têm factory.
 func FactoryCreate(root string, state config.ConfigState, table string) error {
+	// O import do pacote core, para a factory endereçar tabela e coluna por
+	// referência em vez de texto. Sem módulo resolvido, cai no texto — o gerador
+	// nunca deve falhar por causa disso.
+	importCore := ""
+	if pRoot := projectRoot(root); pRoot != "" {
+		if modulo, err := GetModuleName(pRoot); err == nil {
+			importCore = modulo + "/internal/gokit/core"
+		}
+	}
 	formas, err := tableShapes(root, state)
 	if err != nil {
 		return err
@@ -44,6 +54,21 @@ func FactoryCreate(root string, state config.ConfigState, table string) error {
 		return err
 	}
 
+	pasta := factoryRoot(root, state)
+	if err := os.MkdirAll(pasta, 0o755); err != nil {
+		return err
+	}
+
+	// O que já está escrito na pasta, venha de onde vier: um arquivo por tabela
+	// (a organização antiga) ou o arquivo único. É daqui que sai a preservação
+	// das expressões e do Ruler.
+	escritas, antigos, err := factoriesEscritas(pasta)
+	if err != nil {
+		return err
+	}
+
+	// O arquivo passa a conter todas as tabelas do corpus. Pedir uma tabela
+	// específica não descarta as outras — só garante que ela entre.
 	var alvos []string
 	if table != "" {
 		chave := strings.ToLower(table)
@@ -54,72 +79,101 @@ func FactoryCreate(root string, state config.ConfigState, table string) error {
 			)
 		}
 		alvos = []string{chave}
+		for nome := range formas {
+			if _, tem := escritas[strings.ToUpper(formas[nome].Table)]; tem && nome != chave {
+				alvos = append(alvos, nome)
+			}
+		}
 	} else {
 		for nome := range formas {
 			alvos = append(alvos, nome)
 		}
-		sort.Strings(alvos)
 	}
+	sort.Strings(alvos)
 
-	pasta := factoryRoot(root, state)
-	if err := os.MkdirAll(pasta, 0o755); err != nil {
+	caminho := filepath.Join(pasta, arquivoDeFactories)
+	atual, err := os.ReadFile(caminho)
+	if err != nil && !os.IsNotExist(err) {
 		return err
 	}
+	novoArquivo := os.IsNotExist(err)
 
-	criadas, atualizadas, preservadas := 0, 0, 0
+	blocos := make([]string, 0, len(alvos))
 	for _, nome := range alvos {
-		caminho := filepath.Join(pasta, nome+"_factory.go")
+		forma := formas[nome]
+		anterior, jaExistia := escritas[strings.ToUpper(forma.Table)]
 
-		atual, err := os.ReadFile(caminho)
-		if err != nil && !os.IsNotExist(err) {
-			return err
-		}
-		novo := os.IsNotExist(err)
-
-		// Update=false é a forma de dizer "este arquivo é meu".
-		if !novo && !permiteAtualizar(string(atual)) {
-			preservadas++
-			continue
-		}
-
-		// Numa regeneração, a expressão de cada coluna que já existe é
-		// mantida como está: o gerador só acerta a lista de colunas contra a
-		// migration. Sem isso um ajuste manual se perderia a cada `create`.
+		// Numa regeneração, a expressão de cada coluna que já existe é mantida
+		// como está: o gerador só acerta a lista de colunas contra a migration.
+		// Sem isso um ajuste manual se perderia a cada `create`.
 		var existentes map[string]string
 		var ruler *migrate.Ruler
-		if !novo {
-			if arquivo, err := factorygo.ParseArquivo(caminho); err == nil {
-				existentes = map[string]string{}
-				for _, campo := range arquivo.Campos {
-					existentes[strings.ToUpper(campo.Coluna)] = campo.Origem
-				}
-				copia := arquivo.Ruler
-				ruler = &copia
+		if jaExistia {
+			existentes = map[string]string{}
+			for _, campo := range anterior.Campos {
+				// Duas chaves porque o arquivo pode endereçar a coluna de duas
+				// formas: o nome físico (`"aprovador_id"`) ou a referência de
+				// catálogo (`core.Column.Pedidos.AprovadorId`). Guardar só a
+				// primeira fazia a regeneração perder todo ajuste manual de um
+				// arquivo escrito na forma nova.
+				existentes[strings.ToUpper(campo.Coluna)] = campo.Origem
+				existentes[chaveDeColuna(campo.Coluna)] = campo.Origem
 			}
+			copia := anterior.Ruler
+			ruler = &copia
 		}
 
-		conteudo := renderizaFactory(formas[nome], checks[strings.ToUpper(formas[nome].Table)], state, existentes, ruler)
+		bloco := blocoDaFactory(forma, checks[strings.ToUpper(forma.Table)], state, existentes, ruler, importCore)
+		blocos = append(blocos, bloco)
+	}
 
-		if novo {
-			if err := os.WriteFile(caminho, []byte(conteudo), 0o644); err != nil {
-				return err
-			}
-			if err := recordGeneratedFile(root, nome, "factory", caminho); err != nil {
-				return i18n.Errf("fac_register_failed", err)
-			}
-			fmt.Printf("  %s %s\n", cliui.Success("+"), filepath.Base(caminho))
+	conteudo := montaArquivoDeFactories(blocos, importCore)
+
+	// O estado de cada factory é decidido comparando bloco formatado com bloco
+	// formatado, extraídos do arquivo antigo e do novo. Comparar o texto cru que
+	// o gerador monta não funciona: o gofmt do arquivo inteiro realinha o mapa de
+	// Fields, e toda factory apareceria como atualizada a cada execução.
+	criadas, atualizadas, preservadas := 0, 0, 0
+	for _, nome := range alvos {
+		forma := formas[nome]
+		funcao := nomeDaFuncao(forma.Table)
+		anterior, jaExistia := escritas[strings.ToUpper(forma.Table)]
+
+		if !jaExistia {
 			criadas++
+			fmt.Printf("  %s %s\n", cliui.Success("+"), funcao)
 			continue
 		}
-		if string(atual) == conteudo {
+		origem, err := os.ReadFile(anterior.Caminho)
+		if err == nil && blocoDaFuncao(string(origem), funcao) == blocoDaFuncao(conteudo, funcao) {
 			preservadas++
 			continue
 		}
+		atualizadas++
+		fmt.Printf("  %s %s\n", cliui.Warning("~"), funcao)
+	}
+
+	if string(atual) != conteudo {
 		if err := os.WriteFile(caminho, []byte(conteudo), 0o644); err != nil {
 			return err
 		}
-		fmt.Printf("  %s %s\n", cliui.Warning("~"), filepath.Base(caminho))
-		atualizadas++
+		if novoArquivo {
+			if err := recordGeneratedFile(root, "factories", "factory", caminho); err != nil {
+				return i18n.Errf("fac_register_failed", err)
+			}
+		}
+	}
+
+	// Os arquivos por tabela viraram função dentro do arquivo único. Mantê-los
+	// seria função duplicada no mesmo pacote: o projeto pararia de compilar.
+	for _, obsoleto := range antigos {
+		if filepath.Base(obsoleto) == arquivoDeFactories {
+			continue
+		}
+		if err := os.Remove(obsoleto); err != nil {
+			return err
+		}
+		fmt.Printf("  %s %s\n", cliui.Muted("-"), filepath.Base(obsoleto))
 	}
 
 	fmt.Printf(i18n.T("fac_create_summary"),
@@ -127,10 +181,56 @@ func FactoryCreate(root string, state config.ConfigState, table string) error {
 	return nil
 }
 
-// permiteAtualizar lê o Ruler do arquivo existente sem parsear tudo: se o autor
-// marcou Update: false, o arquivo é dele.
-func permiteAtualizar(conteudo string) bool {
-	return !strings.Contains(strings.ReplaceAll(conteudo, " ", ""), "Update:false")
+// arquivoDeFactories é o arquivo único da pasta. Não há regra implícita que
+// justifique fatiar por tabela, e um arquivo só deixa o conjunto legível de uma
+// vez. Continua sendo editável à mão: o Active é por FUNÇÃO, não por arquivo.
+const arquivoDeFactories = "factories.go"
+
+// factoriesEscritas devolve o que já está na pasta, indexado pelo nome físico da
+// tabela, mais os arquivos de onde isso veio.
+func factoriesEscritas(pasta string) (map[string]factorygo.Arquivo, []string, error) {
+	entradas, err := os.ReadDir(pasta)
+	if os.IsNotExist(err) {
+		return map[string]factorygo.Arquivo{}, nil, nil
+	}
+	if err != nil {
+		return nil, nil, err
+	}
+
+	escritas := map[string]factorygo.Arquivo{}
+	var arquivos []string
+	for _, entrada := range entradas {
+		if entrada.IsDir() || !strings.HasSuffix(entrada.Name(), ".go") || strings.HasSuffix(entrada.Name(), "_test.go") {
+			continue
+		}
+		caminho := filepath.Join(pasta, entrada.Name())
+		// Arquivo que não parseia não pode sumir em silêncio: ele é preservado e
+		// o autor vê o erro no `factory validate`.
+		lidas, err := factorygo.ParseArquivos(caminho)
+		if err != nil || len(lidas) == 0 {
+			continue
+		}
+		arquivos = append(arquivos, caminho)
+		for _, lida := range lidas {
+			escritas[strings.ToUpper(lida.Tabela)] = lida
+		}
+	}
+	return escritas, arquivos, nil
+}
+
+// blocoDaFuncao recorta o texto de uma função do arquivo. Fecha na primeira `}`
+// em coluna zero, o que basta porque o arquivo é sempre gofmt.
+func blocoDaFuncao(conteudo, funcao string) string {
+	abertura := "func " + funcao + "() migrate.Factory {"
+	inicio := strings.Index(conteudo, abertura)
+	if inicio < 0 {
+		return ""
+	}
+	resto := conteudo[inicio:]
+	if fim := strings.Index(resto, "\n}\n"); fim >= 0 {
+		return resto[:fim+3]
+	}
+	return resto
 }
 
 // tableCheckValues extrai os domínios declarados em AddCheck, no formato
@@ -193,18 +293,51 @@ func valoresDoCheck(expressao string) (string, []string) {
 	return coluna, valores
 }
 
-// renderizaFactory monta o arquivo. existentes traz as expressões já escritas
-// para a tabela — elas vencem a heurística; ruler preserva o Count/Active que
+// chaveDeColuna reduz as duas formas de escrever a mesma coluna a uma chave só:
+// `aprovador_id` e `AprovadorId` viram ambos APROVADORID.
+func chaveDeColuna(nome string) string {
+	return strings.ToUpper(migrationgo.ExportedIdentifier(nome))
+}
+
+// renderizaFactory monta um arquivo com uma factory só. É o que os testes usam e
+// o caminho de quem quiser gerar avulso; a geração normal escreve todas juntas.
+func renderizaFactory(forma acao.Operacao, checks map[string][]string, state config.ConfigState, existentes map[string]string, ruler *migrate.Ruler, importCore string) string {
+	bloco := blocoDaFactory(forma, checks, state, existentes, ruler, importCore)
+	return montaArquivoDeFactories([]string{bloco}, importCore)
+}
+
+// montaArquivoDeFactories junta os blocos num arquivo do pacote factories.
+func montaArquivoDeFactories(blocos []string, importCore string) string {
+	var texto strings.Builder
+	texto.WriteString("package factories\n\n")
+	if importCore != "" {
+		fmt.Fprintf(&texto, "import (\n\tcore %q\n\tmigrate \"github.com/PhelipeViana/gokit/migration\"\n)\n\n", importCore)
+	} else {
+		texto.WriteString("import migrate \"github.com/PhelipeViana/gokit/migration\"\n\n")
+	}
+	texto.WriteString(strings.Join(blocos, "\n"))
+
+	// O alinhamento das colunas segue uma heurística própria do gofmt, que
+	// quebra o bloco quando uma linha destoa muito das outras. Formatar com a
+	// biblioteca padrão evita que o arquivo gerado apareça sujo no `gofmt -l`.
+	formatado, err := format.Source([]byte(texto.String()))
+	if err != nil {
+		return texto.String()
+	}
+	return string(formatado)
+}
+
+// blocoDaFactory escreve a função de uma tabela. existentes traz as expressões já
+// escritas para ela — elas vencem a heurística; ruler preserva o Count/Active que
 // o autor tenha ajustado.
-func renderizaFactory(forma acao.Operacao, checks map[string][]string, state config.ConfigState, existentes map[string]string, ruler *migrate.Ruler) string {
+func blocoDaFactory(forma acao.Operacao, checks map[string][]string, state config.ConfigState, existentes map[string]string, ruler *migrate.Ruler, importCore string) string {
 	tabela := strings.ToUpper(forma.Table)
-	regra := migrate.Ruler{Count: 10, Update: true, Active: true}
+	regra := migrate.Ruler{Count: 10, Active: true}
 	if ruler != nil {
 		regra = *ruler
 	}
 
 	campos := make([][2]string, 0, len(forma.Columns))
-	usaLocalidade := false
 	for _, column := range forma.Columns {
 		// Coluna de identidade é preenchida pelo banco; escrever nela obrigaria
 		// a ligar IDENTITY_INSERT sem necessidade.
@@ -213,10 +346,10 @@ func renderizaFactory(forma acao.Operacao, checks map[string][]string, state con
 		}
 		expressao, mantida := existentes[strings.ToUpper(column.Name)]
 		if !mantida {
-			expressao = expressaoParaColuna(tabela, column, checks[strings.ToUpper(column.Name)], state)
+			expressao, mantida = existentes[chaveDeColuna(column.Name)]
 		}
-		if strings.Contains(expressao, "local(") {
-			usaLocalidade = true
+		if !mantida {
+			expressao = expressaoParaColuna(tabela, column, checks[strings.ToUpper(column.Name)], state, importCore != "")
 		}
 		campos = append(campos, [2]string{column.Name, expressao})
 	}
@@ -228,33 +361,31 @@ func renderizaFactory(forma acao.Operacao, checks map[string][]string, state con
 		}
 	}
 
+	// Endereçamento por REFERÊNCIA de catálogo quando o módulo é conhecido: aí o
+	// compilador passa a checar nome de tabela e de coluna. Sem módulo resolvido —
+	// projeto sem go.mod legível —, cai no texto, que continua válido.
+	entidade := migrationgo.ExportedIdentifier(forma.Table)
+	refTabela := fmt.Sprintf("%q", tabela)
+	if importCore != "" {
+		refTabela = "core.Table." + entidade
+	}
+
 	var texto strings.Builder
-	texto.WriteString("package factories\n\n")
-	texto.WriteString("import migrate \"github.com/PhelipeViana/gokit/migration\"\n\n")
 	fmt.Fprintf(&texto, i18n.T("fac_gen_doc"), nomeDaFuncao(forma.Table), tabela)
 	fmt.Fprintf(&texto, "func %s() migrate.Factory {\n", nomeDaFuncao(forma.Table))
 	texto.WriteString("\treturn migrate.Factory{\n")
-	fmt.Fprintf(&texto, "\t\tTable: %q,\n", tabela)
-	fmt.Fprintf(&texto, "\t\tRuler: migrate.Ruler{Count: %d, Update: %t, Active: %t},\n", regra.Count, regra.Update, regra.Active)
-	texto.WriteString("\t\tData: func(index int) migrate.Fields {\n")
-	if usaLocalidade {
-		texto.WriteString("\t\t\tlocal := migrate.FakeLocation()\n")
-	}
-	texto.WriteString("\t\t\treturn migrate.Fields{\n")
+	fmt.Fprintf(&texto, "\t\tTable: %s,\n", refTabela)
+	fmt.Fprintf(&texto, "\t\tRuler: migrate.Ruler{Count: %d, Active: %t},\n", regra.Count, regra.Active)
+	texto.WriteString("\t\tData: migrate.Fields{\n")
 	for _, campo := range campos {
 		chave := fmt.Sprintf("%q:", campo[0])
-		fmt.Fprintf(&texto, "\t\t\t\t%-*s %s,\n", largura, chave, campo[1])
+		if importCore != "" {
+			chave = "core.Column." + entidade + "." + migrationgo.ExportedIdentifier(campo[0]) + ":"
+		}
+		fmt.Fprintf(&texto, "\t\t\t%-*s %s,\n", largura, chave, campo[1])
 	}
-	texto.WriteString("\t\t\t}\n\t\t},\n\t}\n}\n")
-
-	// O alinhamento das colunas segue uma heurística própria do gofmt, que
-	// quebra o bloco quando uma linha destoa muito das outras. Formatar com a
-	// biblioteca padrão evita que o arquivo gerado apareça sujo no `gofmt -l`.
-	formatado, err := format.Source([]byte(texto.String()))
-	if err != nil {
-		return texto.String()
-	}
-	return string(formatado)
+	texto.WriteString("\t\t},\n\t}\n}\n")
+	return texto.String()
 }
 
 func nomeDaFuncao(tabela string) string {
@@ -274,14 +405,21 @@ func nomeDaFuncao(tabela string) string {
 // A ordem importa: o mais específico decide primeiro. Um override do projeto
 // vence tudo; depois vem o domínio fechado do CHECK; depois a chave, que exige
 // unicidade; e só então as heurísticas por nome e tipo.
-func expressaoParaColuna(tabela string, column acao.ColunaDefinicao, check []string, state config.ConfigState) string {
+func expressaoParaColuna(tabela string, column acao.ColunaDefinicao, check []string, state config.ConfigState, usaCore bool) string {
 	nome := strings.ToUpper(column.Name)
 
 	if expressao, existe := overrideDoProjeto(tabela, nome, state); existe {
 		return expressao
 	}
 	if column.ReferenceTable != "" {
-		return fmt.Sprintf("migrate.Vinculo(%q, %q)", strings.ToUpper(column.ReferenceTable), strings.ToUpper(column.ReferenceColumn))
+		if usaCore {
+			// A referência aponta para a coluna do PAI, então o agrupador é o da
+			// tabela referenciada, não o da tabela atual.
+			// A coluna do pai sai da FK declarada, então não precisa ser escrita.
+			return fmt.Sprintf("migrate.Reference(core.Table.%s)",
+				migrationgo.ExportedIdentifier(column.ReferenceTable))
+		}
+		return fmt.Sprintf("migrate.Reference(%q, %q)", strings.ToUpper(column.ReferenceTable), strings.ToUpper(column.ReferenceColumn))
 	}
 	if len(check) > 0 {
 		return expressaoDeDominio(check)
@@ -297,9 +435,9 @@ func expressaoParaColuna(tabela string, column acao.ColunaDefinicao, check []str
 	if column.PrimaryKey || column.Unique {
 		switch column.Type {
 		case "string", "char", "text":
-			return fmt.Sprintf("migrate.FakeCodeIndex(index, %d)", ouEntao(tamanho, 30))
+			return fmt.Sprintf("migrate.FakeCode(%d)", ouEntao(tamanho, 30))
 		case "int", "integer", "decimal":
-			return fmt.Sprintf("migrate.FakeIntIndex(index, 1, %d)", tetoNumerico(precisao))
+			return fmt.Sprintf("migrate.FakeInt(1, %d)", tetoNumerico(precisao))
 		}
 	}
 
@@ -309,7 +447,11 @@ func expressaoParaColuna(tabela string, column acao.ColunaDefinicao, check []str
 	case "datetime", "timestamp":
 		return "migrate.FakeDateTime()"
 	case "boolean":
-		return "migrate.FakeChoiceIndex(index, \"S\", \"N\")"
+		// 0/1 alternando pelo índice, não "S"/"N": a coerção de valor recusa "S" nos
+		// quatro dialetos ("não é um booleano válido"), então a factory gerada para
+		// coluna boolean simplesmente não rodava. O S/N abaixo continua valendo para
+		// CHAR(1), que em schema legado é flag de texto — ali é o tipo que difere.
+		return "migrate.FakeInt(0, 1)"
 	case "binary":
 		return "migrate.FakeBytes(128)"
 	}
@@ -319,10 +461,10 @@ func expressaoParaColuna(tabela string, column acao.ColunaDefinicao, check []str
 		documento = precisao
 	}
 	if strings.Contains(nome, "CNPJ") {
-		return comTamanho("migrate.FakeUniqueCNPJ", "migrate.FakeUniqueCNPJLength", documento)
+		return fmt.Sprintf("migrate.FakeUniqueCNPJ(%d)", documento)
 	}
 	if strings.Contains(nome, "CPF") {
-		return comTamanho("migrate.FakeUniqueCPF", "migrate.FakeUniqueCPFLength", documento)
+		return fmt.Sprintf("migrate.FakeUniqueCPF(%d)", documento)
 	}
 
 	if ehNumerica(column.Type) {
@@ -332,75 +474,72 @@ func expressaoParaColuna(tabela string, column acao.ColunaDefinicao, check []str
 		if ehCategorica(nome) || precisao == 1 {
 			return "migrate.FakeInt(1, 2)"
 		}
-		return fmt.Sprintf("migrate.FakeIntIndex(index, 1, %d)", tetoNumerico(precisao))
+		return fmt.Sprintf("migrate.FakeInt(1, %d)", tetoNumerico(precisao))
 	}
 
 	// Coluna de um caractere quase sempre é flag S/N, menos sexo.
 	if tamanho == 1 && !strings.Contains(nome, "SEXO") {
-		return "migrate.FakeChoiceIndex(index, \"S\", \"N\")"
+		return "migrate.FakeChoice(\"S\", \"N\")"
 	}
 
 	switch {
 	case strings.Contains(nome, "ESTADOCIVIL"), strings.Contains(nome, "ESTADO_CIVIL"):
-		return "migrate.FakeChoiceIndex(index, \"1\", \"2\", \"3\", \"4\", \"5\")"
+		return "migrate.FakeChoice(\"1\", \"2\", \"3\", \"4\", \"5\")"
 	case strings.Contains(nome, "SEXO"):
-		return "migrate.FakeChoiceIndex(index, \"M\", \"F\")"
+		return "migrate.FakeChoice(\"M\", \"F\")"
 	case strings.Contains(nome, "EMAIL"):
-		return porIndice("FakeEmailIndex", "FakeEmailIndexLength", tamanho)
+		return conceito("FakeEmail", tamanho)
 	case strings.Contains(nome, "CEP"):
-		return porIndice("FakeCEPIndex", "FakeCEPIndexLength", tamanho)
+		return conceito("FakeCEP", tamanho)
 	case nome == "UF", strings.HasSuffix(nome, "_UF"), strings.Contains(nome, "RG_UF"), strings.Contains(nome, "CTPS_UF"):
-		return localidade("uf", tamanho)
+		return "migrate.FakeUF()"
 	case strings.Contains(nome, "FONE"), strings.Contains(nome, "TELEFONE"),
 		strings.Contains(nome, "CELULAR"), strings.Contains(nome, "CONTATO"):
-		return porIndice("FakePhoneIndex", "FakePhoneIndexLength", tamanho)
+		return conceito("FakePhone", tamanho)
 	case ehIP(nome):
 		return "migrate.FakeIPv4()"
 	case strings.Contains(nome, "USERAGENT"):
 		return "migrate.FakeUserAgent()"
 	case strings.Contains(nome, "REQUESTID"), strings.Contains(nome, "UUID"):
-		return "migrate.FakeUUIDIndex(index)"
+		return "migrate.FakeUUID()"
 	case strings.Contains(nome, "METHOD"):
-		return "migrate.FakeChoiceIndex(index, \"GET\", \"POST\", \"PUT\", \"PATCH\", \"DELETE\")"
+		return "migrate.FakeChoice(\"GET\", \"POST\", \"PUT\", \"PATCH\", \"DELETE\")"
 	case strings.Contains(nome, "STATUSCODE"):
 		return "migrate.FakeInt(200, 599)"
 	case strings.Contains(nome, "HASH"), strings.Contains(nome, "SENHA"):
-		if tamanho > 0 {
-			return fmt.Sprintf("migrate.FakeHashIndexLength(index, %d)", tamanho)
-		}
-		return "migrate.FakeHashIndex(index)"
+		return conceito("FakeHash", tamanho)
 	case strings.Contains(nome, "LOGIN"), strings.Contains(nome, "USUARIO"):
-		return porIndice("FakeUsernameIndex", "FakeUsernameIndexLength", tamanho)
+		return conceito("FakeUsername", tamanho)
 	case strings.Contains(nome, "NOMEARQ"), strings.Contains(nome, "ARQPDF"), strings.Contains(nome, "FOTO"):
-		return porIndice("FakeFileNameIndex", "FakeFileNameIndexLength", tamanho)
+		return conceito("FakeFileName", tamanho)
 	case ehCodigoDeCidade(nome):
-		return localidade("codigo_cidade", tamanho)
+		return conceito("FakeCityCode", tamanho)
 	case ehCidade(nome):
-		return localidade("cidade", tamanho)
+		return conceito("FakeCity", tamanho)
 	case ehEstado(nome):
 		if tamanho > 2 {
-			return localidade("estado", tamanho)
+			return conceito("FakeState", tamanho)
 		}
-		return localidade("uf", tamanho)
+		return "migrate.FakeUF()"
 	case strings.Contains(nome, "PAIS"):
-		return localidade("nome_pais", tamanho)
+		return conceito("FakeCountry", tamanho)
 	case strings.Contains(nome, "NOME"), strings.Contains(nome, "RAZAO_SOCIAL"):
-		return porIndice("FakeNameIndex", "FakeNameIndexLength", tamanho)
+		return conceito("FakeName", tamanho)
 	case strings.Contains(nome, "BAIRRO"):
-		return porIndice("FakeDistrictIndex", "FakeDistrictIndexLength", tamanho)
+		return conceito("FakeDistrict", tamanho)
 	case strings.Contains(nome, "RUA"), strings.Contains(nome, "LOGRADOURO"):
-		return porIndice("FakeStreetIndex", "FakeStreetIndexLength", tamanho)
+		return conceito("FakeStreet", tamanho)
 	case strings.Contains(nome, "MATRICULA"):
-		return "migrate.FakeMatricula(index)"
+		return "migrate.FakeMatricula()"
 	case ehCodigo(nome):
-		return fmt.Sprintf("migrate.FakeCode(index, %d)", ouEntao(tamanho, 30))
+		return fmt.Sprintf("migrate.FakeCode(%d)", ouEntao(tamanho, 30))
 	}
 
 	padrao := 255
 	if column.Type == "text" {
 		padrao = 500
 	}
-	return fmt.Sprintf("migrate.FakeUniqueText(index, %q, %d)", tituloDaColuna(nome), ouEntao(tamanho, padrao))
+	return fmt.Sprintf("migrate.FakeUniqueText(%q, %d)", tituloDaColuna(nome), ouEntao(tamanho, padrao))
 }
 
 // overrideDoProjeto consulta factory.expressions.mappers do gokit.json. Regra
@@ -460,28 +599,14 @@ func expressaoDeDominio(valores []string) string {
 	for posicao, valor := range valores {
 		citados[posicao] = strconv.Quote(valor)
 	}
-	return fmt.Sprintf("migrate.FakeChoiceIndex(index, %s)", strings.Join(citados, ", "))
+	return fmt.Sprintf("migrate.FakeChoice(%s)", strings.Join(citados, ", "))
 }
 
-func comTamanho(semTamanho, comTamanho string, tamanho int) string {
-	if tamanho > 0 {
-		return fmt.Sprintf("%s(%d)", comTamanho, tamanho)
-	}
-	return semTamanho + "()"
-}
-
-func porIndice(semTamanho, comTamanho string, tamanho int) string {
-	if tamanho > 0 {
-		return fmt.Sprintf("migrate.%s(index, %d)", comTamanho, tamanho)
-	}
-	return fmt.Sprintf("migrate.%s(index)", semTamanho)
-}
-
-func localidade(campo string, tamanho int) string {
-	if tamanho > 0 {
-		return fmt.Sprintf("local(index, %q, %d)", campo, tamanho)
-	}
-	return fmt.Sprintf("local(index, %q)", campo)
+// conceito escreve a chamada de um conceito de texto. O tamanho é sempre escrito,
+// porque não há mais variante sem ele: 0 significa "sem limite". E o índice não
+// aparece — o motor o injeta.
+func conceito(nome string, tamanho int) string {
+	return fmt.Sprintf("migrate.%s(%d)", nome, tamanho)
 }
 
 func ouEntao(valor, padrao int) int {

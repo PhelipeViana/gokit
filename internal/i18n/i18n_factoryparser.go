@@ -10,6 +10,11 @@ func init() {
 			ES: "columna %s: %w",
 			EN: "column %s: %w",
 		},
+		"fcp_func_wrap": {
+			PT: "%s(): %w",
+			ES: "%s(): %w",
+			EN: "%s(): %w",
+		},
 		"fcp_problems": {
 			PT: "%d factory(ies) com problema:\n  - %s",
 			ES: "%d factory(ies) con problema:\n  - %s",
@@ -56,34 +61,9 @@ func init() {
 			EN: "Ruler.%s must be true or false",
 		},
 		"fcp_data_signature": {
-			PT: "Data precisa ser func(index int) migrate.Fields { return migrate.Fields{...} }",
-			ES: "Data debe ser func(index int) migrate.Fields { return migrate.Fields{...} }",
-			EN: "Data must be func(index int) migrate.Fields { return migrate.Fields{...} }",
-		},
-		"fcp_data_needs_index": {
-			PT: "Data precisa receber o índice da linha: func(index int) migrate.Fields",
-			ES: "Data debe recibir el índice de la fila: func(index int) migrate.Fields",
-			EN: "Data must take the row index: func(index int) migrate.Fields",
-		},
-		"fcp_data_one_return": {
-			PT: "o return de Data precisa devolver um único migrate.Fields{...}",
-			ES: "el return de Data debe devolver un único migrate.Fields{...}",
-			EN: "Data's return must yield a single migrate.Fields{...}",
-		},
-		"fcp_data_return_shape": {
-			PT: "o return de Data precisa ser migrate.Fields{...}",
-			ES: "el return de Data debe ser migrate.Fields{...}",
-			EN: "Data's return must be migrate.Fields{...}",
-		},
-		"fcp_data_only_location": {
-			PT: "%s: só `nome := migrate.FakeLocation()` e o return são aceitos dentro de Data",
-			ES: "%s: solo `nombre := migrate.FakeLocation()` y el return son aceptados dentro de Data",
-			EN: "%s: only `name := migrate.FakeLocation()` and the return are accepted inside Data",
-		},
-		"fcp_data_no_return": {
-			PT: "Data não tem return",
-			ES: "Data no tiene return",
-			EN: "Data has no return",
+			PT: "Data precisa ser migrate.Fields{...}",
+			ES: "Data debe ser migrate.Fields{...}",
+			EN: "Data must be migrate.Fields{...}",
 		},
 		"fcp_data_line_shape": {
 			PT: "%s: cada linha de Data precisa ser \"COLUNA\": valor",
@@ -105,27 +85,32 @@ func init() {
 			ES: "%s: columna %s: %w",
 			EN: "%s: column %s: %w",
 		},
-		"fcp_data_only_assign": {
-			PT: "%s: a única atribuição aceita dentro de Data é `nome := migrate.FakeLocation()`",
-			ES: "%s: la única asignación aceptada dentro de Data es `nombre := migrate.FakeLocation()`",
-			EN: "%s: the only assignment accepted inside Data is `name := migrate.FakeLocation()`",
-		},
 
-		// ── Vinculo e valores ──
+		// ── Reference e valores ──
+		"fcp_seeder_args": {
+			PT: "Seeder exige a tabela e ao menos um valor: Seeder(core.Table.Users, 1)",
+			ES: "Seeder exige la tabla y al menos un valor: Seeder(core.Table.Users, 1)",
+			EN: "Seeder requires the table and at least one value: Seeder(core.Table.Users, 1)",
+		},
+		"fcp_seeder_literal": {
+			PT: "os valores do Seeder precisam ser literais (número ou texto)",
+			ES: "los valores del Seeder deben ser literales (número o texto)",
+			EN: "Seeder values must be literals (number or string)",
+		},
 		"fcp_link_args": {
-			PT: "Vinculo exige a tabela e a coluna: Vinculo(\"TABELA\", \"COLUNA\")",
-			ES: "Vinculo exige la tabla y la columna: Vinculo(\"TABLA\", \"COLUMNA\")",
-			EN: "Vinculo requires the table and the column: Vinculo(\"TABLE\", \"COLUMN\")",
+			PT: "Reference recebe a tabela e, opcionalmente, a coluna do pai",
+			ES: "Reference recibe la tabla y, opcionalmente, la columna del padre",
+			EN: "Reference takes the table and, optionally, the parent column",
 		},
 		"fcp_link_table_quoted": {
-			PT: "o primeiro argumento de Vinculo precisa ser o nome da tabela entre aspas",
-			ES: "el primer argumento de Vinculo debe ser el nombre de la tabla entre comillas",
-			EN: "Vinculo's first argument must be the table name, quoted",
+			PT: "o primeiro argumento de Reference precisa ser o nome da tabela entre aspas",
+			ES: "el primer argumento de Reference debe ser el nombre de la tabla entre comillas",
+			EN: "Reference's first argument must be the table name, quoted",
 		},
 		"fcp_link_column_quoted": {
-			PT: "o segundo argumento de Vinculo precisa ser o nome da coluna entre aspas",
-			ES: "el segundo argumento de Vinculo debe ser el nombre de la columna entre comillas",
-			EN: "Vinculo's second argument must be the column name, quoted",
+			PT: "o segundo argumento de Reference precisa ser o nome da coluna entre aspas",
+			ES: "el segundo argumento de Reference debe ser el nombre de la columna entre comillas",
+			EN: "Reference's second argument must be the column name, quoted",
 		},
 		"fcp_literal_unsupported": {
 			PT: "literal não suportado: %s",
@@ -133,9 +118,9 @@ func init() {
 			EN: "unsupported literal: %s",
 		},
 		"fcp_ident_unsupported": {
-			PT: "%s não existe aqui; use um literal, %s ou uma função migrate.Fake*",
-			ES: "%s no existe aquí; use un literal, %s o una función migrate.Fake*",
-			EN: "%s does not exist here; use a literal, %s or a migrate.Fake* function",
+			PT: "%s não existe aqui; use um literal ou uma função migrate.Fake*",
+			ES: "%s no existe aquí; use un literal o una función migrate.Fake*",
+			EN: "%s does not exist here; use a literal or a migrate.Fake* function",
 		},
 		"fcp_operator_unsupported": {
 			PT: "operador não suportado em valor de factory",
@@ -152,20 +137,10 @@ func init() {
 			ES: "expresión no soportada; use un literal o una función migrate.Fake*",
 			EN: "unsupported expression; use a literal or a migrate.Fake* function",
 		},
-		"fcp_undeclared_location": {
-			PT: "%s não foi declarado; use `%s := migrate.FakeLocation()` antes do return",
-			ES: "%s no fue declarado; use `%s := migrate.FakeLocation()` antes del return",
-			EN: "%s was not declared; use `%s := migrate.FakeLocation()` before the return",
-		},
 		"fcp_call_unknown": {
 			PT: "chamada não reconhecida",
 			ES: "llamada no reconocida",
 			EN: "unrecognized call",
-		},
-		"fcp_location_must_bind": {
-			PT: "FakeLocation() precisa ser guardada antes do return: `local := migrate.FakeLocation()` e depois `local(%s, \"uf\", 2)`",
-			ES: "FakeLocation() debe guardarse antes del return: `local := migrate.FakeLocation()` y luego `local(%s, \"uf\", 2)`",
-			EN: "FakeLocation() must be bound before the return: `local := migrate.FakeLocation()` and then `local(%s, \"uf\", 2)`",
 		},
 		"fcp_not_in_vocabulary_hint": {
 			PT: "%s não existe no vocabulário das factories; você quis dizer %s?",
@@ -177,22 +152,17 @@ func init() {
 			ES: "%s no existe en el vocabulario de las factories",
 			EN: "%s does not exist in the factory vocabulary",
 		},
-		"fcp_location_accessor": {
-			PT: "o acessor de localidade exige (índice, campo) e aceita um tamanho: local(index, \"cidade\", 60)",
-			ES: "el accesor de localidad exige (índice, campo) y acepta un tamaño: local(index, \"cidade\", 60)",
-			EN: "the locality accessor requires (index, field) and accepts a size: local(index, \"cidade\", 60)",
-		},
 
 		// ── Aridade das funções Fake* ──
-		"fcp_needs_index": {
-			PT: "exige ao menos o índice",
-			ES: "exige al menos el índice",
-			EN: "requires at least the index",
+		"fcp_needs_values": {
+			PT: "exige ao menos um valor",
+			ES: "exige al menos un valor",
+			EN: "requires at least one value",
 		},
-		"fcp_needs_index_size": {
-			PT: "exige ao menos índice e tamanho",
-			ES: "exige al menos índice y tamaño",
-			EN: "requires at least an index and a size",
+		"fcp_needs_size": {
+			PT: "exige ao menos o tamanho",
+			ES: "exige al menos el tamaño",
+			EN: "requires at least a size",
 		},
 		"fcp_needs_n_got": {
 			PT: "exige %d argumento(s), recebeu %d",

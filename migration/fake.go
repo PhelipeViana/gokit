@@ -30,22 +30,164 @@ import (
 type Link struct {
 	Table  string
 	Column string
+	// Modo restringe quais valores do pai podem ser usados: "" percorre todos,
+	// "fixed" e "random" usam só os listados em Valores.
+	Modo    string
+	Valores []any
 }
 
-// Vinculo declara que a coluna recebe o valor de uma coluna da tabela pai.
+// Seeder aponta a referência para valores ESPECÍFICOS da tabela pai — tipicamente
+// os IDs de seed, que são estáveis entre ambientes por contrato.
 //
-//	"CIDADE_ID": migrate.Vinculo("CIDADES", "CIDADE_ID")
-func Vinculo(table string, column string) Link {
-	return Link{Table: table, Column: column}
+//	migrate.Seeder(core.Table.Users, 1)          // sempre o ID 1
+//	migrate.Seeder(core.Table.Users, 1, 2, 15)   // varia entre esses, na ordem
+//
+// Um valor é fixo por construção; vários são percorridos na ordem declarada,
+// conforme o índice da linha. Não há sorteio: a mesma factory produz o mesmo
+// resultado, e é isso que permite comparar os quatro bancos.
+//
+// Os valores podem ser escritos como número ou como texto — 1 e "1" são o mesmo
+// alvo, e a comparação é feita pelo texto.
+//
+// Se nenhum dos valores existir na tabela pai no momento da execução, a restrição
+// é IGNORADA em silêncio e o fluxo segue com o comportamento padrão. Uma FK
+// apontando para outra linha válida é melhor que uma execução interrompida — e
+// pior que as duas seria gravar referência para linha inexistente.
+func Seeder(table Table, valores ...any) Link {
+	return Link{Table: string(table), Modo: "seeder", Valores: valores}
 }
 
-// FakeChoice devolve sempre o primeiro valor. Use FakeChoiceIndex quando
-// quiser variar entre as linhas.
-func FakeChoice(values ...string) string {
-	if len(values) == 0 {
-		return ""
+// Reference declara que a coluna recebe um valor que JÁ EXISTE na coluna da
+// tabela pai — das linhas geradas na mesma execução, ou do banco.
+//
+//	core.Column.Users.CidadeId: migrate.Reference(core.Table.Cidades, core.Column.Cidades.Id)
+//
+// Não é dado fake: por isso não se chama Fake*. As funções Fake* são
+// determinísticas no índice; esta depende do que a tabela pai tem.
+//
+// Cuidado para não confundir com o References() da coluna, que é outra coisa:
+// aquele DECLARA a integridade no banco; este ESCOLHE um valor para a factory.
+// A coluna é opcional: quando a FK está declarada na migration, o gokit já sabe
+// para qual coluna ela aponta. Escrevê-la é o caso de schema legado, sem FK.
+//
+//	migrate.Reference(core.Table.Users)                       // qualquer linha do pai
+//	migrate.Reference(core.Table.Users, core.Column.Users.Id) // coluna explícita
+//
+// Para apontar valores específicos, use Seeder.
+func Reference(table Table, column ...ColumnName) Link {
+	link := Link{Table: string(table)}
+	if len(column) > 0 {
+		link.Column = string(column[0])
 	}
-	return values[0]
+	return link
+}
+
+// ---------------------------------------------------------------------------
+// Camada pública: um nome por conceito, sem índice na assinatura.
+//
+// É esta a lista que as factories escrevem. O índice da linha é IMPLÍCITO: o
+// motor sabe em que linha está e injeta na hora de avaliar, então escrevê-lo
+// seria repetir para o motor algo que ele já sabe.
+//
+// Chamada de verdade, fora do gokit, cada uma devolve o valor da PRIMEIRA linha.
+// É uma regra só, válida para todas — diferente do desenho anterior, em que cada
+// conceito tinha dois nomes e o mais curto devolvia constante, fazendo dez linhas
+// saírem idênticas sem avisar.
+//
+// `length` é o limite da coluna; 0 é sem limite. As funções *Index abaixo são a
+// camada de implementação: elas continuam existindo e recebem o índice de
+// verdade, mas não estão no vocabulário e não podem ser escritas numa factory.
+// ---------------------------------------------------------------------------
+
+func FakeChoice(values ...string) string           { return FakeChoiceIndex(0, values...) }
+func FakeInt(min int, max int) int                 { return FakeIntIndex(0, min, max) }
+func FakeDecimal(precision int, scale int) float64 { return FakeDecimalIndex(0, precision, scale) }
+func FakeString(length int) string                 { return FakeStringIndex(0, length) }
+func FakeText(length int) string                   { return FakeTextIndex(0, length) }
+func FakeBytes(length int) []byte                  { return FakeBytesIndex(0, length) }
+func FakeValue() any                               { return nil }
+
+func FakeUniqueText(prefix string, length int) string { return FakeUniqueTextIndex(0, prefix, length) }
+func FakeCode(length int) string                      { return FakeCodeIndex(0, length) }
+func FakeCodePrefix(prefix string, length int) string { return FakeCodePrefixIndex(0, prefix, length) }
+func FakeMatricula() string                           { return FakeMatriculaIndex(0) }
+
+// FakeUniqueCPF e FakeUniqueCNPJ são a exceção à regra do índice: elas variam
+// entre EXECUÇÕES, não entre linhas, para não colidir com documento que uma
+// rodada anterior já gravou. Por isso ignoram o índice.
+func FakeUniqueCPF(length int) string  { return formatDocumentLength(uniqueCPF(), length) }
+func FakeUniqueCNPJ(length int) string { return formatDocumentLength(uniqueCNPJ(), length) }
+
+func FakeCPF(length int) string  { return FakeCPFIndexLength(0, length) }
+func FakeCNPJ(length int) string { return FakeCNPJIndexLength(0, length) }
+
+func FakeName(length int, genders ...string) string {
+	return FakeNameIndexLength(0, length, genders...)
+}
+func FakeUsername(length int) string { return FakeUsernameIndexLength(0, length) }
+func FakeEmail(length int) string    { return FakeEmailIndexLength(0, length) }
+func FakePhone(length int) string    { return FakePhoneIndexLength(0, length) }
+
+func FakeCEP(length int) string      { return FakeCEPIndexLength(0, length) }
+func FakeUF() string                 { return FakeUFIndex(0) }
+func FakeDistrict(length int) string { return FakeDistrictIndexLength(0, length) }
+func FakeStreet(length int) string   { return FakeStreetIndexLength(0, length) }
+func FakeCity(length int) string     { return FakeCityIndexLength(0, length) }
+func FakeCityCode(length int) string { return FakeCityCodeIndexLength(0, length) }
+func FakeState(length int) string    { return FakeStateIndexLength(0, length) }
+func FakeCountry(length int) string  { return FakeCountryIndexLength(0, length) }
+
+func FakeDate() time.Time     { return FakeDateIndex(0) }
+func FakeDateTime() time.Time { return FakeDateTimeIndex(0) }
+
+func FakeUUID() string               { return FakeUUIDIndex(0) }
+func FakeHash(length int) string     { return FakeHashIndexLength(0, length) }
+func FakeFileName(length int) string { return FakeFileNameIndexLength(0, length) }
+func FakeIPv4() string               { return FakeIPv4Index(0) }
+
+// ------------------------------------------------- camada de implementação
+
+// FakeDecimalIndex caminha dentro da precisão declarada, começando no menor
+// valor representável com aquela escala.
+func FakeDecimalIndex(index int, precision int, scale int) float64 {
+	if precision <= 0 {
+		precision = 10
+	}
+	if scale < 0 {
+		scale = 0
+	}
+	inteiras := precision - scale
+	if inteiras < 1 {
+		inteiras = 1
+	}
+	maximo := math.Pow10(inteiras) - 1/math.Pow10(scale)
+	if scale == 0 {
+		maximo = math.Pow10(inteiras) - 1
+		return float64((positiveIndex(index) % int(maximo+1)))
+	}
+	passo := 1 / math.Pow10(scale)
+	valor := passo + float64(positiveIndex(index))*(1+passo)
+	if valor > maximo {
+		// Volta ao começo em vez de estourar a precisão: DECIMAL(4,2) não aceita
+		// 100.00, e o erro viria do banco, não da factory.
+		valor = passo + math.Mod(valor, maximo)
+	}
+	return math.Round(valor*math.Pow10(scale)) / math.Pow10(scale)
+}
+
+func FakeStringIndex(index int, length int) string {
+	return limitFakeText(fmt.Sprintf("Texto fake %d", positiveIndex(index)+1), length)
+}
+
+func FakeTextIndex(index int, length int) string {
+	return limitFakeText(fmt.Sprintf("Texto gerado automaticamente para validar a factory na linha %d.", positiveIndex(index)+1), length)
+}
+
+func FakeBytesIndex(index int, length int) []byte {
+	if length <= 0 {
+		return []byte{}
+	}
+	return []byte(FakeStringIndex(index, length))
 }
 
 // FakeChoiceIndex percorre os valores de forma circular conforme o índice da
@@ -55,13 +197,6 @@ func FakeChoiceIndex(index int, values ...string) string {
 		return ""
 	}
 	return values[positiveIndex(index)%len(values)]
-}
-
-func FakeInt(min int, max int) int {
-	if max < min {
-		return max
-	}
-	return min
 }
 
 func FakeIntIndex(index int, min int, max int) int {
@@ -79,42 +214,11 @@ func FakeIntIndex(index int, min int, max int) int {
 	return min + (positiveIndex(index) % span)
 }
 
-func FakeDecimal(precision int, scale int) float64 {
-	if precision <= 0 {
-		precision = 10
-	}
-	if scale <= 0 {
-		return float64(FakeInt(1, 9))
-	}
-	integerDigits := precision - scale
-	if integerDigits < 1 {
-		integerDigits = 1
-	}
-	value := 1 + 1/math.Pow10(scale)
-	maxValue := math.Pow10(integerDigits) - (1 / math.Pow10(scale))
-	if value > maxValue {
-		value = maxValue
-	}
-	return math.Round(value*math.Pow10(scale)) / math.Pow10(scale)
-}
-
-func FakeString(length int) string {
-	return limitFakeText("Texto fake para teste", length)
-}
-
-func FakeText(length int) string {
-	return limitFakeText("Texto gerado automaticamente para validar a factory durante testes de desenvolvimento.", length)
-}
-
-func FakeUniqueText(index int, prefix string, length int) string {
+func FakeUniqueTextIndex(index int, prefix string, length int) string {
 	return limitFakeText(fmt.Sprintf("%s %d", prefix, positiveIndex(index)+1), length)
 }
 
-func FakeCode(index int, length int) string {
-	return tailFakeText(fmt.Sprintf("COD-%d", positiveIndex(index)+1), length)
-}
-
-func FakeCodePrefix(index int, prefix string, length int) string {
+func FakeCodePrefixIndex(index int, prefix string, length int) string {
 	return tailFakeText(fmt.Sprintf("%s%d", prefix, positiveIndex(index)+1), length)
 }
 
@@ -124,7 +228,7 @@ func FakeCodeIndex(index int, length int) string {
 	return tailFakeText(fmt.Sprintf("COD-%d", positiveIndex(index)+1), length)
 }
 
-func FakeMatricula(index int) string {
+func FakeMatriculaIndex(index int) string {
 	return fmt.Sprintf("MAT%06d", positiveIndex(index)+1)
 }
 
@@ -141,8 +245,8 @@ func init() {
 	uniqueCNPJSequence.Store((seed >> 17) % 100_000_000)
 }
 
-// FakeUniqueCPF gera um CPF válido e único durante a execução atual.
-func FakeUniqueCPF() string {
+// uniqueCPF gera um CPF válido e único durante a execução atual.
+func uniqueCPF() string {
 	for {
 		base := uniqueCPFSequence.Add(1) % 1_000_000_000
 		digits := digitsFromNumber(int(base), 9)
@@ -155,26 +259,14 @@ func FakeUniqueCPF() string {
 	}
 }
 
-// FakeUniqueCPFLength gera um CPF único respeitando o tamanho da coluna.
-func FakeUniqueCPFLength(length int) string {
-	return formatDocumentLength(FakeUniqueCPF(), length)
-}
-
-// FakeUniqueCNPJ gera um CNPJ válido e único durante a execução atual.
-func FakeUniqueCNPJ() string {
+// uniqueCNPJ gera um CNPJ válido e único durante a execução atual.
+func uniqueCNPJ() string {
 	root := uniqueCNPJSequence.Add(1) % 100_000_000
 	digits := append(digitsFromNumber(int(root), 8), 0, 0, 0, 1)
 	first := cnpjDigit(digits, []int{5, 4, 3, 2, 9, 8, 7, 6, 5, 4, 3, 2})
 	second := cnpjDigit(append(digits, first), []int{6, 5, 4, 3, 2, 9, 8, 7, 6, 5, 4, 3, 2})
 	return formatCNPJ(digits, first, second)
 }
-
-// FakeUniqueCNPJLength gera um CNPJ único respeitando o tamanho da coluna.
-func FakeUniqueCNPJLength(length int) string {
-	return formatDocumentLength(FakeUniqueCNPJ(), length)
-}
-
-func FakeCPF() string { return FakeCPFIndex(0) }
 
 func FakeCPFIndex(index int) string {
 	digits := digitsFromNumber(100000000+positiveIndex(index), 9)
@@ -186,8 +278,6 @@ func FakeCPFIndex(index int) string {
 func FakeCPFIndexLength(index int, length int) string {
 	return formatDocumentLength(FakeCPFIndex(index), length)
 }
-
-func FakeCNPJ() string { return FakeCNPJIndex(0) }
 
 func FakeCNPJIndex(index int) string {
 	digits := digitsFromNumber(112223330001+positiveIndex(index), 12)
@@ -242,8 +332,6 @@ func allDocumentDigitsEqual(digits []int) bool {
 	return true
 }
 
-func FakeEmail() string { return FakeEmailIndex(0) }
-
 func FakeEmailIndex(index int) string {
 	return fmt.Sprintf("usuario.%03d@example.com", positiveIndex(index)+1)
 }
@@ -251,8 +339,6 @@ func FakeEmailIndex(index int) string {
 func FakeEmailIndexLength(index int, length int) string {
 	return limitFakeText(FakeEmailIndex(index), length)
 }
-
-func FakeCEP() string { return FakeCEPIndex(0) }
 
 func FakeCEPIndex(index int) string {
 	return fmt.Sprintf("78%03d-%03d", positiveIndex(index)%1000, (positiveIndex(index)+100)%1000)
@@ -262,11 +348,7 @@ func FakeCEPIndexLength(index int, length int) string {
 	return formatDocumentLength(FakeCEPIndex(index), length)
 }
 
-func FakeUF() string { return FakeUFIndex(0) }
-
 func FakeUFIndex(index int) string { return fakeLocationIndex(index).UF }
-
-func FakePhone() string { return FakePhoneIndex(0) }
 
 func FakePhoneIndex(index int) string {
 	number := 900000000 + (positiveIndex(index) % 99999999)
@@ -277,11 +359,14 @@ func FakePhoneIndexLength(index int, length int) string {
 	return formatDocumentLength(FakePhoneIndex(index), length)
 }
 
-func FakeIPv4() string { return "127.0.0.1" }
+// FakeIPv4Index caminha no último octeto, começando em 127.0.0.1.
+func FakeIPv4Index(index int) string {
+	return fmt.Sprintf("127.0.0.%d", 1+positiveIndex(index)%254)
+}
 
+// FakeUserAgent é constante de propósito: user-agent repetido em dez linhas é
+// dado plausível, e nenhuma coluna de user-agent é única.
 func FakeUserAgent() string { return "GoKitFactory/1.0" }
-
-func FakeUUID() string { return FakeUUIDIndex(0) }
 
 func FakeUUIDIndex(index int) string {
 	return fmt.Sprintf("00000000-0000-4000-8000-%012d", positiveIndex(index)+1)
@@ -289,8 +374,6 @@ func FakeUUIDIndex(index int) string {
 
 // FakeHash varia a cada execução: serve para colunas com índice único onde
 // repetir o valor de uma rodada anterior causaria violação.
-func FakeHash() string { return FakeHashIndex(0) }
-
 func FakeHashIndex(index int) string { return fakeHashIndexValue(index, 64) }
 
 func FakeHashIndexLength(index int, length int) string {
@@ -321,8 +404,6 @@ func FakeHashPassword() string {
 	return "$2y$12$3YZte70BSGA0rDmtnRH1t.8M696/MOUR940JfvjeanBfGY/TTI6Ve"
 }
 
-func FakeUsername() string { return FakeUsernameIndex(0) }
-
 func FakeUsernameIndex(index int) string {
 	return fmt.Sprintf("usuario.teste.%03d", positiveIndex(index)+1)
 }
@@ -330,8 +411,6 @@ func FakeUsernameIndex(index int) string {
 func FakeUsernameIndexLength(index int, length int) string {
 	return limitFakeText(FakeUsernameIndex(index), length)
 }
-
-func FakeFileName() string { return FakeFileNameIndex(0) }
 
 func FakeFileNameIndex(index int) string {
 	return fmt.Sprintf("doc_teste_%03d.pdf", positiveIndex(index)+1)
@@ -341,25 +420,25 @@ func FakeFileNameIndexLength(index int, length int) string {
 	return limitFakeText(FakeFileNameIndex(index), length)
 }
 
-func FakeDate() time.Time {
-	return time.Date(2024, 1, 1, 0, 0, 0, 0, time.Local)
-}
+// dataBase é a origem das datas fake. Ficava embutida em FakeDate(), mas depois
+// que FakeDate passou a ser a amostra da primeira linha — ou seja,
+// FakeDateIndex(0) — usá-la como base fecharia um ciclo infinito.
+var (
+	dataBase     = time.Date(2024, 1, 1, 0, 0, 0, 0, time.Local)
+	dataHoraBase = time.Date(2024, 1, 1, 9, 30, 0, 0, time.Local)
+)
 
-func FakeDateTime() time.Time {
-	return time.Date(2024, 1, 1, 9, 30, 0, 0, time.Local)
-}
-
-// FakeDateIndex devolve data que VARIA com o índice (um mês por índice, a partir
-// de 2024-01-01), determinística como as demais Fake*. FakeDate é constante e
-// por isso não exercita intervalo, ordenação nem MIN/MAX por data.
+// FakeDateIndex devolve data que VARIA com o índice: um mês por índice, a partir
+// de 2024-01-01. É o que faz intervalo, ordenação e MIN/MAX por data terem o que
+// exercitar.
 func FakeDateIndex(index int) time.Time {
-	return FakeDate().AddDate(0, normalizaIndiceData(index), 0)
+	return dataBase.AddDate(0, normalizaIndiceData(index), 0)
 }
 
 // FakeDateTimeIndex é a versão com hora: avança mês e hora conforme o índice.
 func FakeDateTimeIndex(index int) time.Time {
 	i := normalizaIndiceData(index)
-	return FakeDateTime().AddDate(0, i, 0).Add(time.Duration(i) * time.Hour)
+	return dataHoraBase.AddDate(0, i, 0).Add(time.Duration(i) * time.Hour)
 }
 
 // normalizaIndiceData mantém o índice em 0..11 para as datas ficarem no mesmo
@@ -370,15 +449,6 @@ func normalizaIndiceData(index int) int {
 	}
 	return index % 12
 }
-
-func FakeBytes(length int) []byte {
-	if length <= 0 {
-		return []byte{}
-	}
-	return []byte(FakeString(length))
-}
-
-func FakeValue() any { return nil }
 
 // ---------------------------------------------------------------- localidade
 
@@ -409,50 +479,12 @@ var fakeLocations = []fakeLocation{
 	{City: "Luziania", State: "Goias", UF: "GO", CityCode: "16", Country: "Brasil"},
 }
 
-// FakeLocation devolve um acessor que mantém cidade, estado, UF e código
-// coerentes entre si na mesma linha — sem isso a factory gera "Cuiabá/SP".
-//
-//	local := migrate.FakeLocation()
-//	"CIDADE": local(index, "cidade", 60),
-//	"UF":     local(index, "uf", 2),
-func FakeLocation() func(index int, field string, length ...int) string {
-	return func(index int, field string, length ...int) string {
-		location := fakeLocationIndex(index)
-		var value string
-		switch strings.ToLower(field) {
-		case "cidade", "city", "nome_cidade":
-			value = location.City
-		case "estado", "state", "nome_estado":
-			value = location.State
-		case "uf", "sigla", "uf_sigla":
-			value = location.UF
-		case "codigo_cidade", "cod_cidade", "codigo_municipio", "cod_municipio":
-			value = location.CityCode
-		case "pais", "nome_pais", "country":
-			value = location.Country
-		default:
-			value = location.City
-		}
-		if len(length) == 0 {
-			return value
-		}
-		limit := length[0]
-		// "Mato Grosso" não cabe em VARCHAR(2), mas "MT" cabe e continua correto.
-		if strings.EqualFold(field, "estado") && len(value) > limit && limit >= len(location.UF) {
-			return location.UF
-		}
-		return limitFakeText(value, limit)
-	}
-}
-
 func fakeLocationIndex(index int) fakeLocation {
 	if len(fakeLocations) == 0 {
 		return fakeLocation{}
 	}
 	return fakeLocations[positiveIndex(index)%len(fakeLocations)]
 }
-
-func FakeDistrict() string { return FakeDistrictIndex(0) }
 
 func FakeDistrictIndex(index int) string {
 	return pickFake(index, []string{"Centro", "Jardim das Americas", "Boa Esperanca", "Santa Rosa", "Morada do Ouro"})
@@ -462,8 +494,6 @@ func FakeDistrictIndexLength(index int, length int) string {
 	return limitFakeText(FakeDistrictIndex(index), length)
 }
 
-func FakeStreet() string { return FakeStreetIndex(0) }
-
 func FakeStreetIndex(index int) string {
 	return pickFake(index, []string{"Rua das Flores", "Avenida Brasil", "Rua Sao Jose", "Avenida Mato Grosso", "Rua das Palmeiras"})
 }
@@ -472,23 +502,17 @@ func FakeStreetIndexLength(index int, length int) string {
 	return limitFakeText(FakeStreetIndex(index), length)
 }
 
-func FakeCity() string { return FakeCityIndex(0) }
-
 func FakeCityIndex(index int) string { return fakeLocationIndex(index).City }
 
 func FakeCityIndexLength(index int, length int) string {
 	return limitFakeText(FakeCityIndex(index), length)
 }
 
-func FakeCityCode() string { return FakeCityCodeIndex(0) }
-
 func FakeCityCodeIndex(index int) string { return fakeLocationIndex(index).CityCode }
 
 func FakeCityCodeIndexLength(index int, length int) string {
 	return limitFakeText(FakeCityCodeIndex(index), length)
 }
-
-func FakeState() string { return FakeStateIndex(0) }
 
 func FakeStateIndex(index int) string { return fakeLocationIndex(index).State }
 
@@ -502,6 +526,14 @@ func FakeStateIndexLength(index int, length int) string {
 		return location.UF
 	}
 	return limitFakeText(location.UF, length)
+}
+
+// FakeCountryIndex é o país da mesma localidade da linha. Existia só como campo
+// do acessor de localidade; virou função própria quando o acessor saiu.
+func FakeCountryIndex(index int) string { return fakeLocationIndex(index).Country }
+
+func FakeCountryIndexLength(index int, length int) string {
+	return limitFakeText(FakeCountryIndex(index), length)
 }
 
 // -------------------------------------------------------------------- nomes
@@ -550,8 +582,6 @@ var (
 		"Drummond", "Franco", "Godoy", "Junqueira", "Lacerda",
 	}
 )
-
-func FakeName() string { return FakeNameIndex(0) }
 
 func FakeNameIndex(index int, genders ...string) string {
 	firstNames := fakeFirstNames(genders)
@@ -640,8 +670,11 @@ func fakeFirstNames(genders []string) []string {
 // multibyte no meio: VARCHAR2(5) conta bytes no Oracle, e meio caractere
 // gravado vira lixo na leitura.
 func limitFakeText(value string, length int) string {
+	// 0 é "sem limite", como já era em tailFakeText e formatDocumentLength. Antes
+	// esta devolvia vazio, então coluna de texto sem tamanho declarado nascia em
+	// branco — o oposto de dado de teste útil.
 	if length <= 0 {
-		return ""
+		return value
 	}
 	if len(value) <= length {
 		return value

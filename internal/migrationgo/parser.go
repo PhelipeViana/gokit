@@ -896,8 +896,6 @@ func evalColumn(expression ast.Expr) (acao.Coluna, error) {
 			column = column.NotNull()
 		case "Unique":
 			column = column.Unique()
-		case "Index":
-			column = column.Index()
 		case "Default":
 			if len(call.Args) != 1 {
 				return acao.Coluna{}, i18n.Errf("mgp_default_value")

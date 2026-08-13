@@ -58,6 +58,27 @@ em vez de parar no primeiro.
 
 Outros pontos concretos:
 
+- **O apelido é indireção proposital, e é ela que segura a integridade do corpus.**
+  `core.Table.X` vale o APELIDO, não o nome físico, e `advanceAliases` move o
+  apelido no `RenameTable` — então migration escrita hoje continua correta depois
+  de a tabela física ser renomeada. Quem mexer aqui não deve "consertar" isso.
+- **Mas o apelido é resolvido por OPERAÇÃO, não por arquivo.** `advanceAliases` roda
+  dentro do laço de execução: um `CreateIndex` sobre a tabela que o `CreateTable` do
+  mesmo arquivo acabou de criar precisa resolver o apelido. Antes avançava no fim do
+  arquivo, e o validador — que já observava por operação — aprovava o que o
+  `migrate run` recusava. Fica latente com tabela de nome único, porque aí apelido e
+  nome físico coincidem.
+- **Índice se declara por operação, não na coluna.** `migrate.CreateIndex(tabela,
+  nome, colunas...)` é a única forma; o `.Index()` da coluna foi removido porque
+  era lido num lugar só e produzia índice **apenas no MySQL** — nos outros três não
+  fazia nada. O nome explícito também importa: o Oracle trunca identificador em 30
+  e o nome de índice é único por schema nele e no SQL Server.
+- **`.Unique()` na coluna, ao contrário, vale nos quatro** — vira `UNIQUE` inline no
+  `columnDefinition`, e alimenta a ORM, a documentação e a validação de factory.
+- **Coluna `AUTO_INCREMENT` fora da chave não precisa de cuidado no corpus:** o
+  executor emite uma `UNIQUE KEY` própria para ela quando o dialeto é MySQL, que é
+  o único que exige a identidade indexada. O mesmo corpus vale nos quatro.
+
 - **`DEFAULT` antes das constraints inline.** `PRIMARY KEY DEFAULT x` dá ORA-03076.
   Ordem que passa nos quatro: tipo → `DEFAULT` → nulidade → constraint.
 - **PK composta** vira constraint de tabela; `PRIMARY KEY` inline em cada coluna
@@ -132,15 +153,12 @@ existe mais.
 ```go
 func CidadesFactory() migrate.Factory {
 	return migrate.Factory{
-		Table: "CIDADES",
-		Ruler: migrate.Ruler{Count: 10, Update: true, Active: true},
-		Data: func(index int) migrate.Fields {
-			local := migrate.FakeLocation()
-			return migrate.Fields{
-				"cidade_id": migrate.FakeIntIndex(index, 1, 999999999),
-				"uf":        local(index, "uf", 2),
-				"orgao_id":  migrate.Vinculo("ORGAOS", "ORGAO_ID"),
-			}
+		Table: core.Table.Cidades,
+		Ruler: migrate.Ruler{Count: 10, Active: true},
+		Data: migrate.Fields{
+			core.Column.Cidades.CidadeId: migrate.FakeInt(1, 999999999),
+			core.Column.Cidades.Uf:       migrate.FakeUF(),
+			core.Column.Cidades.OrgaoId:  migrate.Reference(core.Table.Orgaos),
 		},
 	}
 }
@@ -149,22 +167,50 @@ func CidadesFactory() migrate.Factory {
 O que o avaliador aceita dentro de `Data`, e nada além disso:
 
 - literais (texto, número, `true`, `false`, `nil`, negativos)
-- o identificador do parâmetro de índice
 - as funções de [migration/fake.go](migration/fake.go) **registradas** em
-  [internal/factorygo/vocabulario.go](internal/factorygo/vocabulario.go)
-- `migrate.Vinculo("TABELA", "COLUNA")`
-- um único `nome := migrate.FakeLocation()` antes do `return`
+  [internal/factorygo/vocabulario.go](internal/factorygo/vocabulario.go) —
+  **sem índice na chamada**, ver abaixo
+- `migrate.Reference(tabela)` — pega um valor que já existe na coluna do pai; a
+  coluna é opcional porque a FK já a declara
+- `migrate.Seeder(tabela, 1, 2, 15)` — restringe a IDs específicos, percorridos na
+  ordem declarada pelo índice. Número ou texto dá no mesmo. Se nenhum existir no
+  pai, a restrição é ignorada em silêncio e vale o padrão
 
-A closure existe só para dar significado a `index` — sem ela o arquivo não
-compilaria, e ele precisa continuar sendo Go válido para o editor e o
-`go build ./...` do projeto.
+`Data` é um **mapa**, não uma closure. Era `func(index int) migrate.Fields`, porque
+o arquivo escrevia `index` dentro do mapa e o parâmetro precisava existir para o
+arquivo ser Go válido; com o índice implícito ninguém mais o escreve, e o invólucro
+deixou de servir ao compilador e ao motor. Não existe statement dentro de `Data` —
+o acessor `local := migrate.FakeLocation()` era o único, e saiu com ele.
+
+Coerência de localidade **não** se perdeu: `FakeCity`, `FakeUF`, `FakeState`,
+`FakeCityCode`, `FakeDistrict`, `FakeStreet` e `FakeCountry` derivam todas do mesmo
+`fakeLocationIndex(index)`, então a linha continua saindo "Cuiaba/MT" em vez de
+"Cuiabá/SP". Medido antes de remover o acessor, e travado por teste.
+
+**O índice da linha é implícito.** Ele não aparece na chamada: o motor sabe em que
+linha está e injeta ao avaliar. São 34 nomes, um por conceito, e `length` é sempre
+escrito (0 é sem limite). O desenho anterior tinha 72 nomes, cada conceito em dois
+sabores — `FakeName()` e `FakeNameIndex(index, …)` —, e o curto devolvia
+**constante**: três das sete colunas de `pedidos` saíam idênticas nas dez linhas
+sem nenhum aviso.
+
+Correspondência para quem lê arquivo antigo: `FakeXIndex`/`FakeXIndexLength` →
+`FakeX(length)`. Os nomes longos continuam existindo em `fake.go` como camada de
+implementação, mas **não estão no vocabulário** — escrevê-los numa factory dá erro
+com a sugestão do nome novo. Chamada de verdade, fora do gokit, a função pública
+devolve o valor da PRIMEIRA linha; é uma regra só, válida para todas.
 
 Invariantes:
 
-1. **Toda função `Fake*` é determinística no índice.** É o que permite comparar
-   o resultado entre os quatro bancos. As exceções são `FakeUnique*` e
-   `FakeHash*`, que precisam variar entre execuções para não colidir com dado
-   já gravado.
+1. **Toda função `Fake*` é determinística no índice E varia por linha.** O
+   determinismo é o que permite comparar o resultado entre os quatro bancos; a
+   variação é o que faz o dado servir de teste.
+   [variacao_test.go](internal/factorygo/variacao_test.go) exercita os 34 nomes e
+   falha se algum devolver o mesmo valor nas dez linhas — ou se um nome novo entrar
+   no vocabulário sem chamada de teste.
+   Duas exceções, ambas documentadas no arquivo: `FakeUnique*` varia entre
+   EXECUÇÕES em vez de por linha (senão colide com documento já gravado), e
+   `FakeUserAgent`/`FakeHashPassword`/`FakeValue` são constantes por mérito.
 2. **Função nova em `fake.go` só existe para as factories depois de registrada
    no vocabulário.** Não há resolução de símbolo pelo compilador.
 3. **Factory limpa a tabela antes de inserir** — é dado descartável, ao
@@ -175,8 +221,12 @@ Invariantes:
    schema legado é rompido no ponto de menor dependência, não aborta.
 5. **`factory create` preserva o que já está escrito.** Mantém a expressão de
    cada coluna existente e o `Ruler`; só acerta a lista de colunas contra a
-   migration. `Update: false` congela o arquivo inteiro.
-6. **Regra específica do projeto vai em `factory.expressions.mappers`** no
+   migration. Não há como congelar o arquivo: acertar a lista de colunas é
+   obrigatório, senão a factory cita coluna que a tabela não tem mais.
+6. **Factory não popula tabela que já tem dados.** Ela é simulador de dados de
+   teste; dado real (ou de seed) não é sobrescrito sem `--force`. É também o que
+   mantém os IDs do seed vivos para o `Seeder` encontrar.
+7. **Regra específica do projeto vai em `factory.expressions.mappers`** no
    `gokit.json`, não em código do plugin.
 
 ```bash
@@ -184,6 +234,13 @@ gokit factory validate          # confere contra as migrations, sem tocar no ban
 gokit factory create [tabela]   # gera/atualiza a partir do corpus
 gokit factory run [tabela...]   # popula; sem argumento, todas as ativas
 ```
+
+Todas as factories moram num **arquivo único**, `internal/gokit/factory/factories.go`,
+uma função por tabela. Não há regra implícita no fatiamento por tabela, e o
+`Active` é por FUNÇÃO — conviver no mesmo arquivo não acopla nada. A leitura
+aceita qualquer `.go` da pasta com várias factories dentro, então uma organização
+manual continua funcionando; o gerador é que consolida (e apaga os
+`<tabela>_factory.go` que consolidou, senão seria função duplicada no pacote).
 
 ## Onde as coisas ficam
 

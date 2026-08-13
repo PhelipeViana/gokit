@@ -120,7 +120,7 @@ func init() {
 			ES: "El valor debe ser menor o igual a 100",
 			EN: "Value must be less than or equal to 100",
 		},
-		// Erro do loader de relação gerado no core.gen.go: só acontece se o
+		// Erro do loader de relação gerado no entities.gen.go: só acontece se o
 		// motor passar uma fatia de outro tipo, então é diagnóstico interno.
 		"gen_msg_wrong_parents": {
 			PT: "relação %s: pais não são []%s",

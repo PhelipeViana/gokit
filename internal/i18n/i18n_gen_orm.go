@@ -1,6 +1,6 @@
 package i18n
 
-// Comentários emitidos no core.gen.go (mapeamento ORM gerado das migrations).
+// Comentários emitidos no entities.gen.go (mapeamento ORM gerado das migrations).
 // O texto sai no idioma do gokit.json no momento da GERAÇÃO — trocar o idioma
 // exige regerar. A tag de anotação (TODO/NOTE/...) fica em inglês de propósito:
 // é o que IDEs, linters e o todo-tree reconhecem.
@@ -15,9 +15,26 @@ func init() {
 			ES: "Generado a partir de las migraciones por GoKit. Los cambios aquí se pierden en la próxima generación.",
 			EN: "Generated from the migrations by GoKit. Changes here are lost on the next generation.",
 		},
+		// Natureza do arquivo, emitida no cabeçalho. Dois arquivos gerados no mesmo
+		// pacote têm semânticas OPOSTAS de regeneração — um reflete o schema atual e
+		// apaga o que saiu dele, o outro acumula e nunca remove. Sem essa declaração,
+		// nada no nome nem no sufixo .gen.go avisa a diferença.
+		"gen_nature_entities": {
+			PT: "Entidades da ORM: Row tipado, operadores por coluna, relações e scanner.\nReflete o schema ATUAL — tabela derrubada DESAPARECE daqui.\nCamada OPCIONAL: serve a quem usa a ORM. Migration, seeder e factory não dependem deste arquivo.",
+			ES: "Entidades del ORM: Row tipado, operadores por columna, relaciones y scanner.\nRefleja el esquema ACTUAL — una tabla eliminada DESAPARECE de aquí.\nCapa OPCIONAL: sirve a quien usa el ORM. Migración, seeder y factory no dependen de este archivo.",
+			EN: "ORM entities: typed Row, per-column operators, relations and scanner.\nMirrors the CURRENT schema — a dropped table DISAPPEARS from here.\nOPTIONAL layer: it serves whoever uses the ORM. Migration, seeder and factory do not depend on this file.",
+		},
 		// O pacote core reúne as entidades e os agrupadores Table/View. Tabela cujo
 		// nome colide com um agrupador não tem saída automática: renomear a entidade
 		// esconderia a colisão, e renomear o agrupador quebraria toda migration.
+		// Colisão entre colunas da MESMA tabela. Não há .Alias() de coluna, então a
+		// saída é renomear na migration — e a mensagem tem de dizer isso, porque o
+		// sintoma sem ela seria "campo redeclarado" num arquivo que ninguém escreveu.
+		"gen_orm_column_collision": {
+			PT: "na tabela %s, as colunas %q e %q geram o mesmo identificador Go (%s), e o arquivo gerado não compilaria; renomeie uma delas na migration",
+			ES: "en la tabla %s, las columnas %q y %q generan el mismo identificador Go (%s), y el archivo generado no compilaría; renombre una de ellas en la migración",
+			EN: "in table %s, columns %q and %q generate the same Go identifier (%s), and the generated file would not compile; rename one of them in the migration",
+		},
 		"gen_orm_reserved_name": {
 			PT: "a tabela %q gera a entidade core.%s, que colide com o agrupador core.%s do catálogo; dê um apelido à tabela com CreateTable(%q).Alias(\"outro_nome\")",
 			ES: "la tabla %q genera la entidad core.%s, que colisiona con el agrupador core.%s del catálogo; asigne un alias a la tabla con CreateTable(%q).Alias(\"otro_nombre\")",

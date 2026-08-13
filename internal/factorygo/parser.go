@@ -28,9 +28,9 @@ type Campo struct {
 	Coluna string
 	// Valor gera o dado da linha. É nil quando o campo é um vínculo.
 	Valor func(index int) (any, error)
-	// Vinculo aponta para a coluna de outra tabela; o executor resolve
+	// Referencia aponta para a coluna de outra tabela; o executor resolve
 	// contra as linhas realmente inseridas lá.
-	Vinculo *migrate.Link
+	Referencia *migrate.Link
 	// Origem é o texto exato da expressão como está no arquivo. Serve às
 	// mensagens de erro e, principalmente, à regeneração: o gerador mantém a
 	// coluna com a expressão que o autor escreveu.
@@ -51,7 +51,7 @@ type Arquivo struct {
 func (arquivo Arquivo) Linha(index int) (map[string]any, error) {
 	valores := make(map[string]any, len(arquivo.Campos))
 	for _, campo := range arquivo.Campos {
-		if campo.Vinculo != nil {
+		if campo.Referencia != nil {
 			continue
 		}
 		valor, err := campo.Valor(index)
@@ -73,15 +73,15 @@ func (arquivo Arquivo) Colunas() []string {
 	return nomes
 }
 
-// Vinculos lista as tabelas pai referenciadas por esta factory.
-func (arquivo Arquivo) Vinculos() []string {
+// Referencias lista as tabelas pai referenciadas por esta factory.
+func (arquivo Arquivo) Referencias() []string {
 	vistas := map[string]bool{}
 	var tabelas []string
 	for _, campo := range arquivo.Campos {
-		if campo.Vinculo == nil {
+		if campo.Referencia == nil {
 			continue
 		}
-		alvo := strings.ToUpper(campo.Vinculo.Table)
+		alvo := strings.ToUpper(campo.Referencia.Table)
 		if !vistas[alvo] {
 			vistas[alvo] = true
 			tabelas = append(tabelas, alvo)
@@ -91,7 +91,12 @@ func (arquivo Arquivo) Vinculos() []string {
 	return tabelas
 }
 
-// CarregarPasta lê todos os *_factory.go de uma pasta.
+// CarregarPasta lê as factories de uma pasta.
+//
+// Qualquer .go serve, e um arquivo pode declarar várias factories: não há regra
+// implícita no fatiamento por tabela, então a organização é escolha de quem
+// escreve — um arquivo só, um por tabela, ou um por assunto. Arquivo sem nenhuma
+// função *Factory é ignorado, para que um helper na mesma pasta não vire erro.
 func CarregarPasta(pasta string) ([]Arquivo, error) {
 	entradas, err := os.ReadDir(pasta)
 	if os.IsNotExist(err) {
@@ -104,16 +109,16 @@ func CarregarPasta(pasta string) ([]Arquivo, error) {
 	var arquivos []Arquivo
 	var problemas []string
 	for _, entrada := range entradas {
-		if entrada.IsDir() || !strings.HasSuffix(entrada.Name(), "_factory.go") {
+		if entrada.IsDir() || !strings.HasSuffix(entrada.Name(), ".go") || strings.HasSuffix(entrada.Name(), "_test.go") {
 			continue
 		}
 		caminho := filepath.Join(pasta, entrada.Name())
-		arquivo, err := ParseArquivo(caminho)
+		lidas, err := ParseArquivos(caminho)
 		if err != nil {
 			problemas = append(problemas, fmt.Sprintf("%s: %v", entrada.Name(), err))
 			continue
 		}
-		arquivos = append(arquivos, arquivo)
+		arquivos = append(arquivos, lidas...)
 	}
 
 	sort.Slice(arquivos, func(i, j int) bool { return arquivos[i].Tabela < arquivos[j].Tabela })
@@ -123,14 +128,18 @@ func CarregarPasta(pasta string) ([]Arquivo, error) {
 	return arquivos, nil
 }
 
-// ParseArquivo lê uma factory e resolve todas as expressões do corpo de Data.
-// Erros de vocabulário aparecem aqui, na leitura — não no meio de um INSERT.
-func ParseArquivo(caminho string) (Arquivo, error) {
+// ParseArquivos lê TODAS as factories de um arquivo e resolve as expressões do
+// corpo de Data. Erros de vocabulário aparecem aqui, na leitura — não no meio de
+// um INSERT.
+//
+// Devolve lista vazia, sem erro, quando o arquivo não declara factory nenhuma.
+func ParseArquivos(caminho string) ([]Arquivo, error) {
 	file, set, err := astparser.ParseFile(caminho)
 	if err != nil {
-		return Arquivo{}, err
+		return nil, err
 	}
 
+	var arquivos []Arquivo
 	for _, declaracao := range file.Decls {
 		funcao, ok := declaracao.(*ast.FuncDecl)
 		if !ok || funcao.Name == nil || !strings.HasSuffix(funcao.Name.Name, "Factory") {
@@ -142,13 +151,26 @@ func ParseArquivo(caminho string) (Arquivo, error) {
 		}
 		arquivo, err := lerFactory(set, literal)
 		if err != nil {
-			return Arquivo{}, err
+			return nil, i18n.Errf("fcp_func_wrap", funcao.Name.Name, err)
 		}
 		arquivo.Caminho = caminho
 		arquivo.Funcao = funcao.Name.Name
-		return arquivo, nil
+		arquivos = append(arquivos, arquivo)
 	}
-	return Arquivo{}, i18n.Errf("fcp_no_func")
+	return arquivos, nil
+}
+
+// ParseArquivo lê a primeira factory do arquivo. Existe para quem só precisa de
+// uma; a leitura da pasta usa ParseArquivos.
+func ParseArquivo(caminho string) (Arquivo, error) {
+	arquivos, err := ParseArquivos(caminho)
+	if err != nil {
+		return Arquivo{}, err
+	}
+	if len(arquivos) == 0 {
+		return Arquivo{}, i18n.Errf("fcp_no_func")
+	}
+	return arquivos[0], nil
 }
 
 // retornoComposto extrai o migrate.Factory{...} do return da função.
@@ -169,7 +191,7 @@ func retornoComposto(funcao *ast.FuncDecl) *ast.CompositeLit {
 }
 
 func lerFactory(set *token.FileSet, literal *ast.CompositeLit) (Arquivo, error) {
-	arquivo := Arquivo{Ruler: migrate.Ruler{Count: 10, Update: true, Active: true}}
+	arquivo := Arquivo{Ruler: migrate.Ruler{Count: 10, Active: true}}
 	campoVisto := false
 
 	for _, elemento := range literal.Elts {
@@ -179,9 +201,9 @@ func lerFactory(set *token.FileSet, literal *ast.CompositeLit) (Arquivo, error) 
 		}
 		switch astparser.IdentName(par.Key) {
 		case "Table":
-			tabela, err := astparser.StringLiteral(par.Value)
+			tabela, err := nomeDeTabela(par.Value)
 			if err != nil {
-				return arquivo, i18n.Errf("fcp_table_quoted")
+				return arquivo, err
 			}
 			arquivo.Tabela = tabela
 		case "Ruler":
@@ -212,8 +234,11 @@ func lerFactory(set *token.FileSet, literal *ast.CompositeLit) (Arquivo, error) 
 	return arquivo, nil
 }
 
+// lerRuler lê o Ruler do arquivo. Chave desconhecida é ignorada — inclusive o
+// antigo `Update`, que deixou de existir: o arquivo de um projeto velho não
+// compila mais, mas `factory create` consegue lê-lo e reescrever a linha.
 func lerRuler(expressao ast.Expr) (migrate.Ruler, error) {
-	ruler := migrate.Ruler{Count: 10, Update: true, Active: true}
+	ruler := migrate.Ruler{Count: 10, Active: true}
 	literal, ok := expressao.(*ast.CompositeLit)
 	if !ok {
 		return ruler, i18n.Errf("fcp_ruler_shape")
@@ -231,72 +256,32 @@ func lerRuler(expressao ast.Expr) (migrate.Ruler, error) {
 				return ruler, i18n.Errf("fcp_ruler_count")
 			}
 			ruler.Count = quantidade
-		case "Update", "Active":
+		case "Active":
 			valor := astparser.IdentName(par.Value)
 			if valor != "true" && valor != "false" {
 				return ruler, i18n.Errf("fcp_ruler_bool", nome)
 			}
-			if nome == "Update" {
-				ruler.Update = valor == "true"
-			} else {
-				ruler.Active = valor == "true"
-			}
+			ruler.Active = valor == "true"
 		}
 	}
 	return ruler, nil
 }
 
-// lerData avalia o corpo da closure de Data.
+// lerData avalia o Data da factory.
 //
 // A forma aceita é exatamente esta:
 //
-//	func(index int) migrate.Fields {
-//	    local := migrate.FakeLocation()   // opcional
-//	    return migrate.Fields{ ... }
-//	}
+//	Data: migrate.Fields{ ... }
+//
+// Era uma closure `func(index int) migrate.Fields`, e o índice implícito tornou o
+// invólucro inútil: nada dentro do mapa referencia o parâmetro.
 func lerData(set *token.FileSet, expressao ast.Expr) ([]Campo, error) {
-	closure, ok := expressao.(*ast.FuncLit)
+	retorno, ok := expressao.(*ast.CompositeLit)
 	if !ok {
 		return nil, i18n.Errf("fcp_data_signature")
 	}
 
-	nomeIndice := parametroDoIndice(closure)
-	if nomeIndice == "" {
-		return nil, i18n.Errf("fcp_data_needs_index")
-	}
-
-	// Acessores de localidade declarados antes do return, do tipo
-	// `local := migrate.FakeLocation()`.
-	acessores := map[string]bool{}
-	var retorno *ast.CompositeLit
-
-	for _, statement := range closure.Body.List {
-		switch tipo := statement.(type) {
-		case *ast.AssignStmt:
-			nome, err := lerAcessorDeLocalidade(set, tipo)
-			if err != nil {
-				return nil, err
-			}
-			acessores[nome] = true
-		case *ast.ReturnStmt:
-			if len(tipo.Results) != 1 {
-				return nil, i18n.Errf("fcp_data_one_return")
-			}
-			literal, ok := tipo.Results[0].(*ast.CompositeLit)
-			if !ok {
-				return nil, i18n.Errf("fcp_data_return_shape")
-			}
-			retorno = literal
-		default:
-			return nil, i18n.Errf("fcp_data_only_location", posicao(set, statement.Pos()))
-		}
-	}
-
-	if retorno == nil {
-		return nil, i18n.Errf("fcp_data_no_return")
-	}
-
-	ambiente := ambienteDeAvaliacao{indice: nomeIndice, acessores: acessores, set: set}
+	ambiente := ambienteDeAvaliacao{set: set}
 	campos := make([]Campo, 0, len(retorno.Elts))
 	vistas := map[string]bool{}
 
@@ -305,8 +290,8 @@ func lerData(set *token.FileSet, expressao ast.Expr) ([]Campo, error) {
 		if !ok {
 			return nil, i18n.Errf("fcp_data_line_shape", posicao(set, elemento.Pos()))
 		}
-		coluna, err := astparser.StringLiteral(par.Key)
-		if err != nil {
+		coluna, ok := nomeDeColuna(par.Key)
+		if !ok {
 			return nil, i18n.Errf("fcp_data_column_quoted", posicao(set, par.Key.Pos()))
 		}
 		if vistas[strings.ToUpper(coluna)] {
@@ -323,60 +308,103 @@ func lerData(set *token.FileSet, expressao ast.Expr) ([]Campo, error) {
 	return campos, nil
 }
 
-func parametroDoIndice(closure *ast.FuncLit) string {
-	if closure.Type == nil || closure.Type.Params == nil {
-		return ""
+// ── Referências de catálogo ──
+//
+// A factory pode endereçar tabela e coluna de duas formas:
+//
+//	Table: "CIDADES"                    texto — casado por caixa contra a migration
+//	Table: core.Table.Cidades           referência de catálogo
+//
+//	"nome":                    …        texto
+//	core.Column.Cidades.Nome:  …        referência de catálogo
+//
+// As duas convivem porque o valor gerado é o mesmo: o catálogo guarda o nome
+// físico, e o texto solto já era casado por caixa. O ganho da referência é o
+// compilador — nome errado deixa de compilar em vez de falhar no `factory
+// validate`.
+//
+// O identificador do pacote NÃO é validado, só o agrupador (`Table`/`Column`):
+// o apelido do import é livre, como no resto do gokit.
+
+// nomeDeTabela aceita literal ou `X.Table.Nome`.
+func nomeDeTabela(expressao ast.Expr) (string, error) {
+	if nome, err := astparser.StringLiteral(expressao); err == nil {
+		return nome, nil
 	}
-	for _, campo := range closure.Type.Params.List {
-		if astparser.IdentName(campo.Type) != "int" {
-			continue
-		}
-		if len(campo.Names) > 0 {
-			return campo.Names[0].Name
-		}
+	if nome, ok := referenciaDeGrupo(expressao, "Table"); ok {
+		return nome, nil
 	}
-	return ""
+	return "", i18n.Errf("fcp_table_quoted")
 }
 
-// lerAcessorDeLocalidade valida `nome := migrate.FakeLocation()`.
-func lerAcessorDeLocalidade(set *token.FileSet, atribuicao *ast.AssignStmt) (string, error) {
-	erro := i18n.Errf("fcp_data_only_assign", posicao(set, atribuicao.Pos()))
-	if len(atribuicao.Lhs) != 1 || len(atribuicao.Rhs) != 1 {
-		return "", erro
+// nomeDeColuna aceita literal ou `X.Column.Tabela.Coluna`.
+//
+// O agrupador de coluna tem um nível a mais que o de tabela, porque a coluna é
+// endereçada dentro da tabela dela.
+func nomeDeColuna(expressao ast.Expr) (string, bool) {
+	if nome, err := astparser.StringLiteral(expressao); err == nil {
+		return nome, true
 	}
-	nome := astparser.IdentName(atribuicao.Lhs[0])
-	if nome == "" {
-		return "", erro
+	seletor, ok := expressao.(*ast.SelectorExpr)
+	if !ok {
+		return "", false
 	}
-	chamada, ok := atribuicao.Rhs[0].(*ast.CallExpr)
-	if !ok || len(chamada.Args) != 0 {
-		return "", erro
+	// X.Column.Tabela.Coluna → o pai do seletor é X.Column.Tabela
+	tabelaSeletor, ok := seletor.X.(*ast.SelectorExpr)
+	if !ok {
+		return "", false
 	}
-	seletor, ok := chamada.Fun.(*ast.SelectorExpr)
-	if !ok || seletor.Sel.Name != "FakeLocation" {
-		return "", erro
+	if grupo, ok := tabelaSeletor.X.(*ast.SelectorExpr); !ok || grupo.Sel.Name != "Column" {
+		return "", false
 	}
-	return nome, nil
+	return seletor.Sel.Name, true
+}
+
+// referenciaDeGrupo resolve `X.<grupo>.Nome` e devolve o Nome.
+func referenciaDeGrupo(expressao ast.Expr, grupo string) (string, bool) {
+	seletor, ok := expressao.(*ast.SelectorExpr)
+	if !ok {
+		return "", false
+	}
+	interno, ok := seletor.X.(*ast.SelectorExpr)
+	if !ok || interno.Sel.Name != grupo {
+		return "", false
+	}
+	if astparser.IdentName(interno.X) == "" {
+		return "", false
+	}
+	return seletor.Sel.Name, true
 }
 
 // ambienteDeAvaliacao carrega o que o corpo de Data pode referenciar.
 type ambienteDeAvaliacao struct {
-	indice    string
-	acessores map[string]bool
-	set       *token.FileSet
+	set *token.FileSet
 }
 
 func (ambiente ambienteDeAvaliacao) campo(coluna string, expressao ast.Expr) (Campo, error) {
 	origem := textoDaExpressao(ambiente.set, expressao)
 
-	// Vinculo é resolvido pelo executor, não aqui.
+	// A referência é resolvida pelo executor, não aqui. Reference e Seeder são as
+	// duas formas: a primeira aceita qualquer linha do pai, a segunda restringe a
+	// valores específicos.
 	if chamada, ok := expressao.(*ast.CallExpr); ok {
-		if seletor, ok := chamada.Fun.(*ast.SelectorExpr); ok && seletor.Sel.Name == "Vinculo" {
-			link, err := ambiente.vinculo(chamada)
+		if seletor, ok := chamada.Fun.(*ast.SelectorExpr); ok {
+			var (
+				link *migrate.Link
+				err  error
+			)
+			switch seletor.Sel.Name {
+			case "Reference":
+				link, err = ambiente.referencia(chamada)
+			case "Seeder":
+				link, err = ambiente.seeder(chamada)
+			}
 			if err != nil {
 				return Campo{}, err
 			}
-			return Campo{Coluna: coluna, Vinculo: link, Origem: origem}, nil
+			if link != nil {
+				return Campo{Coluna: coluna, Referencia: link, Origem: origem}, nil
+			}
 		}
 	}
 
@@ -393,19 +421,52 @@ func (ambiente ambienteDeAvaliacao) campo(coluna string, expressao ast.Expr) (Ca
 	}, nil
 }
 
-func (ambiente ambienteDeAvaliacao) vinculo(chamada *ast.CallExpr) (*migrate.Link, error) {
-	if len(chamada.Args) != 2 {
+func (ambiente ambienteDeAvaliacao) referencia(chamada *ast.CallExpr) (*migrate.Link, error) {
+	// Um argumento (só a tabela) ou dois (tabela + coluna, ou tabela + restrição).
+	if len(chamada.Args) < 1 || len(chamada.Args) > 2 {
 		return nil, i18n.Errf("fcp_link_args")
 	}
-	tabela, err := astparser.StringLiteral(chamada.Args[0])
+	tabela, err := nomeDeTabela(chamada.Args[0])
 	if err != nil {
 		return nil, i18n.Errf("fcp_link_table_quoted")
 	}
-	coluna, err := astparser.StringLiteral(chamada.Args[1])
-	if err != nil {
+	// O segundo argumento é opcional: sem ele, a coluna sai da FK declarada na
+	// migration. Com ele, é a coluna do pai ou uma restrição de valores.
+	if len(chamada.Args) == 1 {
+		link := migrate.Reference(migrate.Table(tabela))
+		return &link, nil
+	}
+
+	coluna, ok := nomeDeColuna(chamada.Args[1])
+	if !ok {
 		return nil, i18n.Errf("fcp_link_column_quoted")
 	}
-	link := migrate.Vinculo(tabela, coluna)
+	link := migrate.Reference(migrate.Table(tabela), migrate.ColumnName(coluna))
+	return &link, nil
+}
+
+// seeder lê migrate.Seeder(tabela, valores...): a referência apontando para
+// valores específicos do pai.
+//
+// Os valores têm de ser literais, como todo valor do corpo de Data — o avaliador
+// não executa código. Número e texto valem os dois: 1 e "1" são o mesmo alvo.
+func (ambiente ambienteDeAvaliacao) seeder(chamada *ast.CallExpr) (*migrate.Link, error) {
+	if len(chamada.Args) < 2 {
+		return nil, i18n.Errf("fcp_seeder_args")
+	}
+	tabela, err := nomeDeTabela(chamada.Args[0])
+	if err != nil {
+		return nil, i18n.Errf("fcp_link_table_quoted")
+	}
+	valores := make([]any, 0, len(chamada.Args)-1)
+	for _, argumento := range chamada.Args[1:] {
+		valor, err := ambiente.avaliar(argumento, 0)
+		if err != nil {
+			return nil, i18n.Errf("fcp_seeder_literal")
+		}
+		valores = append(valores, valor)
+	}
+	link := migrate.Seeder(migrate.Table(tabela), valores...)
 	return &link, nil
 }
 
@@ -431,10 +492,10 @@ func (ambiente ambienteDeAvaliacao) avaliar(expressao ast.Expr, index int) (any,
 			return false, nil
 		case "nil":
 			return nil, nil
-		case ambiente.indice:
-			return index, nil
 		}
-		return nil, i18n.Errf("fcp_ident_unsupported", valor.Name, ambiente.indice)
+		// `index` não existe mais aqui: o índice é implícito e nenhuma função do
+		// vocabulário o recebe.
+		return nil, i18n.Errf("fcp_ident_unsupported", valor.Name)
 
 	case *ast.UnaryExpr:
 		if valor.Op != token.SUB {
@@ -470,23 +531,16 @@ func (ambiente ambienteDeAvaliacao) chamar(chamada *ast.CallExpr, index int) (an
 		argumentos = append(argumentos, valor)
 	}
 
-	// Acessor de localidade: local(index, "uf", 2).
-	if nome := astparser.IdentName(chamada.Fun); nome != "" {
-		if !ambiente.acessores[nome] {
-			return nil, i18n.Errf("fcp_undeclared_location", nome, nome)
-		}
-		return chamarLocalidade(argumentos)
-	}
-
+	// Só chamada qualificada (migrate.X) é aceita. Antes havia o acessor de
+	// localidade, `local("uf", 2)`, que exigia uma declaração antes do return —
+	// e era o único motivo que sustentava a closure. As funções independentes
+	// (FakeUF, FakeCity, FakeState…) derivam do mesmo índice, então mantêm a
+	// localidade coerente na linha sem precisar de acessor.
 	seletor, ok := chamada.Fun.(*ast.SelectorExpr)
 	if !ok {
 		return nil, i18n.Errf("fcp_call_unknown")
 	}
 	nome := seletor.Sel.Name
-
-	if nome == "FakeLocation" {
-		return nil, i18n.Errf("fcp_location_must_bind", ambiente.indice)
-	}
 
 	funcao, conhecida := vocabulario[nome]
 	if !conhecida {
@@ -496,35 +550,12 @@ func (ambiente ambienteDeAvaliacao) chamar(chamada *ast.CallExpr, index int) (an
 		return nil, i18n.Errf("fcp_not_in_vocabulary", nome)
 	}
 
-	resultado, err := funcao(argumentos)
+	// O índice não vem dos argumentos escritos: ele é injetado aqui.
+	resultado, err := funcao(index, argumentos)
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", nome, err)
 	}
 	return resultado, nil
-}
-
-// chamarLocalidade executa o acessor devolvido por FakeLocation.
-func chamarLocalidade(argumentos []any) (any, error) {
-	if len(argumentos) < 2 || len(argumentos) > 3 {
-		return nil, i18n.Errf("fcp_location_accessor")
-	}
-	indice, err := inteiroEm(argumentos, 0)
-	if err != nil {
-		return nil, err
-	}
-	campo, err := textoEm(argumentos, 1)
-	if err != nil {
-		return nil, err
-	}
-	acessor := migrate.FakeLocation()
-	if len(argumentos) == 2 {
-		return acessor(indice, campo), nil
-	}
-	tamanho, err := inteiroEm(argumentos, 2)
-	if err != nil {
-		return nil, err
-	}
-	return acessor(indice, campo, tamanho), nil
 }
 
 func posicao(set *token.FileSet, pos token.Pos) string {

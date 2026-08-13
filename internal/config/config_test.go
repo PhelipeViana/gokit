@@ -85,6 +85,18 @@ func TestCreateOnboardingScaffoldInitializesGoModule(t *testing.T) {
 		// forma nova, e apelido e referência divergentes não compilariam.
 		`migrate.AddColumn(core.Table.Users,`,
 	)
+	// As factories saem num arquivo só, uma função por tabela — a mesma forma que
+	// o `factory create` mantém. Dois arquivos separados aqui fariam o scaffold
+	// nascer numa organização que a primeira regeneração desmancharia.
+	assertFileContains(filepath.Join("internal", "gokit", "factory", "factories.go"),
+		"func CidadesFactory() migrate.Factory",
+		"func UsersFactory() migrate.Factory",
+	)
+	for _, obsoleto := range []string{"cidades_factory.go", "users_factory.go"} {
+		if _, err := os.Stat(filepath.Join("internal", "gokit", "factory", obsoleto)); err == nil {
+			t.Errorf("%s não deveria mais ser criado", obsoleto)
+		}
+	}
 }
 
 func TestBuildURL(t *testing.T) {

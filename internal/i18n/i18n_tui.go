@@ -236,3 +236,39 @@ func init() {
 		},
 	})
 }
+
+// Telas da leitura do banco na TUI (scan e import).
+func init() {
+	Register(Entradas{
+		"tui_scan_done": {
+			PT: "Banco lido",
+			ES: "Base leída",
+			EN: "Database read",
+		},
+		"tui_scan_failed": {
+			PT: "Falha ao ler o banco",
+			ES: "Fallo al leer la base",
+			EN: "Failed to read the database",
+		},
+		"tui_import_preview": {
+			PT: "Prévia do import — nada foi escrito ainda",
+			ES: "Vista previa del import — nada fue escrito aún",
+			EN: "Import preview — nothing written yet",
+		},
+		"tui_import_done": {
+			PT: "Migrations escritas",
+			ES: "Migrations escritas",
+			EN: "Migrations written",
+		},
+		"tui_import_failed": {
+			PT: "Falha no import",
+			ES: "Fallo en el import",
+			EN: "Import failed",
+		},
+		"tui_confirm_import": {
+			PT: "Escrever esses arquivos de migration?\n\n[Enter/Y] Escrever  ·  [Esc/N] Cancelar",
+			ES: "¿Escribir esos archivos de migration?\n\n[Enter/Y] Escribir  ·  [Esc/N] Cancelar",
+			EN: "Write these migration files?\n\n[Enter/Y] Write  ·  [Esc/N] Cancel",
+		},
+	})
+}

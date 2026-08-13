@@ -53,6 +53,9 @@ func (m Model[T]) Insert(ctx context.Context, valores Values) (Result, error) {
 }
 
 func (m Model[T]) InsertWith(ctx context.Context, r Runner, valores Values) (Result, error) {
+	if err := conferirAutoria(valores); err != nil {
+		return Result{}, err
+	}
 	alvo, exec, err := runnerParaEscrita(r)
 	if err != nil {
 		return Result{}, err
@@ -75,6 +78,9 @@ func (m Model[T]) InsertMany(ctx context.Context, linhas []Values) (Result, erro
 }
 
 func (m Model[T]) InsertManyWith(ctx context.Context, r Runner, linhas []Values) (Result, error) {
+	if err := conferirAutoria(linhas...); err != nil {
+		return Result{}, err
+	}
 	alvo, exec, err := runnerParaEscrita(r)
 	if err != nil {
 		return Result{}, err
@@ -101,6 +107,9 @@ func (q Query[T]) Update(ctx context.Context, valores Values) (Result, error) {
 }
 
 func (q Query[T]) UpdateWith(ctx context.Context, r Runner, valores Values) (Result, error) {
+	if err := conferirAutoria(valores); err != nil {
+		return Result{}, err
+	}
 	if len(q.items) == 0 && !q.irrestrita {
 		return Result{}, errSemWhere("UPDATE")
 	}

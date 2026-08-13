@@ -174,6 +174,10 @@ func (q Query[T]) RowsWith(ctx context.Context, r Runner) ([]Record, error) {
 
 func (m Model[T]) Rows(ctx context.Context) ([]Record, error) { return m.All().Rows(ctx) }
 
+func (m Model[T]) RowsWith(ctx context.Context, r Runner) ([]Record, error) {
+	return m.All().RowsWith(ctx, r)
+}
+
 // projecaoAgrupada monta a lista do SELECT quando há agregação ou agrupamento.
 // Devolve vazio quando não é o caso, deixando a compilação normal seguir.
 func (q Query[T]) projecaoAgrupada(ctx *compileCtx) ([]string, error) {

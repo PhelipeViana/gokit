@@ -11,6 +11,7 @@ import (
 
 	"github.com/PhelipeViana/gokit/internal/config"
 	"github.com/PhelipeViana/gokit/internal/i18n"
+	"github.com/PhelipeViana/gokit/internal/migrationgo"
 	"github.com/PhelipeViana/gokit/migration/acao"
 )
 
@@ -57,13 +58,22 @@ func GenerateORM(root string, state config.ConfigState) (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	// core.gen.go, no pacote core, ao lado do table.gen.go: a aplicação tem um
-	// import só, e o que era reaproveitado entre camadas (Row, scanner, Column)
-	// fica disponível sem re-export.
-	target := filepath.Join(root, filepath.FromSlash(state.Config.Output.ORM), "core.gen.go")
+	// entities.gen.go, no pacote core, ao lado do table.gen.go.
+	//
+	// O nome diz o que o arquivo É. Ele já se chamou core.gen.go, e isso confundia
+	// justamente por ser o nome mais central da pasta na parte OPCIONAL dela: o
+	// catálogo (table/view) serve migration, seeder e factory; as entidades servem
+	// só quem usa a ORM.
+	pasta := filepath.Join(root, filepath.FromSlash(state.Config.Output.ORM))
+	target := filepath.Join(pasta, "entities.gen.go")
 	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
 		return 0, err
 	}
+	// O nome anterior sai do disco: dois arquivos declarando as mesmas entidades no
+	// mesmo pacote não compilam, e quem regera vindo de uma versão antiga ficaria
+	// com os dois.
+	_ = os.Remove(filepath.Join(pasta, "core.gen.go"))
+	_ = os.Remove(filepath.Join(pasta, "fields.gen.go"))
 	names := make([]string, 0, len(shapes))
 	for name := range shapes {
 		names = append(names, name)
@@ -80,6 +90,25 @@ func GenerateORM(root string, state config.ConfigState) (int, error) {
 				return 0, i18n.Errf("gen_orm_reserved_name",
 					shapes[name].Table, entidade, reservado, shapes[name].Table)
 			}
+		}
+	}
+
+	// Duas colunas da mesma tabela podem colapsar no mesmo identificador Go e as
+	// duas passam pelo validador de nome físico: `nivel_1` e `nivel1` viram ambas
+	// `Nivel1`. O arquivo sai com campo repetido em seis lugares (Row, ColumnSet,
+	// scanner, literais de Field) e não compila — sem o gerador reclamar.
+	//
+	// Diferente da colisão de tabela, aqui não há `.Alias()` para desempatar: a
+	// saída é renomear a coluna na migration, e a mensagem diz isso.
+	for _, name := range names {
+		vistos := map[string]string{}
+		for _, column := range shapes[name].Columns {
+			identificador := exportedORMIdentifier(column.Name)
+			if anterior, ocupado := vistos[identificador]; ocupado {
+				return 0, i18n.Errf("gen_orm_column_collision",
+					shapes[name].Table, anterior, column.Name, identificador)
+			}
+			vistos[identificador] = column.Name
 		}
 	}
 
@@ -267,7 +296,14 @@ func GenerateORM(root string, state config.ConfigState) (int, error) {
 	body.WriteString(loaders.String())
 
 	var out strings.Builder
-	out.WriteString(cabecalhoGerado() + "package core\n\n")
+	// O cabeçalho declara a NATUREZA do arquivo, não só que é gerado: dois arquivos
+	// deste pacote têm semântica oposta de regeneração, e o sufixo .gen.go não
+	// distingue os dois.
+	out.WriteString(cabecalhoGerado())
+	for _, linha := range strings.Split(i18n.T("gen_nature_entities"), "\n") {
+		out.WriteString("// " + linha + "\n")
+	}
+	out.WriteString("package core\n\n")
 	if len(names) > 0 {
 		out.WriteString("import (\n\t\"database/sql\"\n")
 		if hasRelations {
@@ -667,15 +703,10 @@ func filterConstructor(kind string) string {
 		return "gokitorm.StringCol"
 	}
 }
-func exportedORMIdentifier(value string) string {
-	parts := strings.FieldsFunc(strings.ToLower(value), func(r rune) bool { return r == '_' || r == '-' || r == ' ' })
-	for i := range parts {
-		if parts[i] != "" {
-			parts[i] = strings.ToUpper(parts[i][:1]) + parts[i][1:]
-		}
-	}
-	return strings.Join(parts, "")
-}
+// A normalização é uma só, e mora no migrationgo — o pacote mais baixo, que o
+// migraterun já importa. Estes dois ficam como atalho local para não espalhar o
+// nome longo pelas 22 chamadas.
+func exportedORMIdentifier(value string) string { return migrationgo.ExportedIdentifier(value) }
 
 // disambiguateRelations garante nomes únicos entre as relações de uma entidade (e
 // distintos das colunas). Quem colide passa a carregar a FK no nome:
@@ -785,13 +816,7 @@ func emitLoader(b *strings.Builder, selfEntity, relName, kind, target, fkColumn 
 
 // unexportedORMIdentifier devolve o identificador em camelCase não-exportado,
 // usado só como prefixo de tipos gerados (usersEntity, usersFieldSet).
-func unexportedORMIdentifier(value string) string {
-	e := exportedORMIdentifier(value)
-	if e == "" {
-		return ""
-	}
-	return strings.ToLower(e[:1]) + e[1:]
-}
+func unexportedORMIdentifier(value string) string { return migrationgo.UnexportedIdentifier(value) }
 
 // localFieldVar nomeia a variável local do Field dentro do func literal gerado.
 // O prefixo "col" garante identificador válido mesmo para colunas com nome de

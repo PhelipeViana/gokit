@@ -21,6 +21,7 @@ import (
 	"github.com/PhelipeViana/gokit/internal/factorygo"
 	"github.com/PhelipeViana/gokit/internal/i18n"
 	"github.com/PhelipeViana/gokit/internal/migrationgo"
+	migrate "github.com/PhelipeViana/gokit/migration"
 	"github.com/PhelipeViana/gokit/migration/acao"
 )
 
@@ -51,12 +52,41 @@ func (p plano) Fisica() string {
 // colunaFisica traduz o nome escrito na factory para o nome declarado na
 // migration. Mesma razão que Fisica: caixa alta só funciona no Oracle.
 func (p plano) colunaFisica(nome string) string {
-	for _, column := range p.Forma.Columns {
+	return colunaFisicaEm(p.Forma.Columns, nome)
+}
+
+// colunaFisicaEm traduz o que a factory escreveu para o nome que a migration
+// declarou, aceitando as DUAS formas de endereçar coluna:
+//
+//	"estado_id"                  texto — casa por caixa
+//	core.Column.Cidades.EstadoId referência — casa pelo identificador Go
+//
+// A segunda é necessária porque EqualFold("estado_id", "EstadoId") é falso: o
+// underscore desaparece na normalização. Resolver aqui, e não no parser da
+// factory, evita dar catálogo ao parser — a forma da tabela já está nesta camada.
+func colunaFisicaEm(colunas []acao.ColunaDefinicao, nome string) string {
+	for _, column := range colunas {
 		if strings.EqualFold(column.Name, nome) {
 			return column.Name
 		}
 	}
+	for _, column := range colunas {
+		if migrationgo.ExportedIdentifier(column.Name) == nome {
+			return column.Name
+		}
+	}
 	return nome
+}
+
+// colunaReferenciadaPor devolve a coluna do PAI que a FK da tabela aponta. É o
+// que permite omitir a coluna no Reference: a migration já declarou o destino.
+func colunaReferenciadaPor(forma acao.Operacao, pai string) string {
+	for _, column := range forma.Columns {
+		if strings.EqualFold(column.ReferenceTable, pai) && column.ReferenceColumn != "" {
+			return column.ReferenceColumn
+		}
+	}
+	return ""
 }
 
 func factoryRoot(root string, state config.ConfigState) string {
@@ -151,31 +181,42 @@ func loadFactories(root string, state config.ConfigState) ([]plano, error) {
 			}
 		}
 
-		// O Vinculo é escrito em caixa alta na factory, mas quem vai à consulta
+		// A referência é escrita em caixa alta na factory, mas quem vai à consulta
 		// é o nome que a migration declarou — no Postgres e no MySQL a caixa
 		// importa. A tradução acontece aqui, uma vez, e não a cada linha.
 		for posicao := range atual.Arquivo.Campos {
-			link := atual.Arquivo.Campos[posicao].Vinculo
+			link := atual.Arquivo.Campos[posicao].Referencia
 			if link == nil {
 				continue
+			}
+			// Coluna omitida: sai da FK declarada na migration, que é quem sabe para
+			// onde a referência aponta. Escrever a coluna à mão passa a ser só o caso
+			// de schema legado, sem FK declarada.
+			if link.Column == "" {
+				link.Column = colunaReferenciadaPor(forma, link.Table)
 			}
 			paiForma, existe := formas[strings.ToLower(link.Table)]
 			if !existe {
 				continue
 			}
 			link.Table = paiForma.Table
-			for _, column := range paiForma.Columns {
-				if strings.EqualFold(column.Name, link.Column) {
-					link.Column = column.Name
-					break
+			link.Column = colunaFisicaEm(paiForma.Columns, link.Column)
+			if link.Column == "" {
+				// Sem FK declarada e sem coluna escrita, a chave primária do pai é o
+				// único alvo razoável.
+				for _, column := range paiForma.Columns {
+					if column.PrimaryKey {
+						link.Column = column.Name
+						break
+					}
 				}
 			}
 		}
 
-		// Um pai pode vir da FK declarada na migration ou de um Vinculo
+		// Um pai pode vir da FK declarada na migration ou de uma Reference
 		// escrito na factory. Os dois valem.
 		vistos := map[string]bool{}
-		for _, pai := range append(fks[atual.Tabela()], arquivo.Vinculos()...) {
+		for _, pai := range append(fks[atual.Tabela()], arquivo.Referencias()...) {
 			pai = strings.ToUpper(pai)
 			if pai != atual.Tabela() && !vistos[pai] {
 				vistos[pai] = true
@@ -274,6 +315,14 @@ func FactoryValidate(root string, state config.ConfigState) error {
 		return nil
 	}
 
+	// Os domínios declarados em AddCheck: é com eles que a conferência de valor
+	// sabe que "ABERTO" é aceito e "X" não. Falha aqui não impede o resto da
+	// validação — sem os checks, só essa regra deixa de ser conferida.
+	checks, err := tableCheckValues(root, state)
+	if err != nil {
+		checks = map[string]map[string][]string{}
+	}
+
 	var problemas []string
 	ativas, linhas := 0, 0
 
@@ -285,14 +334,27 @@ func FactoryValidate(root string, state config.ConfigState) error {
 
 		// Coluna que não existe na tabela derruba o INSERT inteiro; melhor
 		// avisar aqui.
+		// As duas formas de endereçar coluna contam como declarada: o texto
+		// ("cidade_id", casado por caixa) e a referência de catálogo
+		// (core.Column.Users.CidadeId, casada pelo identificador Go). Sem a segunda,
+		// o validador acusaria como inexistente justamente a coluna de nome
+		// composto, que é onde o underscore desaparece na normalização.
 		declaradas := map[string]bool{}
 		for _, column := range atual.Forma.Columns {
 			declaradas[strings.ToUpper(column.Name)] = true
+			declaradas[strings.ToUpper(migrationgo.ExportedIdentifier(column.Name))] = true
 		}
 		for _, coluna := range atual.Arquivo.Colunas() {
 			if !declaradas[strings.ToUpper(coluna)] {
 				problemas = append(problemas, i18n.Tf("fac_column_missing", filepath.Base(atual.Arquivo.Caminho), coluna, atual.Arquivo.Tabela))
 			}
+		}
+
+		// Gera as linhas em memória e confere o que o banco recusaria pelo VALOR.
+		// Sem isso, tamanho estourado, tipo incompatível e chave repetida só
+		// aparecem no meio do INSERT, com a mensagem do driver.
+		for _, problema := range conferirValoresDaFactory(atual, checks[atual.Tabela()]) {
+			problemas = append(problemas, problema.String())
 		}
 
 		if atual.Arquivo.Ruler.Active {
@@ -325,7 +387,12 @@ func quantidadeDeLinhas(atual plano) int {
 }
 
 // FactoryRun popula as tabelas. targets vazio significa todas as ativas.
-func FactoryRun(root string, state config.ConfigState, targets []string) error {
+// FactoryRun popula as tabelas com dados fake.
+//
+// forcar repovoa mesmo tabela que já tem dados. Fora dele, tabela com linha é
+// pulada: a factory começa com DELETE, e dado que ela não produziu não é dela
+// para apagar.
+func FactoryRun(root string, state config.ConfigState, targets []string, forcar bool) error {
 	planos, err := loadFactories(root, state)
 	if err != nil {
 		return err
@@ -380,12 +447,43 @@ func FactoryRun(root string, state config.ConfigState, targets []string) error {
 		return nil
 	}
 
-	ordenados, ciclos := ordenaFactories(existentes)
+	// Tabela que já tem dados NÃO é repovoada.
+	//
+	// A factory é simulador de dados para teste, e o povoamento dela começa com um
+	// DELETE. Se a tabela já tem linha — vinda de seed, de migration ou da própria
+	// aplicação —, rodar apagaria dado que a factory não produziu. Sem esta guarda,
+	// `factory run` num banco em uso é destrutivo por padrão.
+	//
+	// Quem realmente quer regerar diz em voz alta com --force.
+	var vazias []plano
+	for _, atual := range existentes {
+		if forcar {
+			vazias = append(vazias, atual)
+			continue
+		}
+		temDados, err := tabelaTemDados(ctx, db, dialect, connection.Schema, atual.Fisica())
+		if err != nil {
+			return i18n.Errf("fac_check_rows_failed", atual.Fisica(), err)
+		}
+		if temDados {
+			fmt.Println(cliui.Muted("  - " + atual.Arquivo.Tabela + i18n.T("fac_skipped_has_rows")))
+			continue
+		}
+		vazias = append(vazias, atual)
+	}
+	if len(vazias) == 0 {
+		fmt.Println(cliui.Muted(i18n.T("fac_nothing_empty")))
+		return nil
+	}
+
+	ordenados, ciclos := ordenaFactories(vazias)
 	if len(ciclos) > 0 {
 		fmt.Println(cliui.Muted(i18n.T("fac_fk_cycle") + strings.Join(ciclos, ", ")))
 	}
 
-	// Limpa na ordem inversa: filha antes de pai, senão a FK barra o DELETE.
+	// Limpa na ordem inversa: filha antes de pai, senão a FK barra o DELETE. Só as
+	// tabelas que passaram pela guarda acima chegam aqui — nas outras não há o que
+	// limpar, porque não serão repovoadas.
 	if err := limpaFactories(ctx, db, dialect, connection.Schema, ordenados); err != nil {
 		return err
 	}
@@ -485,6 +583,20 @@ func selecionaFactories(planos []plano, targets []string) ([]plano, error) {
 	return selecionados, nil
 }
 
+// tabelaTemDados responde se a tabela tem ao menos uma linha.
+//
+// COUNT(*) e não um SELECT com limite: a sintaxe de limitar linha é diferente nos
+// quatro dialetos, e aqui o custo é irrelevante — roda uma vez por tabela, antes
+// de povoar dado de teste.
+func tabelaTemDados(ctx context.Context, db *sql.DB, dialect, schema, tabela string) (bool, error) {
+	var total int64
+	consulta := "SELECT COUNT(*) FROM " + qualified(dialect, schema, tabela)
+	if err := db.QueryRowContext(ctx, consulta).Scan(&total); err != nil {
+		return false, err
+	}
+	return total > 0, nil
+}
+
 func limpaFactories(ctx context.Context, db *sql.DB, dialect, schema string, ordenados []plano) error {
 	for posicao := len(ordenados) - 1; posicao >= 0; posicao-- {
 		alvo := qualified(dialect, schema, ordenados[posicao].Fisica())
@@ -540,7 +652,7 @@ func executaFactory(ctx context.Context, db *sql.DB, dialect, schema string, atu
 			return nil, err
 		}
 
-		if err := resolveVinculos(ctx, transaction, dialect, schema, atual, index, linha, inseridas); err != nil {
+		if err := resolveReferencias(ctx, transaction, dialect, schema, atual, index, linha, inseridas); err != nil {
 			return nil, err
 		}
 
@@ -606,18 +718,24 @@ func executaFactory(ctx context.Context, db *sql.DB, dialect, schema string, atu
 	return geradas, nil
 }
 
-// resolveVinculos preenche as colunas declaradas com Vinculo, usando as linhas
+// resolveReferencias preenche as colunas declaradas com Reference, usando as linhas
 // que acabaram de ser inseridas na tabela pai. Se o pai não estava na seleção,
 // busca no banco.
-func resolveVinculos(ctx context.Context, transaction *sql.Tx, dialect, schema string, atual plano, index int, linha map[string]any, inseridas map[string][]map[string]any) error {
+func resolveReferencias(ctx context.Context, transaction *sql.Tx, dialect, schema string, atual plano, index int, linha map[string]any, inseridas map[string][]map[string]any) error {
 	for _, campo := range atual.Arquivo.Campos {
-		if campo.Vinculo == nil {
+		if campo.Referencia == nil {
 			continue
 		}
-		pai := strings.ToUpper(campo.Vinculo.Table)
-		coluna := campo.Vinculo.Column
+		pai := strings.ToUpper(campo.Referencia.Table)
+		coluna := campo.Referencia.Column
 
 		if linhas := inseridas[pai]; len(linhas) > 0 {
+			// A restrição de seeder vem primeiro: se o autor listou IDs, só eles
+			// valem — desde que existam entre as linhas do pai.
+			if valor, restrito := valorRestrito(campo.Referencia, linhas, coluna, index); restrito {
+				linha[campo.Coluna] = valor
+				continue
+			}
 			escolhida := linhas[index%len(linhas)]
 			if valor, existe := valorDaLinha(escolhida, coluna); existe {
 				linha[campo.Coluna] = valor
@@ -625,13 +743,55 @@ func resolveVinculos(ctx context.Context, transaction *sql.Tx, dialect, schema s
 			}
 		}
 
-		valor, err := valorExistenteNoBanco(ctx, transaction, dialect, schema, campo.Vinculo.Table, coluna, index)
+		valor, err := valorExistenteNoBanco(ctx, transaction, dialect, schema, campo.Referencia.Table, coluna, index, campo.Referencia)
 		if err != nil {
 			return err
 		}
 		linha[campo.Coluna] = valor
 	}
 	return nil
+}
+
+// valorRestrito aplica o Seeder quando o pai foi populado na mesma execução: usa
+// só os valores listados, e apenas os que REALMENTE existem entre as linhas dele.
+// O caminho equivalente para pai não repovoado é valorExistenteNoBanco.
+//
+// Devolve restrito=false quando não há restrição, ou quando nenhum dos valores
+// listados existe. O chamador cai no comportamento padrão — é o "em caso de erro
+// é ignorado e segue o fluxo": FK apontando para linha inexistente seria pior que
+// FK apontando para outra linha válida.
+//
+// A escolha é derivada do ÍNDICE: os valores são percorridos na ordem declarada.
+// Um valor é fixo por construção. Não há sorteio — a mesma factory produz o mesmo
+// resultado, e é a comparação entre os quatro bancos que sustenta as baterias.
+func valorRestrito(link *migrate.Link, linhas []map[string]any, coluna string, index int) (any, bool) {
+	if link == nil || link.Modo == "" || len(link.Valores) == 0 {
+		return nil, false
+	}
+
+	existentes := make([]any, 0, len(link.Valores))
+	for _, desejado := range link.Valores {
+		for _, linha := range linhas {
+			valor, tem := valorDaLinha(linha, coluna)
+			if tem && mesmoValor(valor, desejado) {
+				existentes = append(existentes, valor)
+				break
+			}
+		}
+	}
+	if len(existentes) == 0 {
+		return nil, false
+	}
+
+	posicao := index % len(existentes)
+	return existentes[posicao], true
+}
+
+// mesmoValor compara o que o autor escreveu com o que veio da linha. O texto é o
+// denominador comum: o literal do arquivo pode ser int64 e a coluna devolver
+// int32, string ou float dependendo do driver.
+func mesmoValor(a, b any) bool {
+	return fmt.Sprintf("%v", a) == fmt.Sprintf("%v", b)
 }
 
 func valorDaLinha(linha map[string]any, coluna string) (any, bool) {
@@ -646,9 +806,51 @@ func valorDaLinha(linha map[string]any, coluna string) (any, bool) {
 	return nil, false
 }
 
-// valorExistenteNoBanco pega um valor real da tabela pai. Sem isso o Vinculo
+// valorExistenteNoBanco pega um valor real da tabela pai. Sem isso a Reference
 // só funcionaria quando o pai fosse populado na mesma execução.
-func valorExistenteNoBanco(ctx context.Context, transaction *sql.Tx, dialect, schema, tabela, coluna string, index int) (any, error) {
+//
+// É também aqui que o Seeder normalmente age: o caso típico é o pai já ter dado
+// de seed e por isso NÃO ser repovoado, então ele nem aparece em `inseridas`.
+func valorExistenteNoBanco(ctx context.Context, transaction *sql.Tx, dialect, schema, tabela, coluna string, index int, link *migrate.Link) (any, error) {
+	if listados := valoresListados(link); len(listados) > 0 {
+		valores, err := leValoresDoPai(ctx, transaction, dialect, schema, tabela, coluna, listados, len(listados))
+		if err != nil {
+			return nil, err
+		}
+		if len(valores) > 0 {
+			return valores[index%len(valores)], nil
+		}
+		// Nenhum dos valores listados existe no pai: a restrição é ignorada em
+		// silêncio e o fluxo segue no comportamento padrão.
+	}
+
+	valores, err := leValoresDoPai(ctx, transaction, dialect, schema, tabela, coluna, nil, index+2)
+	if err != nil {
+		return nil, err
+	}
+	if len(valores) == 0 {
+		return nil, cliui.NewUserError(
+			i18n.Tf("fac_link_parent_empty", tabela, tabela, coluna),
+			i18n.Tf("fac_link_parent_empty_fix", strings.ToLower(tabela)),
+		)
+	}
+	return valores[index%len(valores)], nil
+}
+
+// valoresListados devolve os valores que o autor escreveu no Seeder, ou nada
+// quando o vínculo não tem restrição.
+func valoresListados(link *migrate.Link) []any {
+	if link == nil || link.Modo == "" {
+		return nil
+	}
+	return link.Valores
+}
+
+// leValoresDoPai busca valores reais da coluna do pai, parando em `limite`. Com
+// `listados` preenchido, devolve só os que existem — e na ordem em que o autor os
+// declarou, não na ordem em que o banco resolveu entregá-los: sem isso os quatro
+// dialetos escolheriam alvos diferentes para a mesma linha.
+func leValoresDoPai(ctx context.Context, transaction *sql.Tx, dialect, schema, tabela, coluna string, listados []any, limite int) ([]any, error) {
 	comando := fmt.Sprintf("SELECT %s FROM %s WHERE %s IS NOT NULL",
 		quote(dialect, coluna), qualified(dialect, schema, tabela), quote(dialect, coluna))
 
@@ -661,24 +863,47 @@ func valorExistenteNoBanco(ctx context.Context, transaction *sql.Tx, dialect, sc
 	}
 	defer rows.Close()
 
-	var valores []any
-	for rows.Next() && len(valores) <= index+1 {
+	encontrados := make([]any, 0, limite)
+	for rows.Next() && len(encontrados) < limite {
 		var valor any
 		if err := rows.Scan(&valor); err != nil {
 			return nil, err
 		}
-		valores = append(valores, valor)
+		if len(listados) > 0 && !contemValor(listados, valor) {
+			continue
+		}
+		encontrados = append(encontrados, valor)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
-	if len(valores) == 0 {
-		return nil, cliui.NewUserError(
-			i18n.Tf("fac_link_parent_empty", tabela, tabela, coluna),
-			i18n.Tf("fac_link_parent_empty_fix", strings.ToLower(tabela)),
-		)
+	if len(listados) == 0 {
+		return encontrados, nil
 	}
-	return valores[index%len(valores)], nil
+	return naOrdemDeclarada(listados, encontrados), nil
+}
+
+func contemValor(lista []any, valor any) bool {
+	for _, item := range lista {
+		if mesmoValor(item, valor) {
+			return true
+		}
+	}
+	return false
+}
+
+// naOrdemDeclarada reordena o que veio do banco pela ordem do arquivo.
+func naOrdemDeclarada(listados, encontrados []any) []any {
+	ordenados := make([]any, 0, len(encontrados))
+	for _, desejado := range listados {
+		for _, valor := range encontrados {
+			if mesmoValor(valor, desejado) {
+				ordenados = append(ordenados, valor)
+				break
+			}
+		}
+	}
+	return ordenados
 }
 
 // coageLinha ajusta cada valor ao tipo declarado da coluna, do mesmo jeito que

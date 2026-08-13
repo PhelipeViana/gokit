@@ -33,6 +33,104 @@ func caminhoDoCatalogoDeViews(projectRoot string) string {
 	return filepath.Join(projectRoot, "internal", "gokit", "core", "view.gen.go")
 }
 
+func caminhoDoCatalogoDeColunas(projectRoot string) string {
+	return filepath.Join(projectRoot, "internal", "gokit", "core", "column.gen.go")
+}
+
+// colunasPorTabela acumula, por tabela, TODA coluna que já apareceu no corpus.
+//
+// A leitura é por AST tolerante — o parser do Go, não o do DSL —, igual à do
+// catálogo de tabelas: assim ela funciona com corpus que ainda não descreve um
+// schema válido, e não depende de a migration estar preenchida.
+//
+// Acumula e nunca remove, pela mesma razão das tabelas: a migration que derrubou
+// uma coluna cita o nome dela, e precisa continuar compilando.
+//
+// A atribuição coluna→tabela sai da ÁRVORE da chamada: em
+// CreateTable("cidades", Col("id"), Col("nome")) os Col são argumentos do
+// CreateTable, então basta descer na subárvore de cada operação que recebe tabela.
+func colunasPorTabela(migrationsFolder string, tabelas map[string]string) map[string]map[string]bool {
+	acumulado := map[string]map[string]bool{}
+
+	// operacoesComTabela são as que trazem tabela no 1º argumento e coluna dentro.
+	operacoesComTabela := map[string]bool{
+		"CreateTable": true, "AddColumn": true, "AlterColumn": true, "DropColumn": true,
+	}
+
+	_ = filepath.WalkDir(migrationsFolder, func(caminho string, entrada fs.DirEntry, err error) error {
+		if err != nil || entrada.IsDir() || !strings.HasSuffix(entrada.Name(), ".go") {
+			return nil
+		}
+		arquivo, parseErr := parser.ParseFile(token.NewFileSet(), caminho, nil, 0)
+		if parseErr != nil {
+			// Arquivo que ainda não é Go válido não interrompe o catálogo: ele é
+			// justamente o que precisa do catálogo para passar a compilar.
+			return nil
+		}
+		ast.Inspect(arquivo, func(no ast.Node) bool {
+			chamada, ok := no.(*ast.CallExpr)
+			if !ok || len(chamada.Args) == 0 {
+				return true
+			}
+			seletor, ok := chamada.Fun.(*ast.SelectorExpr)
+			if !ok || !operacoesComTabela[seletor.Sel.Name] {
+				return true
+			}
+			tabela := tabelaDoArgumento(chamada.Args[0], tabelas)
+			if tabela == "" {
+				return true
+			}
+			chave := strings.ToLower(tabela)
+			if acumulado[chave] == nil {
+				acumulado[chave] = map[string]bool{}
+			}
+			for _, coluna := range colunasNaSubarvore(chamada) {
+				acumulado[chave][coluna] = true
+			}
+			return true
+		})
+		return nil
+	})
+	return acumulado
+}
+
+// tabelaDoArgumento resolve o 1º argumento de uma operação: literal ("cidades")
+// ou referência de catálogo (core.Table.Cidades / alias.Cidades), que é traduzida
+// pelo catálogo de tabelas.
+func tabelaDoArgumento(expressao ast.Expr, tabelas map[string]string) string {
+	if nome, ok := quotedLiteral(expressao); ok {
+		return nome
+	}
+	seletor, ok := expressao.(*ast.SelectorExpr)
+	if !ok {
+		return ""
+	}
+	if fisico, tem := tabelas[seletor.Sel.Name]; tem {
+		return fisico
+	}
+	return ""
+}
+
+// colunasNaSubarvore acha todo Col("x") dentro de uma chamada.
+func colunasNaSubarvore(no ast.Node) []string {
+	var saida []string
+	ast.Inspect(no, func(interno ast.Node) bool {
+		chamada, ok := interno.(*ast.CallExpr)
+		if !ok || len(chamada.Args) == 0 {
+			return true
+		}
+		seletor, ok := chamada.Fun.(*ast.SelectorExpr)
+		if !ok || seletor.Sel.Name != "Col" {
+			return true
+		}
+		if nome, ok := quotedLiteral(chamada.Args[0]); ok && nome != "" {
+			saida = append(saida, nome)
+		}
+		return true
+	})
+	return saida
+}
+
 // caminhosLegadosDoCatalogo são as versões anteriores, só para leitura.
 func caminhosLegadosDoCatalogo(projectRoot string) []string {
 	return []string{
@@ -271,6 +369,93 @@ func PrimeCoreCatalog(projectRoot string, paths []string) error {
 	return WriteCoreCatalog(projectRoot, aliases)
 }
 
+// WriteCoreColumnCatalog escreve o catálogo de colunas no pacote core.
+//
+// A forma é um agrupador de dois níveis — core.Column.<Tabela>.<Coluna> —, irmão
+// do core.Table. Ficam separados de propósito: assim `core.Table.X` continua
+// idêntico ao que as migrations já escrevem (zero migração), e uma coluna chamada
+// "table" não colide com o nome da tabela.
+func WriteCoreColumnCatalog(projectRoot, migrationsFolder string) error {
+	tabelas := catalogoAcumulado(projectRoot)
+	porTabela := colunasPorTabela(migrationsFolder, tabelas)
+
+	// Identificador de tabela → o de coluna, já normalizado, com a guarda de
+	// colisão. Duas colunas que colapsam no mesmo identificador não têm .Alias()
+	// para desempatar; a saída é renomear na migration, e a mensagem diz isso.
+	type entrada struct {
+		identificador string
+		colunas       map[string]string // identificador Go -> nome físico
+	}
+	entradas := make([]entrada, 0, len(porTabela))
+	tabelasOrdenadas := make([]string, 0, len(porTabela))
+	for tabela := range porTabela {
+		tabelasOrdenadas = append(tabelasOrdenadas, tabela)
+	}
+	sort.Strings(tabelasOrdenadas)
+
+	for _, tabela := range tabelasOrdenadas {
+		colunas := map[string]string{}
+		nomes := make([]string, 0, len(porTabela[tabela]))
+		for coluna := range porTabela[tabela] {
+			nomes = append(nomes, coluna)
+		}
+		sort.Strings(nomes)
+		for _, coluna := range nomes {
+			identificador := ExportedIdentifier(coluna)
+			if anterior, ocupado := colunas[identificador]; ocupado {
+				return i18n.Errf("cat_column_collision", tabela, anterior, coluna, identificador)
+			}
+			colunas[identificador] = coluna
+		}
+		entradas = append(entradas, entrada{identificador: ExportedIdentifier(tabela), colunas: colunas})
+	}
+
+	var corpo strings.Builder
+	corpo.WriteString("// Code generated by GoKit. DO NOT EDIT.\npackage core\n\n")
+	if len(entradas) > 0 {
+		corpo.WriteString("import migrate \"github.com/PhelipeViana/gokit/migration\"\n\n")
+	}
+	corpo.WriteString(i18n.T("cat_gen_column_note"))
+	if len(entradas) == 0 {
+		corpo.WriteString("var Column = struct{}{}\n")
+	} else {
+		// O tipo anônimo é declarado duas vezes — na struct e no literal — porque um
+		// agrupador aninhado não tem nome. Sai formatado pelo go/format no fim.
+		corpo.WriteString("var Column = struct {\n")
+		for _, e := range entradas {
+			fmt.Fprintf(&corpo, "\t%s struct {\n", e.identificador)
+			for _, id := range chavesOrdenadas(e.colunas) {
+				fmt.Fprintf(&corpo, "\t\t%s migrate.ColumnName\n", id)
+			}
+			corpo.WriteString("\t}\n")
+		}
+		corpo.WriteString("}{\n")
+		for _, e := range entradas {
+			fmt.Fprintf(&corpo, "\t%s: struct {\n", e.identificador)
+			for _, id := range chavesOrdenadas(e.colunas) {
+				fmt.Fprintf(&corpo, "\t\t%s migrate.ColumnName\n", id)
+			}
+			corpo.WriteString("\t}{\n")
+			for _, id := range chavesOrdenadas(e.colunas) {
+				fmt.Fprintf(&corpo, "\t\t%s: %q,\n", id, e.colunas[id])
+			}
+			corpo.WriteString("\t},\n")
+		}
+		corpo.WriteString("}\n")
+	}
+
+	formatado, err := format.Source([]byte(corpo.String()))
+	if err != nil {
+		return err
+	}
+	caminho := caminhoDoCatalogoDeColunas(projectRoot)
+	if err := os.MkdirAll(filepath.Dir(caminho), 0o755); err != nil {
+		return err
+	}
+	_ = os.Remove(caminho)
+	return os.WriteFile(caminho, formatado, 0o644)
+}
+
 // CatalogNames devolve os nomes do catálogo de tabelas, em ordem estável.
 //
 // Existe para que ninguém mais escreva um regex próprio sobre o arquivo gerado: a
@@ -340,13 +525,44 @@ func ViewIdentifier(value string) string {
 	return exportedIdentifier(normalized)
 }
 
-func exportedIdentifier(value string) string {
-	if !strings.ContainsAny(value, "_- .") && value != "" {
-		return strings.ToUpper(value[:1]) + value[1:]
+// ExportedIdentifier converte um nome físico no identificador Go exportado que o
+// código gerado usa.
+//
+// É a ÚNICA normalização do gokit, e mora aqui porque este é o pacote mais baixo:
+// o gerador da ORM (migraterun) importa migrationgo, nunca o contrário.
+//
+// Havia duas antes, com comportamentos diferentes: `MIL_PST` virava `MilPst` num
+// lado e `MILPST` no outro, e `valor total` virava `ValorTotal` num e
+// `Valor total` — identificador inválido — no outro. Enquanto o catálogo só tinha
+// tabelas isso não machucava, porque o validador de nome físico barra os casos
+// divergentes. Com coluna no catálogo, o mesmo nome geraria dois identificadores
+// no MESMO pacote, e nenhum compilador acusaria.
+//
+// A regra é a mais tolerante das duas: separa por _, - e espaço, e normaliza a
+// caixa de cada parte.
+func ExportedIdentifier(value string) string {
+	partes := strings.FieldsFunc(strings.ToLower(value), func(r rune) bool {
+		return r == '_' || r == '-' || r == ' '
+	})
+	for i := range partes {
+		if partes[i] != "" {
+			partes[i] = strings.ToUpper(partes[i][:1]) + partes[i][1:]
+		}
 	}
-	identifier := tableIdentifier(value)
-	return strings.ToUpper(identifier[:1]) + identifier[1:]
+	return strings.Join(partes, "")
 }
+
+// UnexportedIdentifier é a mesma regra com a inicial minúscula, para o nome dos
+// tipos internos do código gerado (usersEntity, usersColumnSet).
+func UnexportedIdentifier(value string) string {
+	exportado := ExportedIdentifier(value)
+	if exportado == "" {
+		return ""
+	}
+	return strings.ToLower(exportado[:1]) + exportado[1:]
+}
+
+func exportedIdentifier(value string) string { return ExportedIdentifier(value) }
 
 func identName(e ast.Expr) string {
 	if i, ok := e.(*ast.Ident); ok {

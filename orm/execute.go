@@ -155,10 +155,28 @@ func (q Query[T]) ExistsWith(ctx context.Context, r Runner) (bool, error) {
 }
 
 // Atalhos no Model para a tabela inteira (sem filtro).
+//
+// Cada um tem a variante *With, que recebe o Runner explícito. Sem elas, ler a
+// tabela inteira dentro de uma transação obrigava a escrever u.All().CountWith(),
+// e o .All() ali é ruído — a assimetria aparecia justamente no lugar onde a
+// escrita vive, porque é dentro de transação que se lê para decidir e gravar.
 func (m Model[T]) Get(ctx context.Context) ([]T, error)     { return m.All().Get(ctx) }
 func (m Model[T]) Count(ctx context.Context) (int64, error) { return m.All().Count(ctx) }
 func (m Model[T]) First(ctx context.Context) (T, error)     { return m.All().First(ctx) }
 func (m Model[T]) Exists(ctx context.Context) (bool, error) { return m.All().Exists(ctx) }
+
+func (m Model[T]) GetWith(ctx context.Context, r Runner) ([]T, error) {
+	return m.All().GetWith(ctx, r)
+}
+func (m Model[T]) CountWith(ctx context.Context, r Runner) (int64, error) {
+	return m.All().CountWith(ctx, r)
+}
+func (m Model[T]) FirstWith(ctx context.Context, r Runner) (T, error) {
+	return m.All().FirstWith(ctx, r)
+}
+func (m Model[T]) ExistsWith(ctx context.Context, r Runner) (bool, error) {
+	return m.All().ExistsWith(ctx, r)
+}
 
 // ScanRecords é o Scanner embutido para Record (map). Normaliza a chave para
 // minúsculas e converte []byte em string (o driver do MySQL devolve texto/número
@@ -240,6 +258,19 @@ func (m Model[T]) Avg(ctx context.Context, col Column) (Value, error) { return m
 func (m Model[T]) Min(ctx context.Context, col Column) (Value, error) { return m.All().Min(ctx, col) }
 func (m Model[T]) Max(ctx context.Context, col Column) (Value, error) { return m.All().Max(ctx, col) }
 
+func (m Model[T]) SumWith(ctx context.Context, r Runner, col Column) (Value, error) {
+	return m.All().SumWith(ctx, r, col)
+}
+func (m Model[T]) AvgWith(ctx context.Context, r Runner, col Column) (Value, error) {
+	return m.All().AvgWith(ctx, r, col)
+}
+func (m Model[T]) MinWith(ctx context.Context, r Runner, col Column) (Value, error) {
+	return m.All().MinWith(ctx, r, col)
+}
+func (m Model[T]) MaxWith(ctx context.Context, r Runner, col Column) (Value, error) {
+	return m.All().MaxWith(ctx, r, col)
+}
+
 // ------------------------------------------------------------ Paginação
 
 // Page é o resultado paginado: itens da página + metadados.
@@ -278,6 +309,10 @@ func (q Query[T]) PaginateWith(ctx context.Context, r Runner, page, size int) (P
 
 func (m Model[T]) Paginate(ctx context.Context, page, size int) (Page[T], error) {
 	return m.All().Paginate(ctx, page, size)
+}
+
+func (m Model[T]) PaginateWith(ctx context.Context, r Runner, page, size int) (Page[T], error) {
+	return m.All().PaginateWith(ctx, r, page, size)
 }
 
 // ------------------------------------------------------------ Find / Pluck
@@ -400,6 +435,18 @@ func (m Model[T]) PluckInt(ctx context.Context, col Column) ([]int64, error) {
 
 func (m Model[T]) PluckString(ctx context.Context, col Column) ([]string, error) {
 	return m.All().PluckString(ctx, col)
+}
+
+func (m Model[T]) PluckWith(ctx context.Context, r Runner, col Column) ([]Value, error) {
+	return m.All().PluckWith(ctx, r, col)
+}
+
+func (m Model[T]) PluckIntWith(ctx context.Context, r Runner, col Column) ([]int64, error) {
+	return m.All().PluckIntWith(ctx, r, col)
+}
+
+func (m Model[T]) PluckStringWith(ctx context.Context, r Runner, col Column) ([]string, error) {
+	return m.All().PluckStringWith(ctx, r, col)
 }
 
 // Variantes *With das agregações (conexão explícita), para paridade com os
