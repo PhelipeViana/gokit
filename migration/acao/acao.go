@@ -17,13 +17,21 @@ import (
 //
 // O que ela continua recusando é o que realmente quebra ou engana:
 //
-//	espaço            "minha coluna"     quebra SQL escrito à mão
-//	símbolo           "<idx_algo>"       existe em banco legado por descuido
-//	MAIÚSCULA         "Autenticacao"     o Oracle dobra para maiúscula e o MySQL em
+//	espaço             "minha coluna"    quebra SQL escrito à mão
+//	símbolo            "<idx_algo>"      existe em banco legado por descuido
+//	MAIÚSCULA          "Autenticacao"    o Oracle dobra para maiúscula e o MySQL em
 //	                                     Linux diferencia caixa: o mesmo corpus
 //	                                     passaria a achar tabelas diferentes
 //	começar com dígito "2fa"             recusado por parte dos bancos
-var physicalNamePattern = regexp.MustCompile(`^\p{Ll}[\p{Ll}0-9_]*$`)
+//	underscore duplo   "pessoas__ativas" MEDIDO: gera o mesmo identificador de
+//	                                     catálogo que `pessoas_ativas`, então as duas
+//	                                     tabelas brigariam por core.Table.PessoasAtivas
+//
+// O underscore no FIM é aceito, apesar de `data_` gerar o mesmo identificador que
+// `data`: aquele nome existe em schema real e coluna não tem `.Alias()` para
+// desempatar. A colisão, quando acontece, é barrada com mensagem própria na geração
+// da ORM — que é o lugar onde ela importa.
+var physicalNamePattern = regexp.MustCompile(`^\p{Ll}[\p{Ll}0-9]*(?:_[\p{Ll}0-9]+)*_?$`)
 
 // tiposSuportados espelha o mapa de dataType do executor. Um tipo fora desta
 // lista geraria DDL sem tipo, então é barrado ainda na pré-validação.

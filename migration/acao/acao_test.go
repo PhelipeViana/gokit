@@ -68,7 +68,7 @@ func TestValidarRejectsUnsafeRenameTableName(t *testing.T) {
 func TestNomeFisicoAceitaOQueOsBancosAceitam(t *testing.T) {
 	validos := []string{
 		"users", "eventos_bkp435037", "data_", "autenticação", "carta_concessão",
-		"linkarportaltransparência", "a", "tabela__dupla", "col1",
+		"linkarportaltransparência", "a", "col1", "tabela_de_nome_bem_longo_que_o_apelido_resolve",
 	}
 	for _, nome := range validos {
 		if !NomeFisicoValido(nome) {
@@ -88,7 +88,10 @@ func TestNomeFisicoRecusaOQueQuebra(t *testing.T) {
 		"2fa":           "começar por dígito é recusado por parte dos bancos",
 		"_interno":      "começar por underscore",
 		"":              "vazio",
-		"tabela.coluna": "ponto é separador de qualificação",
+		"tabela.coluna":   "ponto é separador de qualificação",
+		// Este é o único recusado por colisão, e não por quebrar no banco: MEDIDO,
+		// gera o mesmo identificador de catálogo que `pessoas_ativas`.
+		"pessoas__ativas": "underscore duplo colide com pessoas_ativas no catálogo",
 	}
 	for nome, razao := range invalidos {
 		if NomeFisicoValido(nome) {
