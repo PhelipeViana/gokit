@@ -364,6 +364,13 @@ func init() {
 			ES: "en la tabla %s, las columnas %q y %q generan el mismo identificador Go (%s) en el catalogo; renombre una de ellas en la migracion",
 			EN: "in table %s, columns %q and %q generate the same Go identifier (%s) in the catalog; rename one of them in the migration",
 		},
+		// Colisão no nível da TABELA. A saída é .Alias(), que existe exatamente para
+		// isso — ao contrário da coluna, que não tem apelido.
+		"cat_table_collision": {
+			PT: "as tabelas %q e %q geram o mesmo identificador Go (%s) no catálogo de colunas; dê um apelido a uma delas com .Alias(\"outro_nome\") na migration",
+			ES: "las tablas %q y %q generan el mismo identificador Go (%s) en el catálogo de columnas; asigne un alias a una de ellas con .Alias(\"otro_nombre\") en la migración",
+			EN: "tables %q and %q generate the same Go identifier (%s) in the column catalog; give one of them a nickname with .Alias(\"another_name\") in the migration",
+		},
 		"cat_gen_view_note": {
 			PT: "// Identidade física de cada view, para as migrations. Acumula e nunca remove.\n",
 			ES: "// Identidad física de cada view, para las migraciones. Acumula y nunca elimina.\n",

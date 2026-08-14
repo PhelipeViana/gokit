@@ -167,6 +167,7 @@ func RunSelfUpdate() error {
 
 	newExec := currentExec + ".new"
 	oldExec := currentExec + ".old"
+	// Sobra de tentativa anterior. Se resistir, o OpenFile abaixo é quem reporta.
 	_ = os.Remove(newExec)
 	out, err := os.OpenFile(newExec, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o755)
 	if err != nil {
@@ -190,26 +191,44 @@ func RunSelfUpdate() error {
 		return i18n.Errf("upd_chmod_failed", err)
 	}
 
+	// Backup anterior. Se resistir, o Rename abaixo é quem reporta.
 	_ = os.Remove(oldExec)
 	if err := os.Rename(currentExec, oldExec); err != nil {
 		_ = os.Remove(newExec)
 		return i18n.Errf("upd_backup_failed", err)
 	}
+	// Daqui para baixo o executável em uso já foi movido para .old, e todo caminho de
+	// falha tem de trazê-lo de volta. É por isso que o retorno passa por restaurar():
+	// se a volta também falhar, o usuário fica SEM gokit nenhum, e a mensagem original
+	// ("não deu para instalar") não diria isso nem como resolver.
 	if err := os.Rename(newExec, currentExec); err != nil {
-		_ = os.Rename(oldExec, currentExec)
 		_ = os.Remove(newExec)
-		return i18n.Errf("upd_install_failed", err)
+		return restaurar(oldExec, currentExec, i18n.Errf("upd_install_failed", err))
 	}
 	if _, err := os.Stat(currentExec); err != nil {
-		_ = os.Rename(oldExec, currentExec)
-		return i18n.Errf("upd_write_failed", err)
+		return restaurar(oldExec, currentExec, i18n.Errf("upd_write_failed", err))
 	}
 	if err := prepareExecutable(currentExec); err != nil {
+		// O baixado sai da frente para o antigo poder voltar ao nome. Se ele não sair, o
+		// Rename da restauração falha e restaurar() diz o que fazer à mão.
 		_ = os.Remove(currentExec)
-		_ = os.Rename(oldExec, currentExec)
-		return i18n.Errf("upd_macos_validate_failed", err)
+		return restaurar(oldExec, currentExec, i18n.Errf("upd_macos_validate_failed", err))
 	}
 	return nil
+}
+
+// restaurar devolve o executável antigo ao lugar depois de uma atualização falhada e
+// junta as duas notícias em um erro só.
+//
+// A falha da restauração é MAIS grave que a da atualização: a atualização falhada
+// deixa o usuário na versão anterior, que funciona; a restauração falhada deixa o
+// comando sem binário. Antes o segundo erro era descartado e o usuário lia apenas
+// "não foi possível instalar", com o gokit inexistente no caminho.
+func restaurar(oldExec, currentExec string, causa error) error {
+	if err := os.Rename(oldExec, currentExec); err != nil {
+		return i18n.Errf("upd_restore_failed", causa, oldExec, currentExec, err)
+	}
+	return causa
 }
 
 // prepareExecutable renova a assinatura ad-hoc depois que o arquivo é

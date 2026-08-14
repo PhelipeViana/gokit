@@ -93,6 +93,67 @@ func init() {
 			ES: "StatusError lleva un status HTTP + mensaje; el responder deriva el código de él.",
 			EN: "StatusError carries an HTTP status + message; the responder derives the code from it.",
 		},
+		// A classe do erro de banco vira status. Sem isto, chave duplicada respondia
+		// 500 — o cliente não sabia que o conserto era dele, e o alerta de erro de
+		// servidor disparava por dado repetido.
+		"gen_resp_status_class": {
+			PT: "A classe do erro de banco define o status: duplicidade é 409, e restrição violada é 422 — em nenhum dos dois o servidor falhou.",
+			ES: "La clase del error de base define el status: duplicidad es 409, y restricción violada es 422 — en ninguno de los dos falló el servidor.",
+			EN: "The database error class sets the status: a duplicate is 409, and a violated constraint is 422 — in neither case did the server fail.",
+		},
+		// A mensagem crua do driver não chega ao cliente. Ela cita nome de banco, de
+		// tabela e de constraint — e o mascaramento do safeError só vale de 500 para
+		// cima, então mover essas falhas para 409/422 as tirou de trás da máscara.
+		"gen_resp_db_mask": {
+			PT: "A mensagem do driver fica no log e o cliente recebe o texto da classe: ela cita banco, tabela e constraint, e o mascaramento do safeError só cobre 5xx.",
+			ES: "El mensaje del driver queda en el log y el cliente recibe el texto de la clase: aquel cita base, tabla y constraint, y el enmascarado de safeError solo cubre 5xx.",
+			EN: "The driver message stays in the log and the client gets the class text: the driver names the database, table and constraint, and safeError only masks 5xx.",
+		},
+		"gen_resp_db_message": {
+			PT: "databaseMessage traduz a classe do erro de banco em texto para o cliente. Segundo retorno falso = não é erro de banco classificado.",
+			ES: "databaseMessage traduce la clase del error de base en texto para el cliente. Segundo retorno falso = no es error de base clasificado.",
+			EN: "databaseMessage turns the database error class into client-facing text. A false second return means it is not a classified database error.",
+		},
+		"gen_msg_db_log": {
+			PT: "[%s] erro de banco (status %d): %v",
+			ES: "[%s] error de base (status %d): %v",
+			EN: "[%s] database error (status %d): %v",
+		},
+		"gen_msg_db_duplicate": {
+			PT: "Já existe um registro com esse valor.",
+			ES: "Ya existe un registro con ese valor.",
+			EN: "A record with this value already exists.",
+		},
+		"gen_msg_db_foreign_key": {
+			PT: "O registro referenciado não existe, ou ainda está em uso por outro registro.",
+			ES: "El registro referenciado no existe, o todavía está en uso por otro registro.",
+			EN: "The referenced record does not exist, or is still in use by another record.",
+		},
+		"gen_msg_db_not_null": {
+			PT: "Um campo obrigatório não foi informado.",
+			ES: "Un campo obligatorio no fue informado.",
+			EN: "A required field was not provided.",
+		},
+		"gen_msg_db_check": {
+			PT: "Um dos valores enviados não é aceito para esse campo.",
+			ES: "Uno de los valores enviados no es aceptado para ese campo.",
+			EN: "One of the submitted values is not accepted for that field.",
+		},
+		"gen_msg_db_too_long": {
+			PT: "Um dos valores enviados é maior que o tamanho permitido.",
+			ES: "Uno de los valores enviados es mayor que el tamaño permitido.",
+			EN: "One of the submitted values is longer than allowed.",
+		},
+		"gen_msg_db_invalid_value": {
+			PT: "Um dos valores enviados não corresponde ao tipo esperado do campo.",
+			ES: "Uno de los valores enviados no corresponde al tipo esperado del campo.",
+			EN: "One of the submitted values does not match the field's expected type.",
+		},
+		"gen_msg_db_out_of_range": {
+			PT: "Um dos valores numéricos enviados está fora da faixa permitida.",
+			ES: "Uno de los valores numéricos enviados está fuera del rango permitido.",
+			EN: "One of the submitted numbers is outside the allowed range.",
+		},
 		"gen_resp_list": {
 			PT: "RespondList valida page/per_page, pagina a query e responde paginado.",
 			ES: "RespondList valida page/per_page, pagina la query y responde paginado.",

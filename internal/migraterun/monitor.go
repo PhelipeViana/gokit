@@ -22,6 +22,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/PhelipeViana/gokit/internal/aviso"
 )
 
 // Tipos de ocorrência. São string, e não número, porque o arquivo é lido por
@@ -166,6 +168,89 @@ func (m *Monitor) Escrever(root, pastaDeDocs string) (string, error) {
 // nomeDoMonitor é fixo: reescrever o mesmo arquivo deixa o diff entre execuções
 // mostrar o que foi resolvido. Um arquivo por execução esconderia isso.
 const nomeDoMonitor = "monitor-import.json"
+
+// nivelDaOcorrencia traduz o tipo de ocorrência em GRAVIDADE, que é o eixo do filtro
+// de notificação.
+//
+// A separação importa: o tipo diz O QUE aconteceu e serve ao relatório; o nível diz
+// QUÃO SÉRIO é e serve a quem assina o canal. Ocorrência que o motor já resolveu
+// sozinho é info — notificá-la como problema treinaria a equipe a ignorar o canal.
+func nivelDaOcorrencia(tipo string) aviso.Nivel {
+	switch tipo {
+	case OcorrenciaAliasRenomeado:
+		// O motor desempatou o apelido e o nome físico ficou intacto: nada a fazer.
+		return aviso.NivelInfo
+	case OcorrenciaTipoSemEquivalente, OcorrenciaNaoLido, OcorrenciaSQLNaoPortavel:
+		// Degradou de forma registrada. Nada falhou, mas há lacuna a fechar.
+		return aviso.NivelWarning
+	case OcorrenciaIdentidadeForaDaChave:
+		// Resolvido pelo executor, que cria a UNIQUE KEY no MySQL. É só ciência.
+		return aviso.NivelInfo
+	}
+	// Tipo que este tradutor não conhece é justamente o que ninguém mapeou.
+	return aviso.NivelWarning
+}
+
+// Notificar manda o resumo do monitor para o canal, agrupado por tipo.
+//
+// Agrupado, e não uma mensagem por ocorrência: um schema legado gera centenas, e 792
+// posts no canal seria o mesmo que nenhum. O arquivo tem o detalhe; o canal tem o
+// resumo e o caminho para o arquivo.
+func (m *Monitor) Notificar(central aviso.Central, caminhoDoArquivo string) {
+	if m.Vazio() || !central.Ativa() {
+		return
+	}
+
+	// Uma mensagem por NÍVEL: quem assina só warning não deve receber o que é info.
+	porNivel := map[aviso.Nivel][]string{}
+	for tipo, quantidade := range m.PorTipo {
+		nivel := nivelDaOcorrencia(tipo)
+		porNivel[nivel] = append(porNivel[nivel], fmt.Sprintf("%s: %d", tipo, quantidade))
+	}
+
+	for nivel, linhas := range porNivel {
+		sort.Strings(linhas)
+		total := 0
+		for tipo, quantidade := range m.PorTipo {
+			if nivelDaOcorrencia(tipo) == nivel {
+				total += quantidade
+			}
+		}
+		central.Notificar(aviso.Aviso{
+			Nivel: nivel,
+			Acao:  "leitura do banco com ocorrências",
+			Corpo: fmt.Sprintf("A leitura do banco registrou %d ocorrência(s) neste nível. O detalhe de cada "+
+				"uma está em %s, com o que o banco disse cru e o que o gokit decidiu.", total, caminhoDoArquivo),
+			Contexto: map[string]string{"comando": m.Comando, "registro": caminhoDoArquivo},
+			Bruto:    strings.Join(linhas, "\n"),
+		})
+	}
+}
+
+// registrarDefaultNaoPortavel anota a coluna cujo DEFAULT é expressão que o tradutor
+// do executor não reconhece.
+//
+// O arquivo sai FIEL à origem — a expressão é o que o banco de fato usa —, e por isso
+// mesmo ela é uma bomba armada: aplicar esse corpus em outro dialeto produz o erro do
+// banco, não uma mensagem do gokit. Foi o caso do `user_name()` do SQL Server, que no
+// Oracle virou ORA-04044 no meio da migração, sem citar DEFAULT nem a coluna.
+//
+// Registrada, ela aparece na lista de trabalho ANTES do run.
+func registrarDefaultNaoPortavel(m *Monitor, tabela string, coluna ColunaDoBanco) {
+	if coluna.Default == "" || !EhExpressao(coluna.Default) {
+		return
+	}
+	if defaultPortavel(coluna.Default) {
+		return
+	}
+	m.Registrar(Ocorrencia{
+		Tipo:    OcorrenciaSQLNaoPortavel,
+		Tabela:  strings.ToLower(tabela),
+		Coluna:  strings.ToLower(coluna.Nome),
+		Origem:  coluna.Default,
+		Decisao: "DEFAULT mantido fiel à origem; o tradutor do executor não conhece esta expressão, então ela vai crua para os outros dialetos",
+	})
+}
 
 // registrarTipoDegradado anota a coluna cujo tipo o DSL não sabe representar.
 func registrarTipoDegradado(m *Monitor, tabela string, coluna ColunaDoBanco, dialect, declarado string) {

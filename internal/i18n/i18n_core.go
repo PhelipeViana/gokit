@@ -65,6 +65,14 @@ func init() {
 			ES: "fallo al validar la actualización en macOS: %v",
 			EN: "failed to validate the update on macOS: %v",
 		},
+		// O pior desfecho da atualização: falhou E o binário antigo não voltou. A
+		// mensagem tem de trazer os dois caminhos, porque a saída é renomear à mão — e
+		// quem lê isso não tem mais o comando para pedir ajuda a ele.
+		"upd_restore_failed": {
+			PT: "%w — e o executável anterior NÃO voltou ao lugar: renomeie %s para %s à mão para ter o gokit de volta (%v)",
+			ES: "%w — y el ejecutable anterior NO volvió a su lugar: renombre %s a %s a mano para recuperar gokit (%v)",
+			EN: "%w — and the previous executable was NOT restored: rename %s to %s by hand to get gokit back (%v)",
+		},
 		"upd_codesign": {
 			PT: "codesign: %s: %w",
 			ES: "codesign: %s: %w",

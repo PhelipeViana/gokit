@@ -327,6 +327,12 @@ func checkDockerState(step *ReloadStep) error {
 	}
 
 	// 3. Auto-Healing: tenta iniciar a engine do Docker automaticamente se inativa
+	//
+	// O erro de cada comando é descartado de propósito: o que importa não é se o
+	// comando saiu com zero, é se o daemon respondeu — e isso é conferido pelo `docker
+	// info` logo depois do sleep. `open -a Docker` retorna zero antes de o daemon subir,
+	// e `systemctl` sem sudo retorna erro mesmo quando outra coisa já o iniciou; nos
+	// dois casos o código de saída mentiria.
 	var started bool
 	if runtime.GOOS == "darwin" {
 		if _, colimaErr := exec.LookPath("colima"); colimaErr == nil {
@@ -528,7 +534,7 @@ func executeFactories(step *ReloadStep, state config.ConfigState) error {
 // ==========================================
 
 func generateORM(step *ReloadStep, state config.ConfigState) error {
-	count, err := GenerateORM(".", state)
+	count, _, err := GenerateORM(".", state)
 	if err != nil {
 		step.Message = i18n.Tf("rel_orm_failed", err)
 		return err
@@ -682,7 +688,13 @@ func moveFiles(src, dst string) error {
 				return err
 			}
 		} else {
-			// Move o arquivo (Remove primeiro se for read-only)
+			// Move o arquivo (Remove primeiro se for read-only).
+			//
+			// Os três descartes deste bloco são intencionais e por motivos diferentes:
+			// o Remove do destino é tentativa — se ele não existia, não há o que apagar,
+			// e se existia e resistiu, o Rename logo abaixo é quem reporta; o Remove da
+			// origem depois da cópia deixa lixo, não perde dado, e falhar aqui desfaria
+			// uma cópia que já deu certo.
 			_ = os.Remove(dstPath)
 			err = os.Rename(srcPath, dstPath)
 			if err != nil {
@@ -696,7 +708,8 @@ func moveFiles(src, dst string) error {
 		}
 	}
 
-	// Remove pasta de origem se vazia
+	// Remove pasta de origem se vazia — falha aqui significa que ainda tem coisa
+	// dentro, e pasta sobrando não invalida o move que acabou de ser feito.
 	_ = os.Remove(src)
 	return nil
 }

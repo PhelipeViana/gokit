@@ -1,4 +1,4 @@
-# Suíte de regressão do contrato de seed e ID fixo.
+﻿# Suíte de regressão do contrato de seed e ID fixo.
 #
 # Cria uma migration própria com timestamp 9999 (roda depois de todo o corpus),
 # manipula o Seeder() entre os cenários e confere o resultado nos quatro

@@ -39,11 +39,18 @@ type IndiceDoBanco struct {
 	Unico   bool
 }
 
-// FKDoBanco é uma chave estrangeira já resolvida para coluna → pai.
+// FKDoBanco é UMA COLUNA de uma chave estrangeira lida do banco.
+//
+// Constraint é o que amarra as colunas de uma FK COMPOSTA. Sem ele, o import lia
+// duas linhas independentes e escrevia duas FKs de uma coluna cada — dizendo que
+// cada coluna referencia o pai por si. Quando o pai tem chave composta, nenhuma das
+// duas é válida, e o Oracle recusa com ORA-02270. O corpus passava a declarar uma
+// integridade diferente da que o banco de origem tem.
 type FKDoBanco struct {
-	Coluna    string
-	TabelaPai string
-	ColunaPai string
+	Coluna     string
+	TabelaPai  string
+	ColunaPai  string
+	Constraint string
 }
 
 // TabelaDoBanco é o retrato de uma tabela existente.
@@ -239,7 +246,7 @@ func lerForeignKeys(ctx context.Context, db *sql.DB, dialect, schema string, tab
 
 	switch dialect {
 	case "postgres":
-		comando = `SELECT tc.table_name, kcu.column_name, ccu.table_name, ccu.column_name
+		comando = `SELECT tc.table_name, kcu.column_name, ccu.table_name, ccu.column_name, tc.constraint_name
 			FROM information_schema.table_constraints tc
 			JOIN information_schema.key_column_usage kcu
 			  ON kcu.constraint_name = tc.constraint_name AND kcu.table_schema = tc.table_schema
@@ -250,22 +257,22 @@ func lerForeignKeys(ctx context.Context, db *sql.DB, dialect, schema string, tab
 		argumentos = []any{schemaOr(schema, "public")}
 
 	case "mysql":
-		comando = `SELECT table_name, column_name, referenced_table_name, referenced_column_name
+		comando = `SELECT table_name, column_name, referenced_table_name, referenced_column_name, constraint_name
 			FROM information_schema.key_column_usage
 			WHERE referenced_table_name IS NOT NULL AND table_schema = DATABASE()
 			ORDER BY table_name, ordinal_position`
 
 	case "sqlserver":
 		comando = `SELECT OBJECT_NAME(fk.parent_object_id), pc.name,
-			OBJECT_NAME(fk.referenced_object_id), rc.name
+			OBJECT_NAME(fk.referenced_object_id), rc.name, fk.name
 			FROM sys.foreign_keys fk
 			JOIN sys.foreign_key_columns fkc ON fkc.constraint_object_id = fk.object_id
 			JOIN sys.columns pc ON pc.object_id = fkc.parent_object_id AND pc.column_id = fkc.parent_column_id
 			JOIN sys.columns rc ON rc.object_id = fkc.referenced_object_id AND rc.column_id = fkc.referenced_column_id
-			ORDER BY OBJECT_NAME(fk.parent_object_id)`
+			ORDER BY OBJECT_NAME(fk.parent_object_id), fk.name, fkc.constraint_column_id`
 
 	default:
-		comando = `SELECT c.table_name, cc.column_name, rc.table_name, rc.column_name
+		comando = `SELECT c.table_name, cc.column_name, rc.table_name, rc.column_name, c.constraint_name
 			FROM all_constraints c
 			JOIN all_cons_columns cc ON cc.owner = c.owner AND cc.constraint_name = c.constraint_name
 			JOIN all_cons_columns rc ON rc.owner = c.r_owner AND rc.constraint_name = c.r_constraint_name
@@ -282,8 +289,8 @@ func lerForeignKeys(ctx context.Context, db *sql.DB, dialect, schema string, tab
 	defer rows.Close()
 
 	for rows.Next() {
-		var tabela, coluna, pai, colunaPai string
-		if err := rows.Scan(&tabela, &coluna, &pai, &colunaPai); err != nil {
+		var tabela, coluna, pai, colunaPai, constraint string
+		if err := rows.Scan(&tabela, &coluna, &pai, &colunaPai, &constraint); err != nil {
 			return err
 		}
 		chave := strings.ToLower(tabela)
@@ -291,7 +298,7 @@ func lerForeignKeys(ctx context.Context, db *sql.DB, dialect, schema string, tab
 		if !existe {
 			continue
 		}
-		atual.ForeignKeys = append(atual.ForeignKeys, FKDoBanco{Coluna: coluna, TabelaPai: pai, ColunaPai: colunaPai})
+		atual.ForeignKeys = append(atual.ForeignKeys, FKDoBanco{Coluna: coluna, TabelaPai: pai, ColunaPai: colunaPai, Constraint: constraint})
 		tabelas[chave] = atual
 	}
 	return rows.Err()
@@ -427,8 +434,18 @@ func EhExpressao(valor string) bool {
 	return strings.ContainsAny(valor, "()+-*/|") && valor != ""
 }
 
-// lerIndices busca os índices comuns — os que NÃO são chave primária nem unique
-// constraint, porque esses dois já vêm declarados na própria coluna ou na chave.
+// lerIndices busca os índices da tabela, incluindo os que respaldam constraint
+// UNIQUE. Só a chave primária fica de fora, porque ela já vem declarada na coluna.
+//
+// As quatro consultas EXCLUÍAM a unique constraint, cada uma com o seu NOT EXISTS.
+// Parecia dizer "isso é lido em outro lugar", e não era: nada lia. O resultado é que o
+// import perdia toda garantia de unicidade que não fosse chave primária — o schema
+// migrado passava a aceitar duplicata que a origem recusava, sem uma linha de aviso.
+//
+// O sintoma que denunciou foi outro, e mais tarde: FK apontando para coluna UNIQUE que
+// não é PK. O Oracle recusa com ORA-02270 ("no matching unique or primary key for this
+// column-list"), porque para ele a coluna não tem unicidade nenhuma. Medido em
+// motivo_exclusao_id, que na origem tem DUAS unique constraints.
 func lerIndices(ctx context.Context, db *sql.DB, dialect, schema string, tabelas map[string]TabelaDoBanco) error {
 	var comando string
 	var argumentos []any
@@ -447,7 +464,6 @@ func lerIndices(ctx context.Context, db *sql.DB, dialect, schema string, tabelas
 			JOIN LATERAL unnest(ix.indkey) WITH ORDINALITY AS k(attnum, ord) ON true
 			JOIN pg_attribute a ON a.attrelid = t.oid AND a.attnum = k.attnum
 			WHERE n.nspname = $1 AND t.relkind = 'r' AND NOT ix.indisprimary
-			  AND NOT EXISTS (SELECT 1 FROM pg_constraint c WHERE c.conindid = i.oid AND c.contype = 'u')
 			ORDER BY t.relname, i.relname, k.ord`
 		argumentos = []any{schemaOr(schema, "public")}
 
@@ -455,9 +471,6 @@ func lerIndices(ctx context.Context, db *sql.DB, dialect, schema string, tabelas
 		comando = `SELECT s.table_name, s.index_name, s.column_name, CASE WHEN s.non_unique = 0 THEN 1 ELSE 0 END
 			FROM information_schema.statistics s
 			WHERE s.table_schema = DATABASE() AND s.index_name <> 'PRIMARY'
-			  AND NOT EXISTS (SELECT 1 FROM information_schema.table_constraints tc
-			      WHERE tc.table_schema = s.table_schema AND tc.table_name = s.table_name
-			        AND tc.constraint_name = s.index_name AND tc.constraint_type = 'UNIQUE')
 			ORDER BY s.table_name, s.index_name, s.seq_in_index`
 
 	case "sqlserver":
@@ -467,7 +480,7 @@ func lerIndices(ctx context.Context, db *sql.DB, dialect, schema string, tabelas
 			JOIN sys.schemas s ON s.schema_id = t.schema_id
 			JOIN sys.index_columns ic ON ic.object_id = i.object_id AND ic.index_id = i.index_id
 			JOIN sys.columns c ON c.object_id = ic.object_id AND c.column_id = ic.column_id
-			WHERE s.name = @p1 AND i.is_primary_key = 0 AND i.is_unique_constraint = 0 AND i.type > 0
+			WHERE s.name = @p1 AND i.is_primary_key = 0 AND i.type > 0
 			ORDER BY t.name, i.name, ic.key_ordinal`
 		argumentos = []any{schemaOr(schema, "dbo")}
 
@@ -478,7 +491,7 @@ func lerIndices(ctx context.Context, db *sql.DB, dialect, schema string, tabelas
 			JOIN all_ind_columns c ON c.index_owner = i.owner AND c.index_name = i.index_name
 			WHERE i.owner = :1 AND NOT EXISTS (
 				SELECT 1 FROM all_constraints k WHERE k.owner = i.owner
-				  AND k.index_name = i.index_name AND k.constraint_type IN ('P', 'U'))
+				  AND k.index_name = i.index_name AND k.constraint_type = 'P')
 			ORDER BY i.table_name, i.index_name, c.column_position`
 		argumentos = []any{strings.ToUpper(schema)}
 	}
@@ -602,13 +615,23 @@ func normalizaDefinicaoDeView(texto string) string {
 	if limpo == "" {
 		return ""
 	}
-	// Procura o ` AS ` que separa o cabeçalho do corpo, e só quando o texto começa
-	// com CREATE: um SELECT que já vem sem cabeçalho tem `AS` de apelido de coluna,
-	// e cortar ali destruiria a consulta.
-	alto := strings.ToUpper(limpo)
-	if strings.HasPrefix(alto, "CREATE") {
+	// O corte só acontece quando há cabeçalho: um SELECT que já vem sem ele tem `AS`
+	// de apelido de coluna, e cortar ali destruiria a consulta.
+	//
+	// O teste é feito DEPOIS de pular comentários iniciais. O legado guarda a
+	// definição com o comentário do autor antes do CREATE:
+	//
+	//	/*mostra primeira linha do relatorio de importacao*/
+	//	CREATE VIEW [dbo].[VW_X] AS SELECT ...
+	//
+	// Sem pular o comentário, o texto não "começa com CREATE", o cabeçalho ficava no
+	// arquivo e o executor emitia `CREATE VIEW x AS /*...*/ CREATE VIEW ...`. Medido:
+	// 33 das 552 views ainda carregavam o próprio CREATE por isto.
+	semComentario := pularComentariosIniciais(limpo)
+	if strings.HasPrefix(strings.ToUpper(semComentario), "CREATE") {
+		alto := strings.ToUpper(semComentario)
 		if corte := indiceDoAsDeView(alto); corte > 0 {
-			limpo = strings.TrimSpace(limpo[corte:])
+			limpo = strings.TrimSpace(semComentario[corte:])
 		}
 	}
 	return strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(limpo), ";"))
@@ -616,18 +639,109 @@ func normalizaDefinicaoDeView(texto string) string {
 
 // indiceDoAsDeView acha o fim do primeiro ` AS ` do cabeçalho, ignorando o que
 // estiver dentro de parênteses (lista de colunas da view).
+// indiceDoAsDeView devolve a posição logo depois do `AS` que separa o cabeçalho do
+// corpo da view.
+//
+// Procura o TOKEN `AS`, delimitado por qualquer caractere que não seja de
+// identificador — não a sequência literal " AS " com espaços. O SQL Server guarda a
+// definição com a formatação original, e a forma mais comum no legado é o AS em linha
+// própria:
+//
+//	CREATE VIEW dbo.ALGARISMO_ROMANO
+//	 AS
+//	 SELECT 1 AS CODIGO, ...
+//
+// Com o casamento por espaços, o `AS` seguido de `\n` não casava e o corte caía no
+// PRÓXIMO ` AS ` — o apelido da primeira coluna. O arquivo salvo começava em
+// `CODIGO, 'I' AS ALGARISMO UNION`: consulta destruída, sem erro nenhum. Medido em 552
+// views do SISPREV: 396 começavam no meio da consulta e 101 mantinham o CREATE
+// inteiro, porque ali o corte não acontecia. Só ~55 estavam certas.
 func indiceDoAsDeView(alto string) int {
 	profundidade := 0
-	for posicao := 0; posicao < len(alto)-3; posicao++ {
+	for posicao := 0; posicao+1 < len(alto); posicao++ {
 		switch alto[posicao] {
 		case '(':
 			profundidade++
+			continue
 		case ')':
 			profundidade--
+			continue
 		}
-		if profundidade == 0 && alto[posicao] == ' ' && strings.HasPrefix(alto[posicao:], " AS ") {
-			return posicao + 4
+		if profundidade != 0 || alto[posicao] != 'A' || alto[posicao+1] != 'S' {
+			continue
 		}
+		// Delimitado nas duas pontas: `AS` isolado, e não o fim de `ALIAS` nem o
+		// começo de `ASSINATURA`.
+		if posicao > 0 && ehCaractereDeIdentificador(alto[posicao-1]) {
+			continue
+		}
+		fim := posicao + 2
+		if fim < len(alto) && ehCaractereDeIdentificador(alto[fim]) {
+			continue
+		}
+		return fim
 	}
 	return -1
+}
+
+// ehCaractereDeIdentificador cobre o que os quatro bancos aceitam num nome. `$` e `#`
+// entram porque o Oracle os permite e o legado usa.
+func ehCaractereDeIdentificador(c byte) bool {
+	switch {
+	case c >= 'A' && c <= 'Z', c >= 'a' && c <= 'z', c >= '0' && c <= '9':
+		return true
+	case c == '_', c == '$', c == '#':
+		return true
+	}
+	return false
+}
+
+// pularComentariosIniciais devolve o texto a partir do primeiro caractere que não é
+// espaço nem comentário.
+//
+// Cobre as duas formas do SQL: `--` até o fim da linha e `/* */` em bloco. O
+// comentário NÃO é removido do resultado final — ele é do autor e vale como
+// documentação —, só é pulado para decidir se existe cabeçalho a cortar.
+func pularComentariosIniciais(texto string) string {
+	posicao := 0
+	for posicao < len(texto) {
+		// Espaço em branco.
+		if c := texto[posicao]; c == ' ' || c == '\t' || c == '\r' || c == '\n' {
+			posicao++
+			continue
+		}
+		if strings.HasPrefix(texto[posicao:], "--") {
+			fim := strings.IndexByte(texto[posicao:], '\n')
+			if fim < 0 {
+				return ""
+			}
+			posicao += fim + 1
+			continue
+		}
+		if strings.HasPrefix(texto[posicao:], "/*") {
+			fim := strings.Index(texto[posicao:], "*/")
+			if fim < 0 {
+				// Comentário não fechado: não há como saber onde termina, então o texto
+				// segue intacto e o corte não acontece.
+				return ""
+			}
+			posicao += fim + 2
+			continue
+		}
+		break
+	}
+	return texto[posicao:]
+}
+
+// NomesOrdenadosDeViews devolve os nomes das views em ordem estável.
+//
+// Existe pelo mesmo motivo de NomesOrdenados: percurso de mapa em Go é aleatório, e
+// ordem instável faz a saída do comando mudar entre execuções idênticas.
+func NomesOrdenadosDeViews(views map[string]ViewDoBanco) []string {
+	nomes := make([]string, 0, len(views))
+	for nome := range views {
+		nomes = append(nomes, nome)
+	}
+	sort.Strings(nomes)
+	return nomes
 }

@@ -698,3 +698,43 @@ func init() {
 		},
 	})
 }
+
+// Índice recusado por redundância — só o Oracle faz isso. Info, não erro: a
+// intenção da operação (aquela lista de colunas indexada) está satisfeita.
+func init() {
+	Register(Entradas{
+		"run_index_redundant": {
+			PT: "%d índice(s) não criados: a lista de colunas já estava indexada (só o Oracle recusa). A intenção está satisfeita, mas o nome declarado NÃO existe no banco — um rollback por nome não vai encontrá-lo:",
+			ES: "%d índice(s) no creados: la lista de columnas ya estaba indexada (solo Oracle lo rechaza). La intención está satisfecha, pero el nombre declarado NO existe en la base — un rollback por nombre no lo encontrará:",
+			EN: "%d index(es) not created: the column list was already indexed (only Oracle refuses this). The intent is satisfied, but the declared name does NOT exist in the database — a rollback by name will not find it:",
+		},
+	})
+}
+
+// Motivos pelos quais um índice não foi criado e o run seguiu. Ficam separados
+// porque a consequência é diferente: no primeiro a lista está indexada com outro
+// nome; no segundo não há índice nenhum.
+func init() {
+	Register(Entradas{
+		"run_index_skip_redundant": {
+			PT: "a lista de colunas já estava indexada; o nome declarado não existe no banco",
+			ES: "la lista de columnas ya estaba indexada; el nombre declarado no existe en la base",
+			EN: "the column list was already indexed; the declared name does not exist in the database",
+		},
+		"run_index_skip_too_many": {
+			PT: "acima do limite de 32 colunas por índice do Oracle; NENHUM índice foi criado, é desempenho perdido",
+			ES: "por encima del límite de 32 columnas por índice de Oracle; NINGÚN índice fue creado, es rendimiento perdido",
+			EN: "above Oracle's 32-column index limit; NO index was created — this is lost performance",
+		},
+	})
+}
+
+func init() {
+	Register(Entradas{
+		"run_index_skip_lob": {
+			PT: "coluna de tipo LOB (CLOB/BLOB) não é indexável no Oracle; NENHUM índice foi criado, é desempenho perdido",
+			ES: "columna de tipo LOB (CLOB/BLOB) no es indexable en Oracle; NINGÚN índice fue creado, es rendimiento perdido",
+			EN: "a LOB column (CLOB/BLOB) cannot be indexed on Oracle; NO index was created — this is lost performance",
+		},
+	})
+}

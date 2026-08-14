@@ -225,3 +225,13 @@ func init() {
 		},
 	})
 }
+
+func init() {
+	Register(Entradas{
+		"cfg_create_failed": {
+			PT: "não foi possível criar a configuração do gokit: %w",
+			ES: "no fue posible crear la configuración de gokit: %w",
+			EN: "could not create the gokit configuration: %w",
+		},
+	})
+}

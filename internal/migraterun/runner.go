@@ -18,6 +18,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/PhelipeViana/gokit/internal/aviso"
 	"github.com/PhelipeViana/gokit/internal/cliui"
 	"github.com/PhelipeViana/gokit/internal/config"
 	"github.com/PhelipeViana/gokit/internal/i18n"
@@ -34,7 +35,6 @@ type Plan struct {
 
 type migrationFile struct {
 	Name, ID, Path, Checksum string
-	LegacyChecksums          []string
 	Plan                     Plan
 }
 
@@ -238,12 +238,48 @@ func Run(root string, state config.ConfigState) error {
 		)
 	}
 
+	// Índice que o banco recusou por redundância. É info, não problema: a lista de
+	// colunas está indexada, que é a intenção da operação. Mas o nome declarado NÃO
+	// existe no banco, e quem for escrever um rollback ou procurar o índice pelo nome
+	// precisa saber disso antes.
+	if redundantes := IndicesRedundantes(); len(redundantes) > 0 {
+		fmt.Println(cliui.Warning(i18n.Tf("run_index_redundant", len(redundantes))))
+		for _, linha := range redundantes {
+			fmt.Printf("  · %s\n", linha)
+		}
+		aviso.DoEstado(state).Notificar(aviso.Aviso{
+			Nivel: aviso.NivelInfo,
+			Acao:  "índice redundante tolerado",
+			Corpo: fmt.Sprintf("%d índice(s) não foram criados porque a lista de colunas já estava indexada — "+
+				"só o Oracle recusa isso. A intenção está satisfeita; o nome declarado é que não existe no banco.",
+				len(redundantes)),
+			Contexto: map[string]string{"comando": "migrate run"},
+			Bruto:    strings.Join(redundantes, "\n"),
+		})
+	}
+
 	// O core é reescrito aqui: neste ponto o schema foi APLICADO, então as entidades
 	// descrevem o que o banco realmente tem. Na criação da migration seria cedo — o
 	// scaffold ainda traz coluna de exemplo, e o core gravaria um placeholder como
 	// se fosse schema.
-	for _, aviso := range regerarDerivados(root, state) {
-		fmt.Println(cliui.Warning(aviso.Error()))
+	// Estes avisos são o caso clássico de inconsistência silenciosa: a migration
+	// aplicou, mas o que DERIVA dela — entidades da ORM, colunas das factories — não
+	// foi reescrito. O projeto segue funcionando e o código gerado fica velho, o que
+	// só aparece muito depois. Por isso vão para o canal como warning, além da tela.
+	if avisos := regerarDerivados(root, state); len(avisos) > 0 {
+		central := aviso.DoEstado(state)
+		for _, problema := range avisos {
+			fmt.Println(cliui.Warning(problema.Error()))
+			central.Notificar(aviso.Aviso{
+				Nivel: aviso.NivelWarning,
+				Acao:  "código derivado não regerado",
+				Corpo: "As migrations aplicaram, mas o código que deriva delas não pôde ser reescrito. " +
+					"O projeto continua funcionando com o código gerado ANTIGO, e a diferença só aparece " +
+					"quando alguém usa uma coluna que o core ainda não conhece.",
+				Contexto: map[string]string{"comando": "migrate run"},
+				Bruto:    problema.Error(),
+			})
+		}
 	}
 
 	fmt.Println("\n" + cliui.Success(i18n.T("run_migrations_updated")))
@@ -506,6 +542,13 @@ func rollbackSQL(dialect, schema string, operation acao.Operacao) (string, error
 			return fmt.Sprintf("DROP INDEX %s ON %s",
 				quote(dialect, operation.Name), qualified(dialect, schema, operation.Table)), nil
 		}
+		// Simétrico à criação: no Oracle o índice único foi criado como CONSTRAINT, e
+		// DROP INDEX não desfaz constraint. Esquecer esta linha deixaria o rollback
+		// falhando exatamente no caso que a criação passou a tratar.
+		if dialect == "oracle" && operation.Unique {
+			return fmt.Sprintf("ALTER TABLE %s DROP CONSTRAINT %s",
+				qualified(dialect, schema, operation.Table), quote(dialect, operation.Name)), nil
+		}
 		return "DROP INDEX " + quote(dialect, operation.Name), nil
 	case acao.AddForeignKey:
 		if operation.ForeignKey == nil {
@@ -523,8 +566,6 @@ func rollbackSQL(dialect, schema string, operation acao.Operacao) (string, error
 			qualified(dialect, schema, operation.Table), quote(dialect, operation.Name)), nil
 	case acao.CreateSequence:
 		return "DROP SEQUENCE " + qualified(dialect, schema, operation.Name), nil
-	case acao.CreateView:
-		return "DROP VIEW " + qualified(dialect, schema, operation.Name), nil
 	case acao.RenameTable:
 		if dialect == "sqlserver" {
 			return fmt.Sprintf("EXEC sp_rename N'%s', N'%s'", objectName(schema, operation.NewName), operation.Table), nil
@@ -541,10 +582,10 @@ func rollbackSQL(dialect, schema string, operation acao.Operacao) (string, error
 		}
 		return fmt.Sprintf("ALTER TABLE %s RENAME COLUMN %s TO %s",
 			qualified(dialect, schema, operation.Table), quote(dialect, operation.NewName), quote(dialect, operation.Column.Name)), nil
-	case acao.RawSQL, acao.AlterView:
+	case acao.RawSQL:
 		// Sem informação do estado anterior não há como desfazer com segurança.
 		return "", i18n.Errf("run_not_reversible", operation.Kind)
-	case acao.DropTable, acao.DropColumn, acao.DropIndex, acao.DropView,
+	case acao.DropTable, acao.DropColumn, acao.DropIndex,
 		acao.DropSequence, acao.DropConstraint, acao.DropForeignKey:
 		return "", i18n.Errf("run_drop_not_recreatable", operation.Kind)
 	case acao.AlterColumn:
@@ -588,14 +629,17 @@ func resetConnection(connection config.ConnConfig, historyTable string, files []
 		}
 		defer db.ExecContext(context.Background(), "SET FOREIGN_KEY_CHECKS=1")
 	}
-	for _, view := range managedViews(files) {
-		exists, err := viewExists(ctx, db, dialect, connection.Schema, view)
-		if err != nil {
-			return err
-		}
-		if !exists {
-			continue
-		}
+	// As views a derrubar vêm do BANCO, não do corpus.
+	//
+	// Antes vinham do corpus, quando view era migration. Ler do banco é mais correto
+	// mesmo depois da mudança: derruba também a view que o gokit nunca declarou — e num
+	// schema legado essa é a maioria. Limpar o schema deixando views órfãs apontando
+	// para tabelas que acabaram de sumir não limpa nada.
+	viewsNoBanco, err := LerViewsDoBanco(ctx, db, dialect, connection.Schema)
+	if err != nil {
+		return err
+	}
+	for _, view := range NomesOrdenadosDeViews(viewsNoBanco) {
 		if _, err := db.ExecContext(ctx, "DROP VIEW "+qualified(dialect, connection.Schema, view)); err != nil {
 			return i18n.Errf("run_view_drop_failed", view, err)
 		}
@@ -625,28 +669,6 @@ func resetConnection(connection config.ConnConfig, historyTable string, files []
 		}
 	}
 	return nil
-}
-
-func managedViews(files []migrationFile) []string {
-	set := map[string]bool{}
-	for _, file := range files {
-		for _, operation := range file.Plan.Operations {
-			switch operation.Kind {
-			case string(acao.CreateView), string(acao.AlterView):
-				set[operation.Name] = true
-			case string(acao.DropView):
-				set[operation.Name] = false
-			}
-		}
-	}
-	result := make([]string, 0, len(set))
-	for name, active := range set {
-		if active {
-			result = append(result, name)
-		}
-	}
-	sort.Strings(result)
-	return result
 }
 
 func managedTables(files []migrationFile) []string {
@@ -797,13 +819,12 @@ func loadPlans(folder string) ([]migrationFile, error) {
 			continue
 		}
 		sum := sha256.Sum256(checksumData)
-		legacyChecksums := legacyViewChecksums(plan.Operations)
 		id := name
 		if len(goMatch) > 0 {
 			id = goMatch[1]
 		}
 		result = append(result, migrationFile{Name: name, ID: id, Path: path,
-			Checksum: hex.EncodeToString(sum[:]), LegacyChecksums: legacyChecksums, Plan: plan})
+			Checksum: hex.EncodeToString(sum[:]), Plan: plan})
 	}
 	sort.Slice(result, func(i, j int) bool {
 		if result[i].ID == result[j].ID {
@@ -831,9 +852,6 @@ func loadPlans(folder string) ([]migrationFile, error) {
 				if _, exists := aliases[operation.Table]; exists {
 					aliases[operation.Table] = operation.NewName
 				}
-			}
-			if operation.Kind == string(acao.CreateView) || operation.Kind == string(acao.AlterView) || operation.Kind == string(acao.DropView) {
-				views[operation.Name] = true
 			}
 		}
 	}
@@ -886,7 +904,6 @@ func findProjectRoot(path string) string {
 func validatePlans(files []migrationFile, failures *LoadError) {
 	physical := map[string]string{}
 	aliases := map[string]string{}
-	views := map[string]bool{}
 	// Chaves candidatas de FK: por tabela física, o conjunto de colunas coberto
 	// por uma PK ou UNIQUE já declarada. Sem isso a FK só falha no banco.
 	keyed := newKeyIndex()
@@ -896,25 +913,6 @@ func validatePlans(files []migrationFile, failures *LoadError) {
 			keyed.observe(operation)
 			if err := acao.Validar(operation); err != nil {
 				failures.add(file.Name, "%v", err)
-			}
-			switch operation.Kind {
-			case string(acao.CreateView):
-				if views[operation.Name] {
-					failures.add(file.Name, i18n.T("run_view_exists"), operation.Name)
-				}
-				views[operation.Name] = true
-				continue
-			case string(acao.AlterView):
-				if !views[operation.Name] {
-					failures.add(file.Name, "%s", i18n.T("run_alterview_needs_view"))
-				}
-				continue
-			case string(acao.DropView):
-				if !views[operation.Name] {
-					failures.add(file.Name, "%s", i18n.T("run_dropview_needs_view"))
-				}
-				views[operation.Name] = false
-				continue
 			}
 			if referenced := referencedColumns(operation); len(referenced) > 0 {
 				if missing := keyed.unknownColumns(operation.Table, referenced); len(missing) > 0 {
@@ -1114,11 +1112,31 @@ func (k *keyIndex) observe(operation acao.Operacao) {
 		if operation.AliasName != "" {
 			k.physicalOf[strings.ToLower(operation.AliasName)] = physical
 		}
+		// A chave primária COMPOSTA é uma chave só, sobre o par — não duas chaves de
+		// uma coluna. Registrar cada coluna separadamente errava para os dois lados:
+		//
+		//   · deixava passar FK de UMA coluna apontando para metade da chave composta,
+		//     que nenhum banco aceita (o Oracle recusa com ORA-02270);
+		//   · e recusava FK COMPOSTA apontando para a chave inteira, que é o uso certo.
+		//
+		// O segundo é o que denunciou: a validação pedia "declare AddUnique em
+		// export_atuarial_data_base" para uma tabela que já declarava as duas colunas
+		// como PrimaryKey.
+		//
+		// Unique de coluna continua sendo chave de uma coluna: ali a garantia é
+		// individual mesmo.
+		var chavePrimaria []string
 		for _, column := range operation.Columns {
 			k.addColumns(operation.Table, column)
-			if column.PrimaryKey || column.Unique {
+			if column.PrimaryKey {
+				chavePrimaria = append(chavePrimaria, column.Name)
+			}
+			if column.Unique {
 				k.addKey(operation.Table, []string{column.Name})
 			}
+		}
+		if len(chavePrimaria) > 0 {
+			k.addKey(operation.Table, chavePrimaria)
 		}
 	case acao.AddPrimaryKey, acao.AddUnique:
 		k.addKey(operation.Table, operation.IndexColumns)
@@ -1278,7 +1296,7 @@ func runConnection(connection config.ConnConfig, historyTable string, files []mi
 	// pendente e independe do histórico: migration já aplicada não roda de novo,
 	// então sem isso todo banco criado antes da correção ficaria sem constraint
 	// para sempre. É idempotente — a que já existe é ignorada.
-	if _, err := conciliarForeignKeys(ctx, db, dialect, connection.Schema, files); err != nil {
+	if _, err := conciliarForeignKeys(ctx, db, dialect, connection.Schema, files, history); err != nil {
 		return 0, 0, err
 	}
 
@@ -1292,7 +1310,7 @@ func runConnection(connection config.ConnConfig, historyTable string, files []mi
 			checksum, exists = history[file.Name]
 		}
 		if exists {
-			if checksum != file.Checksum && !containsChecksum(file.LegacyChecksums, checksum) {
+			if checksum != file.Checksum {
 				return applied, skipped, MigrationChangedError{Name: file.Name}
 			}
 			skipped++
@@ -1323,46 +1341,20 @@ func runConnection(connection config.ConnConfig, historyTable string, files []mi
 	return applied, skipped, nil
 }
 
-func legacyViewChecksums(operations []acao.Operacao) []string {
-	hasView := false
-	legacy := make([]acao.Operacao, len(operations))
-	copy(legacy, operations)
-	for index := range legacy {
-		if legacy[index].Kind != string(acao.CreateView) || len(legacy[index].ViewSQL) == 0 {
-			continue
-		}
-		hasView = true
-		legacy[index].SQL = legacy[index].ViewSQL["common"]
-		legacy[index].ViewSQL = nil
+// checksumOperations devolve o hash das operações, e diz se conseguiu.
+//
+// O erro do Marshal não pode virar hash: com data nil o sha256 sai CONSTANTE, igual
+// para qualquer corpus. Como este valor é comparado com o que está gravado no
+// histórico para ACEITAR uma migration já aplicada, um hash constante é aceitação
+// indevida — o oposto do que o checksum existe para fazer. Sem hash, a lista sai
+// menor e a comparação apenas não casa, que é o lado seguro do erro.
+func checksumOperations(operations []acao.Operacao) (string, bool) {
+	data, err := json.Marshal(operations)
+	if err != nil {
+		return "", false
 	}
-	if !hasView {
-		return nil
-	}
-	values := []string{checksumOperations(legacy)}
-	crlf := make([]acao.Operacao, len(legacy))
-	copy(crlf, legacy)
-	for index := range crlf {
-		if crlf[index].Kind == string(acao.CreateView) {
-			crlf[index].SQL = strings.ReplaceAll(crlf[index].SQL, "\n", "\r\n")
-		}
-	}
-	values = append(values, checksumOperations(crlf))
-	return values
-}
-
-func checksumOperations(operations []acao.Operacao) string {
-	data, _ := json.Marshal(operations)
 	sum := sha256.Sum256(data)
-	return hex.EncodeToString(sum[:])
-}
-
-func containsChecksum(values []string, expected string) bool {
-	for _, value := range values {
-		if value == expected {
-			return true
-		}
-	}
-	return false
+	return hex.EncodeToString(sum[:]), true
 }
 
 func resolveAlias(operation acao.Operacao, aliases map[string]string) acao.Operacao {
@@ -1503,8 +1495,44 @@ func executeOperation(ctx context.Context, db *sql.DB, dialect, schema string, o
 			return i18n.Errf("run_index_plan_failed", operation.Name, err)
 		}
 		query := fmt.Sprintf("CREATE %sINDEX %s ON %s (%s)", unique, quote(dialect, operation.Name), qualified(dialect, schema, operation.Table), strings.Join(columns, ", "))
+		// No Oracle, índice único vira CONSTRAINT UNIQUE. Não é preferência de estilo:
+		// o Oracle só aceita como destino de chave estrangeira uma coluna com
+		// constraint de unicidade — índice único NÃO serve, e a FK falha com ORA-02270.
+		// Os outros três aceitam o índice. Medido: FK para coluna com CREATE UNIQUE
+		// INDEX é recusada; depois de ALTER TABLE ADD CONSTRAINT ... UNIQUE, passa.
+		//
+		// A constraint é um superconjunto do índice — o Oracle cria o índice de apoio
+		// sozinho —, então nada se perde declarando assim.
+		if dialect == "oracle" && operation.Unique {
+			query = fmt.Sprintf("ALTER TABLE %s ADD CONSTRAINT %s UNIQUE (%s)",
+				qualified(dialect, schema, operation.Table), quote(dialect, operation.Name),
+				strings.Join(columns, ", "))
+		}
 		if _, err := db.ExecContext(ctx, query); err != nil {
-			return i18n.Errf("run_index_create_failed", operation.Name, err)
+			// Índice redundante é tolerado: a INTENÇÃO da operação é que aquela lista de
+			// colunas esteja indexada, e ela está. O que o Oracle recusa (ORA-01408) é o
+			// segundo índice sobre a MESMA lista — legal no SQL Server, e schema legado
+			// tem aos pares: `fonte_pag_idx` e `idx_fonte_pag_orgao_id`, os dois em
+			// orgao_id. Sem esta tolerância, um corpus vindo do SQL Server não chega ao
+			// fim no Oracle, e o usuário não tem o que corrigir — a redundância está no
+			// banco de origem, não na declaração.
+			//
+			// O preço é real e por isso é reportado: o índice existe no Oracle com o
+			// nome do PRIMEIRO, então o `DROP INDEX <nome>` do rollback desta operação
+			// não vai encontrar nada.
+			switch {
+			case indiceRedundante(err):
+				avisarIndiceRedundante(operation.Name, operation.Table, operation.IndexColumns,
+					i18n.T("run_index_skip_redundant"))
+			case !operation.Unique && motivoImpossivel(err) != "":
+				// Índice comum que o Oracle não consegue criar é otimização perdida.
+				// Único não entra nesta tolerância: ali a unicidade é regra, e o erro
+				// tem de subir.
+				avisarIndiceRedundante(operation.Name, operation.Table, operation.IndexColumns,
+					i18n.T(motivoImpossivel(err)))
+			default:
+				return i18n.Errf("run_index_create_failed", operation.Name, err)
+			}
 		}
 	case "drop_index":
 		query := fmt.Sprintf("DROP INDEX %s", quote(dialect, operation.Name))
@@ -1513,51 +1541,6 @@ func executeOperation(ctx context.Context, db *sql.DB, dialect, schema string, o
 		}
 		if _, err := db.ExecContext(ctx, query); err != nil {
 			return i18n.Errf("run_index_drop_failed", operation.Name, err)
-		}
-	case "create_view":
-		exists, err := viewExists(ctx, db, dialect, schema, operation.Name)
-		if err != nil {
-			return err
-		}
-		if exists {
-			return i18n.Errf("run_view_create_exists", operation.Name)
-		}
-		query, err := selectedViewSQL(operation, dialect)
-		if err != nil {
-			return err
-		}
-		if _, err := db.ExecContext(ctx, fmt.Sprintf("CREATE VIEW %s AS %s", qualified(dialect, schema, operation.Name), query)); err != nil {
-			return i18n.Errf("run_view_create_sql_failed", operation.Name, selectedViewSource(operation, dialect), err, dialect)
-		}
-	case "alter_view":
-		exists, err := viewExists(ctx, db, dialect, schema, operation.Name)
-		if err != nil {
-			return err
-		}
-		if !exists {
-			return i18n.Errf("run_view_alter_missing", operation.Name)
-		}
-		query, err := selectedViewSQL(operation, dialect)
-		if err != nil {
-			return err
-		}
-		verb := "CREATE OR REPLACE VIEW"
-		if dialect == "sqlserver" {
-			verb = "CREATE OR ALTER VIEW"
-		}
-		if _, err := db.ExecContext(ctx, fmt.Sprintf("%s %s AS %s", verb, qualified(dialect, schema, operation.Name), query)); err != nil {
-			return i18n.Errf("run_view_alter_sql_failed", operation.Name, selectedViewSource(operation, dialect), err, dialect)
-		}
-	case "drop_view":
-		exists, err := viewExists(ctx, db, dialect, schema, operation.Name)
-		if err != nil {
-			return err
-		}
-		if !exists {
-			return i18n.Errf("run_view_drop_missing", operation.Name)
-		}
-		if _, err := db.ExecContext(ctx, "DROP VIEW "+qualified(dialect, schema, operation.Name)); err != nil {
-			return i18n.Errf("run_view_drop_failed", operation.Name, err)
 		}
 	case "create_sequence":
 		if dialect == "mysql" {
@@ -2485,28 +2468,113 @@ func columnTypeSQL(dialect string, column acao.ColunaDefinicao) string {
 	}[column.Type][dialect]
 }
 
+// columnDefaultSQL rende o DEFAULT da coluna no dialeto de destino.
+//
+// A expressão vem do corpus, e o corpus é UM para os quatro bancos — então uma
+// expressão escrita na sintaxe de um deles precisa ser traduzida aqui. É o único lugar
+// onde isso pode acontecer: traduzir no import gravaria a sintaxe de um dialeto no
+// arquivo e o mesmo corpus deixaria de servir os outros.
+//
+// O reconhecimento é por FAMÍLIA, e cada família aceita os sinônimos dos quatro. O
+// `user_name()` do SQL Server é o caso que provou a necessidade: ele passava direto
+// pelo default abaixo e o Oracle respondia ORA-04044 — "procedure, function, package
+// or type is not allowed here" —, mensagem que não menciona DEFAULT nem a coluna.
 func columnDefaultSQL(dialect string, column acao.ColunaDefinicao) string {
 	if !column.DefaultRaw {
 		return defaultSQL(dialect, column.Default)
 	}
+	// O `()` sai da comparação: `getdate()` e `getdate` são a mesma intenção, e cada
+	// banco quer a forma dele.
 	lower := strings.ToLower(strings.TrimSpace(column.Default))
-	switch lower {
-	case "current_user", "user":
-		if dialect == "oracle" {
+	nu := strings.TrimSuffix(strings.TrimSpace(strings.TrimSuffix(lower, ")")), "(")
+	nu = strings.TrimSpace(nu)
+
+	switch nu {
+	// Usuário da sessão. SQL Server: USER_NAME()/SUSER_SNAME(); MySQL exige os
+	// parênteses e o par externo no DEFAULT.
+	case "current_user", "user", "user_name", "suser_sname", "session_user", "current_schema":
+		switch dialect {
+		case "oracle":
 			return "USER"
-		}
-		if dialect == "mysql" {
+		case "mysql":
 			return "(CURRENT_USER())"
+		case "sqlserver":
+			return "USER_NAME()"
+		default:
+			return "CURRENT_USER"
 		}
-		return "CURRENT_USER"
-	case "current_timestamp", "sysdate", "systimestamp":
-		if dialect == "oracle" {
+
+	// Momento atual no fuso do servidor.
+	case "current_timestamp", "sysdate", "systimestamp", "getdate", "now", "localtimestamp":
+		switch dialect {
+		case "oracle":
 			return "SYSTIMESTAMP"
+		case "sqlserver":
+			return "GETDATE()"
+		default:
+			return "CURRENT_TIMESTAMP"
 		}
-		return "CURRENT_TIMESTAMP"
+
+	// Momento atual em UTC. Família SEPARADA da de cima de propósito: colapsar as duas
+	// mudaria o valor gravado conforme o fuso do servidor, em silêncio.
+	case "getutcdate", "sysutcdatetime", "utc_timestamp", "sys_extract_utc":
+		switch dialect {
+		case "oracle":
+			return "SYS_EXTRACT_UTC(SYSTIMESTAMP)"
+		case "mysql":
+			return "(UTC_TIMESTAMP())"
+		case "sqlserver":
+			return "GETUTCDATE()"
+		default:
+			return "(CURRENT_TIMESTAMP AT TIME ZONE 'UTC')"
+		}
+
+	// Data sem hora.
+	case "current_date", "curdate", "trunc(sysdate":
+		switch dialect {
+		case "oracle":
+			return "TRUNC(SYSDATE)"
+		case "mysql":
+			return "(CURDATE())"
+		case "sqlserver":
+			return "CAST(GETDATE() AS DATE)"
+		default:
+			return "CURRENT_DATE"
+		}
+
+	// Identificador único.
+	case "newid", "newsequentialid", "sys_guid", "gen_random_uuid", "uuid":
+		switch dialect {
+		case "oracle":
+			return "SYS_GUID()"
+		case "mysql":
+			return "(UUID())"
+		case "sqlserver":
+			return "NEWID()"
+		default:
+			return "gen_random_uuid()"
+		}
+
 	default:
+		// Expressão que este mapa não conhece sai como está. É deliberado — quem
+		// escreve DEFAULT específico para o próprio banco tem de conseguir —, mas é
+		// também a porta pela qual entra o erro que ninguém entende. Por isso o import
+		// registra a expressão não reconhecida no monitor: o aviso vem antes do run.
 		return column.Default
 	}
+}
+
+// defaultPortavel diz se a expressão de DEFAULT é reconhecida pelo tradutor acima.
+//
+// Serve ao import, que registra no monitor o que não é — a expressão fica no arquivo
+// fiel à origem, e quem for aplicar em outro dialeto sabe disso antes de tentar.
+func defaultPortavel(expressao string) bool {
+	coluna := acao.ColunaDefinicao{Default: expressao, DefaultRaw: true}
+	// Traduzida para dois dialetos distintos: se as duas saídas são iguais ao texto de
+	// entrada, o mapa não reconheceu nada e a expressão vai crua para os dois.
+	oracle := columnDefaultSQL("oracle", coluna)
+	postgres := columnDefaultSQL("postgres", coluna)
+	return oracle != expressao || postgres != expressao
 }
 
 var numericLiteral = regexp.MustCompile(`^-?\d+(\.\d+)?$`)
@@ -2907,14 +2975,6 @@ func CreateScaffoldMigration(root string, state config.ConfigState, name string,
 		lowerAlias = strings.ToLower(lowerAlias[:1]) + lowerAlias[1:]
 	}
 
-	viewRef := targetAlias
-	if viewRef == "" {
-		viewRef = viewIdentifier(name)
-	}
-	if len(viewRef) > 0 {
-		viewRef = strings.ToUpper(viewRef[:1]) + viewRef[1:]
-	}
-
 	var operationBody string
 	switch strings.ToLower(method) {
 	case "create_table":
@@ -2948,12 +3008,6 @@ func CreateScaffoldMigration(root string, state config.ConfigState, name string,
 		operationBody = `migrate.CreateIndex(core.Table.` + aliasRef + `, "idx_` + name + `_coluna", "coluna")`
 	case "drop_index":
 		operationBody = `migrate.DropIndex(core.Table.` + aliasRef + `, "idx_` + name + `_coluna")`
-	case "create_view":
-		operationBody = `migrate.CreateView(core.View.` + viewRef + `)`
-	case "alter_view":
-		operationBody = `migrate.AlterView(core.View.` + viewRef + `)`
-	case "drop_view":
-		operationBody = `migrate.DropView(core.View.` + viewRef + `)`
 	case "create_sequence":
 		operationBody = `migrate.CreateSequence("sq_` + name + `")`
 	case "drop_sequence":
@@ -3031,7 +3085,7 @@ func ` + declarationName + `() migrate.Definition {
 func regerarDerivados(root string, state config.ConfigState) []error {
 	var avisos []error
 
-	if _, err := GenerateORM(root, state); err != nil {
+	if _, _, err := GenerateORM(root, state); err != nil {
 		avisos = append(avisos, i18n.Errf("run_regen_orm_skipped", err))
 	}
 	// A factory preserva a expressão de cada coluna e o Ruler; só a lista de
@@ -3094,8 +3148,14 @@ func LoadCatalogTablesAndViews(root string, state config.ConfigState) ([]string,
 		pRoot = root
 	}
 
-	// Atualiza o catálogo antes de carregar
-	_ = migrationgo.RefreshCatalog(pRoot, outputDir)
+	// Atualiza o catálogo antes de carregar.
+	//
+	// O erro sobe. Descartado, a leitura seguinte devolvia o catálogo ANTIGO como se
+	// fosse o atual: tabela criada na migration não aparecia, e a mensagem que o usuário
+	// via era "tabela desconhecida" — apontando para a migration, que estava correta.
+	if err := migrationgo.RefreshCatalog(pRoot, outputDir); err != nil {
+		return nil, nil, err
+	}
 
 	// A leitura do catálogo é do migrationgo, que já mescla os caminhos legados e
 	// mantém cache. Regex próprio aqui era um segundo lugar para esquecer de

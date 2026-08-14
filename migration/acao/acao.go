@@ -53,9 +53,6 @@ const (
 	DropForeignKey Tipo = "drop_foreign_key"
 	CreateIndex    Tipo = "create_index"
 	DropIndex      Tipo = "drop_index"
-	CreateView     Tipo = "create_view"
-	AlterView      Tipo = "alter_view"
-	DropView       Tipo = "drop_view"
 	CreateSequence Tipo = "create_sequence"
 	DropSequence   Tipo = "drop_sequence"
 	RenameTable    Tipo = "rename_table"
@@ -193,7 +190,7 @@ func Nova(tipo Tipo, tabela string, itens ...Item) Operacao {
 			break
 		}
 		result.Columns = columns
-	case CreateIndex, DropIndex, CreateView, AlterView, DropView, CreateSequence, DropSequence, RenameTable,
+	case CreateIndex, DropIndex, CreateSequence, DropSequence, RenameTable,
 		RenameColumn, AddPrimaryKey, AddUnique, AddCheck, DropConstraint, RawSQL:
 		// These operations are assembled by the public migration package.
 	}
@@ -315,13 +312,9 @@ func Validar(operation Operacao) error {
 				return nomeColunaInvalido(column)
 			}
 		}
-	case DropIndex, DropView, DropSequence:
+	case DropIndex, DropSequence:
 		if operation.Name == "" {
 			return fmt.Errorf("%s exige um nome", operation.Kind)
-		}
-	case CreateView, AlterView:
-		if operation.Name == "" || len(operation.ViewSQL) == 0 {
-			return fmt.Errorf("%s exige uma referência view.* com SQL versionado", operation.Kind)
 		}
 	case CreateSequence:
 		if operation.Name == "" {

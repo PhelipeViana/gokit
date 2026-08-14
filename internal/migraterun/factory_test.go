@@ -248,7 +248,7 @@ func TestRenderizaFactoryPreservaExpressoes(t *testing.T) {
 	}}
 	existentes := map[string]string{"NOME": `migrate.FakeChoice("Ajustado à mão")`}
 
-	texto := renderizaFactory(forma, nil, config.ConfigState{}, existentes, &migrate.Ruler{Count: 42, Active: false}, "")
+	texto := renderizaFactory(forma, nil, config.ConfigState{}, existentes, &migrate.Ruler{Count: 42, Active: false}, "", identificadorDaTabela(forma.Table, nil))
 
 	if !strings.Contains(texto, `migrate.FakeChoice("Ajustado à mão")`) {
 		t.Fatal("a expressão existente deveria ser mantida")
@@ -278,7 +278,7 @@ func TestRenderizaFactoryPreservaExpressaoEnderecadaPeloCatalogo(t *testing.T) {
 		"CRIADOEM":    `migrate.FakeChoice("fixo")`,
 	}
 
-	texto := renderizaFactory(forma, nil, config.ConfigState{}, existentes, nil, "")
+	texto := renderizaFactory(forma, nil, config.ConfigState{}, existentes, nil, "", identificadorDaTabela(forma.Table, nil))
 
 	for _, esperado := range []string{`migrate.Seeder(core.Table.Users, 1, "2")`, `migrate.FakeChoice("fixo")`} {
 		if !strings.Contains(texto, esperado) {
@@ -294,7 +294,7 @@ func TestIdentidadeFicaDeForaDoArquivoGerado(t *testing.T) {
 		{Name: "raca_id", Type: "integer", PrimaryKey: true, AutoIncrement: true},
 		{Name: "nome", Type: "string", Length: 60},
 	}}
-	texto := renderizaFactory(forma, nil, config.ConfigState{}, nil, nil, "")
+	texto := renderizaFactory(forma, nil, config.ConfigState{}, nil, nil, "", identificadorDaTabela(forma.Table, nil))
 	if strings.Contains(texto, "raca_id") {
 		t.Fatalf("a coluna de identidade não deveria aparecer:\n%s", texto)
 	}
@@ -308,7 +308,7 @@ func TestArquivoGeradoEValidoParaOAvaliador(t *testing.T) {
 		{Name: "uf", Type: "char", Length: 2},
 		{Name: "cnpj", Type: "string", Length: 20},
 	}}
-	texto := renderizaFactory(forma, nil, config.ConfigState{}, nil, nil, "")
+	texto := renderizaFactory(forma, nil, config.ConfigState{}, nil, nil, "", identificadorDaTabela(forma.Table, nil))
 
 	caminho := t.TempDir() + "/racas_factory.go"
 	if err := writeFile(caminho, texto); err != nil {

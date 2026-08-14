@@ -115,13 +115,22 @@ func CreateUniqueIndex(table Table, name string, columns ...string) Operation {
 func DropIndex(table Table, name string) Operation {
 	return Operation{Kind: string(acao.DropIndex), Table: string(table), Name: name}
 }
-func CreateView(view View) Operation {
-	return Operation{Kind: string(acao.CreateView), Name: view.name}
-}
-func AlterView(view View) Operation {
-	return Operation{Kind: string(acao.AlterView), Name: view.name}
-}
-func DropView(view View) Operation { return Operation{Kind: string(acao.DropView), Name: view.name} }
+// View saiu do DSL de migration por decisão de escopo, e junto com ela function e
+// procedure — que nunca estiveram aqui.
+//
+// A responsabilidade é isolada: `migrate` cuida do que o gokit DECLARA e aplica —
+// tabela, coluna, chave, índice, sequência. View, function e procedure são MAPEADAS: o
+// banco é a verdade, o gokit lê o que existe, registra a definição por dialeto em
+// arquivo e gera o acessador para o código. Quem cria é a pessoa, no banco.
+//
+// O que motivou: as três não têm subconjunto comum entre os quatro dialetos que se
+// possa declarar uma vez e aplicar em todos. Medido num legado real — 552 views, e das
+// que o SQL Server escreveu apenas 60 o Oracle aceita sem reescrita; mais 2 081
+// procedures e functions, 23,7 MB de T-SQL. Tentar declarar isso no corpus só empurrava
+// a tradução impossível para dentro do motor.
+//
+// Ver `gokit view mapper`, `func mapper` e `procedure mapper`.
+
 func CreateSequence(name string) Operation {
 	return Operation{Kind: string(acao.CreateSequence), Name: name}
 }

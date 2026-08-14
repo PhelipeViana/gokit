@@ -159,7 +159,10 @@ func testDDLPermissions(ctx context.Context, db *sql.DB, dialect string) error {
 	d := strings.ToLower(strings.TrimSpace(dialect))
 	tableName := "gokit_doctor_ddl_test"
 
-	// Garante que a tabela não existe
+	// Garante que a tabela não existe. O erro é descartado porque o caso comum é ela
+	// não existir mesmo, e o que este teste quer medir é o CREATE logo abaixo: se a
+	// tabela sobrou de uma execução anterior e não saiu, o CREATE falha e é ele quem
+	// reporta — com a mensagem do banco, que diz mais que a do drop.
 	_ = dropTableIfExists(ctx, db, d, tableName)
 
 	// CREATE TABLE

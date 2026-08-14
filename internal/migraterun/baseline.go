@@ -199,13 +199,6 @@ func conferirNoBanco(file migrationFile, tabelas map[string]TabelaDoBanco, views
 				}
 			}
 
-		case acao.CreateView, acao.AlterView:
-			nome := strings.ToLower(operation.Name)
-			resultado.Objetos = append(resultado.Objetos, "view "+nome)
-			if _, existe := views[nome]; !existe {
-				resultado.Faltando = append(resultado.Faltando, "view "+nome)
-				resultado.Verificada = false
-			}
 
 		case acao.CreateIndex, acao.AddForeignKey, acao.AddPrimaryKey, acao.AddUnique, acao.AddCheck:
 			// Estes o conferidor sabe que existem no banco pela leitura, mas conferir

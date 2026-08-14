@@ -99,8 +99,19 @@ func FactoryCreate(root string, state config.ConfigState, table string) error {
 	novoArquivo := os.IsNotExist(err)
 
 	blocos := make([]string, 0, len(alvos))
+	var semColunaEscrevivel []string
+	// Um mapa só, lido uma vez: nome físico → identificador que o catálogo já decidiu.
+	identificadores := migrationgo.IdentifierByPhysical(projectRoot(root))
 	for _, nome := range alvos {
 		forma := formas[nome]
+		// Tabela cujas ÚNICAS colunas são de identidade não rende factory: o gerador
+		// pula coluna auto-incremento (quem a preenche é o banco), então o `Data` sairia
+		// vazio — e `Data` vazio é recusado pelo parser, com razão. Gerar assim produzia
+		// um arquivo que o próprio gokit não consegue reler.
+		if !temColunaEscrevivel(forma) {
+			semColunaEscrevivel = append(semColunaEscrevivel, strings.ToLower(forma.Table))
+			continue
+		}
 		anterior, jaExistia := escritas[strings.ToUpper(forma.Table)]
 
 		// Numa regeneração, a expressão de cada coluna que já existe é mantida
@@ -123,7 +134,8 @@ func FactoryCreate(root string, state config.ConfigState, table string) error {
 			ruler = &copia
 		}
 
-		bloco := blocoDaFactory(forma, checks[strings.ToUpper(forma.Table)], state, existentes, ruler, importCore)
+		bloco := blocoDaFactory(forma, checks[strings.ToUpper(forma.Table)], state, existentes, ruler, importCore,
+			identificadorDaTabela(forma.Table, identificadores))
 		blocos = append(blocos, bloco)
 	}
 
@@ -136,7 +148,10 @@ func FactoryCreate(root string, state config.ConfigState, table string) error {
 	criadas, atualizadas, preservadas := 0, 0, 0
 	for _, nome := range alvos {
 		forma := formas[nome]
-		funcao := nomeDaFuncao(forma.Table)
+		if !temColunaEscrevivel(forma) {
+			continue
+		}
+		funcao := nomeDaFuncao(identificadorDaTabela(forma.Table, identificadores))
 		anterior, jaExistia := escritas[strings.ToUpper(forma.Table)]
 
 		if !jaExistia {
@@ -176,6 +191,14 @@ func FactoryCreate(root string, state config.ConfigState, table string) error {
 		fmt.Printf("  %s %s\n", cliui.Muted("-"), filepath.Base(obsoleto))
 	}
 
+	if len(semColunaEscrevivel) > 0 {
+		sort.Strings(semColunaEscrevivel)
+		fmt.Println(i18n.Tf("fac_skip_identity_only", len(semColunaEscrevivel)))
+		for _, tabela := range semColunaEscrevivel {
+			fmt.Printf("  %s %s\n", cliui.Muted("·"), tabela)
+		}
+	}
+
 	fmt.Printf(i18n.T("fac_create_summary"),
 		cliui.Success("✓ OK"), criadas, atualizadas, preservadas)
 	return nil
@@ -204,10 +227,26 @@ func factoriesEscritas(pasta string) (map[string]factorygo.Arquivo, []string, er
 			continue
 		}
 		caminho := filepath.Join(pasta, entrada.Name())
-		// Arquivo que não parseia não pode sumir em silêncio: ele é preservado e
-		// o autor vê o erro no `factory validate`.
+		// Arquivo que não parseia FALHA aqui, e não é ignorado.
+		//
+		// O comentário antigo dizia que ele "é preservado e o autor vê o erro no
+		// factory validate". Não era o que acontecia: com as factories num arquivo só,
+		// um erro em UMA função faz o parse do arquivo inteiro falhar, `escritas` sai
+		// vazio, e daí toda factory parece nova — o `factory create` reescreve o arquivo
+		// inteiro e apaga toda expressão que alguém ajustou à mão. Perda silenciosa de
+		// trabalho, no comando cujo contrato é justamente preservar.
+		//
+		// Medido: 754 factories geradas reportadas como "criada(s)" na SEGUNDA execução,
+		// porque uma delas tinha coluna repetida.
 		lidas, err := factorygo.ParseArquivos(caminho)
-		if err != nil || len(lidas) == 0 {
+		if err != nil {
+			return nil, nil, cliui.NewUserError(
+				i18n.Tf("fac_read_failed", entrada.Name(), err),
+				i18n.T("fac_read_failed_fix"),
+			)
+		}
+		lidas = resolverNomesFisicos(lidas, raizDoProjetoDaFactory(pasta))
+		if len(lidas) == 0 {
 			continue
 		}
 		arquivos = append(arquivos, caminho)
@@ -301,8 +340,8 @@ func chaveDeColuna(nome string) string {
 
 // renderizaFactory monta um arquivo com uma factory só. É o que os testes usam e
 // o caminho de quem quiser gerar avulso; a geração normal escreve todas juntas.
-func renderizaFactory(forma acao.Operacao, checks map[string][]string, state config.ConfigState, existentes map[string]string, ruler *migrate.Ruler, importCore string) string {
-	bloco := blocoDaFactory(forma, checks, state, existentes, ruler, importCore)
+func renderizaFactory(forma acao.Operacao, checks map[string][]string, state config.ConfigState, existentes map[string]string, ruler *migrate.Ruler, importCore, identificador string) string {
+	bloco := blocoDaFactory(forma, checks, state, existentes, ruler, importCore, identificador)
 	return montaArquivoDeFactories([]string{bloco}, importCore)
 }
 
@@ -330,7 +369,7 @@ func montaArquivoDeFactories(blocos []string, importCore string) string {
 // blocoDaFactory escreve a função de uma tabela. existentes traz as expressões já
 // escritas para ela — elas vencem a heurística; ruler preserva o Count/Active que
 // o autor tenha ajustado.
-func blocoDaFactory(forma acao.Operacao, checks map[string][]string, state config.ConfigState, existentes map[string]string, ruler *migrate.Ruler, importCore string) string {
+func blocoDaFactory(forma acao.Operacao, checks map[string][]string, state config.ConfigState, existentes map[string]string, ruler *migrate.Ruler, importCore, identificador string) string {
 	tabela := strings.ToUpper(forma.Table)
 	regra := migrate.Ruler{Count: 10, Active: true}
 	if ruler != nil {
@@ -364,15 +403,15 @@ func blocoDaFactory(forma acao.Operacao, checks map[string][]string, state confi
 	// Endereçamento por REFERÊNCIA de catálogo quando o módulo é conhecido: aí o
 	// compilador passa a checar nome de tabela e de coluna. Sem módulo resolvido —
 	// projeto sem go.mod legível —, cai no texto, que continua válido.
-	entidade := migrationgo.ExportedIdentifier(forma.Table)
+	entidade := identificador
 	refTabela := fmt.Sprintf("%q", tabela)
 	if importCore != "" {
 		refTabela = "core.Table." + entidade
 	}
 
 	var texto strings.Builder
-	fmt.Fprintf(&texto, i18n.T("fac_gen_doc"), nomeDaFuncao(forma.Table), tabela)
-	fmt.Fprintf(&texto, "func %s() migrate.Factory {\n", nomeDaFuncao(forma.Table))
+	fmt.Fprintf(&texto, i18n.T("fac_gen_doc"), nomeDaFuncao(identificador), tabela)
+	fmt.Fprintf(&texto, "func %s() migrate.Factory {\n", nomeDaFuncao(identificador))
 	texto.WriteString("\treturn migrate.Factory{\n")
 	fmt.Fprintf(&texto, "\t\tTable: %s,\n", refTabela)
 	fmt.Fprintf(&texto, "\t\tRuler: migrate.Ruler{Count: %d, Active: %t},\n", regra.Count, regra.Active)
@@ -388,9 +427,20 @@ func blocoDaFactory(forma acao.Operacao, checks map[string][]string, state confi
 	return texto.String()
 }
 
-func nomeDaFuncao(tabela string) string {
+// nomeDaFuncao monta o nome da função a partir do IDENTIFICADOR da tabela no catálogo,
+// nunca do nome físico.
+//
+// Derivar do físico colide exatamente onde o catálogo já resolveu: `eventos_bkp435037`
+// e `eventos_bkp_435037` produzem os dois `EventosBkp435037Factory`, e o arquivo sai com
+// duas funções de mesmo nome — não compila. Pior, as duas endereçavam
+// `core.Table.EventosBkp435037`, então a tabela apelidada perdia a identidade e recebia
+// a factory da outra.
+//
+// É o quarto gerador em que derivar por conta própria deu no mesmo defeito. A regra que
+// vale para o próximo: o catálogo de tabelas decide o identificador, todo mundo consulta.
+func nomeDaFuncao(identificadorDaTabela string) string {
 	var nome strings.Builder
-	for _, parte := range strings.Split(strings.ToLower(tabela), "_") {
+	for _, parte := range strings.Split(strings.ToLower(identificadorDaTabela), "_") {
 		if parte == "" {
 			continue
 		}
@@ -398,6 +448,16 @@ func nomeDaFuncao(tabela string) string {
 	}
 	nome.WriteString("Factory")
 	return nome.String()
+}
+
+// identificadorDaTabela devolve o identificador que o catálogo usa para o nome físico.
+// Tabela que o catálogo ainda não conhece cai na derivação — é o mesmo que o catálogo
+// vai derivar quando rodar.
+func identificadorDaTabela(fisico string, doCatalogo map[string]string) string {
+	if identificador, tem := doCatalogo[strings.ToLower(fisico)]; tem {
+		return identificador
+	}
+	return migrationgo.ExportedIdentifier(fisico)
 }
 
 // expressaoParaColuna escolhe o gerador de dado da coluna.
@@ -687,4 +747,18 @@ func tituloDaColuna(nome string) string {
 		}
 	}
 	return strings.Join(partes, " ")
+}
+
+// temColunaEscrevivel diz se a tabela tem alguma coluna que a factory possa preencher.
+//
+// Coluna de identidade não conta: quem a preenche é o banco, e escrever nela exigiria
+// ligar IDENTITY_INSERT sem necessidade. Tabela só de identidade existe em schema
+// legado — normalmente uma tabela de sequência ou de controle.
+func temColunaEscrevivel(forma acao.Operacao) bool {
+	for _, coluna := range forma.Columns {
+		if !coluna.AutoIncrement {
+			return true
+		}
+	}
+	return false
 }

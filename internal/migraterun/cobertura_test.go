@@ -29,7 +29,6 @@ var todosOsTipos = []acao.Tipo{
 	acao.AddColumn, acao.AlterColumn, acao.DropColumn,
 	acao.AddForeignKey, acao.DropForeignKey,
 	acao.CreateIndex, acao.DropIndex,
-	acao.CreateView, acao.AlterView, acao.DropView,
 	acao.CreateSequence, acao.DropSequence,
 	acao.RenameTable, acao.RenameColumn,
 	acao.AddPrimaryKey, acao.AddUnique, acao.AddCheck, acao.DropConstraint,
@@ -99,9 +98,6 @@ func operacaoMinima(tipo acao.Tipo) acao.Operacao {
 		op.IndexColumns = []string{"id"}
 	case acao.AddCheck:
 		op.SQL = "saldo > 0" // AddCheck carrega a expressão no campo SQL
-	case acao.CreateView, acao.AlterView, acao.DropView:
-		op.Name = "vw_users"
-		op.ViewSQL = map[string]string{"common": "SELECT 1"}
 	case acao.RenameTable, acao.RenameColumn:
 		op.NewName = "novo_nome"
 		if tipo == acao.RenameColumn {
@@ -118,12 +114,10 @@ func operacaoMinima(tipo acao.Tipo) acao.Operacao {
 // apagar histórico sem desfazer.
 var desfechosDeRollback = map[acao.Tipo]string{
 	acao.RawSQL:         "SQL cru é opaco: o motor não sabe o que foi feito",
-	acao.AlterView:      "alterar view não guarda a definição anterior",
 	acao.AlterColumn:    "alterar coluna não guarda o tipo anterior",
 	acao.DropTable:      "o objeto derrubado não é recriável a partir da operação",
 	acao.DropColumn:     "idem",
 	acao.DropIndex:      "idem",
-	acao.DropView:       "idem",
 	acao.DropForeignKey: "idem",
 	acao.DropConstraint: "idem",
 	acao.DropSequence:   "idem",

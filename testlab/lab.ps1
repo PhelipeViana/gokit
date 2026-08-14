@@ -1,4 +1,4 @@
-# Laboratório de teste local do GoKit.
+﻿# Laboratório de teste local do GoKit.
 #
 # Compila, publica o binário no projeto de teste e exercita as migrations nos
 # quatro dialetos sem precisar lembrar de porta, senha ou nome de container.

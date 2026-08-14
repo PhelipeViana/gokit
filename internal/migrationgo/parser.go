@@ -19,6 +19,16 @@ import (
 )
 
 var tableEntry = regexp.MustCompile(`(?m)^\s*(?:var\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*(?::|=)\s*migrate\.Table\("([^"]+)"\),?`)
+
+// tableEntryComFisico é o mesmo padrão com o comentário `// physical:` capturado.
+//
+// O comentário não é decoração: quando dois nomes físicos colapsam no mesmo
+// identificador Go, o import dá apelido a um deles, e daí em diante o valor do
+// catálogo é o APELIDO — o nome físico só sobrevive ali. Quem precisa ir de nome
+// físico para identificador (o catálogo de colunas, cujas chaves vêm do literal
+// escrito na migration) não tem outro caminho.
+var tableEntryComFisico = regexp.MustCompile(
+	`(?m)^\s*(?:var\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*(?::|=)\s*migrate\.Table\("([^"]+)"\),?(?:[ \t]*//[ \t]*physical:[ \t]*(\S+))?`)
 // O `(?::|=)` e a vírgula opcional fazem o padrão casar tanto com a declaração
 // solta (`var X = migrate.RegisteredView("v")`, do pacote antigo) quanto com o
 // campo de struct (`X: migrate.RegisteredView("v"),`, do agrupador core.View). O
@@ -499,24 +509,6 @@ func evalOperation(expression ast.Expr, catalog, views map[string]string, path s
 		}
 		return columnOperation(acao.CreateTable, table, call.Args[1:])
 	}
-	if method == "CreateView" || method == "AlterView" || method == "DropView" {
-		if err := expectArgs(call, 1); err != nil {
-			return acao.Operacao{}, err
-		}
-		name, err := viewReference(call.Args[0], views)
-		if err != nil {
-			return acao.Operacao{}, err
-		}
-		kind := map[string]acao.Tipo{"CreateView": acao.CreateView, "AlterView": acao.AlterView, "DropView": acao.DropView}[method]
-		operation := acao.Operacao{Kind: string(kind), Name: name}
-		if kind != acao.DropView {
-			operation.ViewSQL, err = loadVersionedViewSQL(path, name)
-			if err != nil {
-				return acao.Operacao{}, err
-			}
-		}
-		return operation, nil
-	}
 	if method == "CreateSequence" || method == "DropSequence" {
 		if err := expectArgs(call, 1); err != nil {
 			return acao.Operacao{}, err
@@ -525,7 +517,7 @@ func evalOperation(expression ast.Expr, catalog, views map[string]string, path s
 		if err != nil {
 			return acao.Operacao{}, err
 		}
-		kind := map[string]acao.Tipo{"DropView": acao.DropView, "CreateSequence": acao.CreateSequence, "DropSequence": acao.DropSequence}[method]
+		kind := map[string]acao.Tipo{"CreateSequence": acao.CreateSequence, "DropSequence": acao.DropSequence}[method]
 		return acao.Operacao{Kind: string(kind), Name: name}, nil
 	}
 	if method == "SQL" {

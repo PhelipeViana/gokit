@@ -41,6 +41,79 @@ func traduzirPlaceholders(src string) string {
 	})
 }
 
+// chaveReferenciada devolve o nome FÍSICO da coluna do lado "um" da relação.
+//
+// A ordem das fontes é a ordem da confiança: o que a FK declarou vem primeiro,
+// porque é o que o banco de fato usa; a chave primária do pai é o palpite seguinte,
+// para FK escrita sem a coluna; e "id" é o último recurso, para o corpus que ainda
+// não tem forma nenhuma. Nunca começar por "id" — era daí que vinha o defeito.
+func chaveReferenciada(fk acao.ColunaDefinicao, pai acao.Operacao) string {
+	if fk.ReferenceColumn != "" {
+		return fk.ReferenceColumn
+	}
+	for _, coluna := range pai.Columns {
+		if coluna.PrimaryKey {
+			return coluna.Name
+		}
+	}
+	return "id"
+}
+
+// chaveDaForma acha a chave do mapa de formas para um nome de tabela.
+//
+// Existe porque a chave do mapa não é necessariamente o nome físico — pode ser o
+// apelido —, e a FK referencia o nome físico. Comparar em minúsculas é o que faz o
+// Oracle (que dobra para maiúsculas) casar com o Postgres.
+func chaveDaForma(shapes map[string]acao.Operacao, tabela string) string {
+	if _, tem := shapes[tabela]; tem {
+		return tabela
+	}
+	alvo := strings.ToLower(tabela)
+	for chave, forma := range shapes {
+		if strings.ToLower(forma.Table) == alvo {
+			return chave
+		}
+	}
+	return tabela
+}
+
+// desexportar devolve a forma não exportada de um identificador JÁ derivado.
+//
+// Precisa partir do identificador, e não do nome físico: se derivasse do físico de
+// novo, o apelido do desempate se perderia e a versão minúscula colidiria enquanto a
+// exportada não — os tipos internos (usersColumnSet, usersRelations) redeclarados.
+func desexportar(identificador string) string {
+	if identificador == "" {
+		return identificador
+	}
+	return strings.ToLower(identificador[:1]) + identificador[1:]
+}
+
+// relacaoNavegavel diz se a relação pode virar código.
+//
+// O carregador de relação da ORM é tipado em int64 nos dois lados — é o que permite
+// agrupar os pais por chave sem reflexão. FK sobre coluna de data ou texto é legal no
+// banco e o legado tem (uma FK em `data_base`), mas gera `func(p Row) int64 { return
+// p.DataBase }`, que não compila.
+//
+// A relação é ENTÃO omitida, não adivinhada: a entidade continua existindo e sendo
+// consultável; só o atalho de navegação não sai. Melhor perder o atalho do que perder
+// as 754 entidades por um arquivo que não compila. A ocorrência é registrada para
+// aparecer no monitor.
+func relacaoNavegavel(fk acao.ColunaDefinicao, pai acao.Operacao, parentKey string) bool {
+	if filterType(fk.Type) != "gokitorm.NumberColumn" {
+		return false
+	}
+	for _, coluna := range pai.Columns {
+		if strings.EqualFold(coluna.Name, parentKey) {
+			return filterType(coluna.Type) == "gokitorm.NumberColumn"
+		}
+	}
+	// Coluna referenciada que não está na forma do pai: sem como conferir o tipo, e
+	// gerar às cegas é o que produzia arquivo quebrado.
+	return false
+}
+
 // genRel descreve uma relação derivada do grafo de FK.
 type genRel struct {
 	name       string // nome do campo/relação
@@ -49,14 +122,39 @@ type genRel struct {
 	fkColumn   string // belongsTo: FK na própria; hasMany: FK no filho
 	fkNullable bool
 	jsonName   string // chave json (snake) do campo de relação
+	// parentKey é a coluna REFERENCIADA pela FK — o lado "um" da relação.
+	//
+	// Era literal "id" nos dois lados, e isso só funcionava porque toda tabela do
+	// projeto de teste chamava a chave de `id`. Num schema legado a chave é
+	// `<tabela>_id`, e o arquivo gerado saía com `p.Id` e `Column.Id` em tabela que
+	// não tem coluna `id` — 754 entidades, nenhuma compilando. A FK já declara qual
+	// coluna ela referencia; é de lá que este valor vem.
+	parentKey string
+}
+
+// projectRootDoORM acha a raiz do projeto a partir da pasta de saída da ORM, que é
+// onde o table.gen.go mora. O mesmo caminho que o executor usa para o catálogo.
+func projectRootDoORM(root string, state config.ConfigState) string {
+	saida := filepath.FromSlash(state.Config.Output.ORM)
+	if saida == "" {
+		return root
+	}
+	pasta := saida
+	if !filepath.IsAbs(pasta) {
+		pasta = filepath.Join(root, saida)
+	}
+	if encontrada := projectRoot(pasta); encontrada != "" {
+		return encontrada
+	}
+	return root
 }
 
 // GenerateORM rebuilds the application-owned mapping layer from migrations.
 // Runtime behaviour never goes into this output: it remains in gokit/orm.
-func GenerateORM(root string, state config.ConfigState) (int, error) {
+func GenerateORM(root string, state config.ConfigState) (int, []string, error) {
 	shapes, err := tableShapes(root, state)
 	if err != nil {
-		return 0, err
+		return 0, nil, err
 	}
 	// entities.gen.go, no pacote core, ao lado do table.gen.go.
 	//
@@ -67,13 +165,33 @@ func GenerateORM(root string, state config.ConfigState) (int, error) {
 	pasta := filepath.Join(root, filepath.FromSlash(state.Config.Output.ORM))
 	target := filepath.Join(pasta, "entities.gen.go")
 	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
-		return 0, err
+		return 0, nil, err
 	}
 	// O nome anterior sai do disco: dois arquivos declarando as mesmas entidades no
 	// mesmo pacote não compilam, e quem regera vindo de uma versão antiga ficaria
 	// com os dois.
-	_ = os.Remove(filepath.Join(pasta, "core.gen.go"))
-	_ = os.Remove(filepath.Join(pasta, "fields.gen.go"))
+	// A falha aqui é FATAL, ao contrário dos outros os.Remove deste arquivo: aqueles
+	// apagam o próprio destino antes de reescrevê-lo, e o WriteFile seguinte reporta o
+	// problema. Este apaga OUTRO arquivo, então ninguém depois dele reclama — e o que
+	// sobra é uma pasta com as entidades declaradas duas vezes, que não compila. Quem
+	// regerou não faria a ligação entre o erro do compilador e este passo.
+	for _, antigo := range []string{"core.gen.go", "fields.gen.go"} {
+		if err := os.Remove(filepath.Join(pasta, antigo)); err != nil && !os.IsNotExist(err) {
+			return 0, nil, i18n.Errf("gen_orm_legacy_leftover", antigo, err)
+		}
+	}
+	// O identificador da entidade vem do catálogo de tabelas, que é quem desempata
+	// colisão dando apelido. Derivando do nome físico, duas tabelas que colapsam no
+	// mesmo identificador Go geravam Row, ColumnSet, Relations, Entity e scan com o
+	// mesmo nome — 5 declarações duplicadas por par colidido.
+	identificadores := migrationgo.IdentifierByPhysical(projectRootDoORM(root, state))
+	nomeDaEntidade := func(tabela string) string {
+		if identificador, tem := identificadores[strings.ToLower(tabela)]; tem {
+			return identificador
+		}
+		return exportedORMIdentifier(tabela)
+	}
+
 	names := make([]string, 0, len(shapes))
 	for name := range shapes {
 		names = append(names, name)
@@ -84,10 +202,10 @@ func GenerateORM(root string, state config.ConfigState) (int, error) {
 	// chamada "table" ou "view" geraria duas declarações com o mesmo nome. Falhar
 	// aqui, apontando o .Alias(), é melhor que emitir um arquivo que não compila.
 	for _, name := range names {
-		entidade := exportedORMIdentifier(shapes[name].Table)
+		entidade := nomeDaEntidade(shapes[name].Table)
 		for _, reservado := range []string{"Table", "View"} {
 			if entidade == reservado {
-				return 0, i18n.Errf("gen_orm_reserved_name",
+				return 0, nil, i18n.Errf("gen_orm_reserved_name",
 					shapes[name].Table, entidade, reservado, shapes[name].Table)
 			}
 		}
@@ -105,7 +223,7 @@ func GenerateORM(root string, state config.ConfigState) (int, error) {
 		for _, column := range shapes[name].Columns {
 			identificador := exportedORMIdentifier(column.Name)
 			if anterior, ocupado := vistos[identificador]; ocupado {
-				return 0, i18n.Errf("gen_orm_column_collision",
+				return 0, nil, i18n.Errf("gen_orm_column_collision",
 					shapes[name].Table, anterior, column.Name, identificador)
 			}
 			vistos[identificador] = column.Name
@@ -115,16 +233,26 @@ func GenerateORM(root string, state config.ConfigState) (int, error) {
 	// Deriva as relações do grafo de FK: belongsTo (FK na própria tabela) e
 	// hasMany (inverso — toda FK que aponta para a tabela vira um hasMany nela).
 	relsByTable := map[string][]genRel{}
+	// FK que não vira atalho de navegação. Sai no fim como aviso, para o usuário saber
+	// que a entidade existe e o `.With(...)` daquela relação não.
+	var naoNavegaveis []string
 	for _, name := range names {
 		shape := shapes[name]
 		for _, col := range shape.Columns {
 			if col.ReferenceTable == "" {
 				continue
 			}
+			pai := shapes[chaveDaForma(shapes, col.ReferenceTable)]
+			chave := chaveReferenciada(col, pai)
+			if !relacaoNavegavel(col, pai, chave) {
+				naoNavegaveis = append(naoNavegaveis, shape.Table+"."+col.Name+" -> "+col.ReferenceTable+"."+chave)
+				continue
+			}
 			relsByTable[shape.Table] = append(relsByTable[shape.Table], genRel{
 				name: relNameFromFK(col.Name), kind: "belongsTo",
 				target: col.ReferenceTable, fkColumn: col.Name, fkNullable: col.Nullable,
-				jsonName: strings.TrimSuffix(strings.ToLower(col.Name), "_id"),
+				jsonName:  strings.TrimSuffix(strings.ToLower(col.Name), "_id"),
+				parentKey: chave,
 			})
 		}
 	}
@@ -134,10 +262,18 @@ func GenerateORM(root string, state config.ConfigState) (int, error) {
 			if col.ReferenceTable == "" {
 				continue
 			}
+			pai := shapes[chaveDaForma(shapes, col.ReferenceTable)]
+			chave := chaveReferenciada(col, pai)
+			// O inverso da mesma FK: se o belongsTo não é navegável, o hasMany também
+			// não é, e pelo mesmo motivo.
+			if !relacaoNavegavel(col, pai, chave) {
+				continue
+			}
 			relsByTable[col.ReferenceTable] = append(relsByTable[col.ReferenceTable], genRel{
-				name: exportedORMIdentifier(child.Table), kind: "hasMany",
+				name: nomeDaEntidade(child.Table), kind: "hasMany",
 				target: child.Table, fkColumn: col.Name, fkNullable: col.Nullable,
-				jsonName: strings.ToLower(child.Table),
+				jsonName:  strings.ToLower(child.Table),
+				parentKey: chave,
 			})
 		}
 	}
@@ -168,8 +304,8 @@ func GenerateORM(root string, state config.ConfigState) (int, error) {
 	needsTime := false
 	for _, name := range names {
 		shape := shapes[name]
-		entity := exportedORMIdentifier(shape.Table)       // ex.: Users
-		unexported := unexportedORMIdentifier(shape.Table) // ex.: users
+		entity := nomeDaEntidade(shape.Table)             // ex.: Users
+		unexported := desexportar(entity)                  // ex.: users
 
 		// Linha tipada da entidade (retorno de Get/First). Coluna nula → ponteiro.
 		// O comentário EMITIDO sai no idioma do gokit.json (i18n).
@@ -277,14 +413,16 @@ func GenerateORM(root string, state config.ConfigState) (int, error) {
 		// ciclo de inicialização entre vars de entidade (ex.: Cidades <-> Estados)
 		// através dos loaders. Os loaders em si são funções, emitidas ao final.
 		for _, rel := range relsByTable[shape.Table] {
-			// correlação para EXISTS: belongsTo → FK no pai / id no filho; hasMany → id no pai / FK no filho.
-			parentCol, childCol := "id", rel.fkColumn
+			// Correlação para EXISTS. A coluna do lado "um" é a REFERENCIADA pela FK,
+			// não "id": belongsTo → FK na própria / referenciada no destino; hasMany →
+			// referenciada na própria / FK no destino.
+			parentCol, childCol := rel.parentKey, rel.fkColumn
 			if rel.kind == "belongsTo" {
-				parentCol, childCol = rel.fkColumn, "id"
+				parentCol, childCol = rel.fkColumn, rel.parentKey
 			}
 			fmt.Fprintf(&inits, "\t%s.Relation.%s = gokitorm.NewRelation(%q, %q, %q, %q, %q, load%s%s)\n",
 				entity, privateField(rel.name), rel.name, rel.kind, rel.target, parentCol, childCol, entity, rel.name)
-			emitLoader(&loaders, entity, rel.name, rel.kind, rel.target, rel.fkColumn, rel.fkNullable)
+			emitLoader(&loaders, entity, rel.name, rel.kind, nomeDaEntidade(rel.target), rel.fkColumn, rel.parentKey, rel.fkNullable)
 		}
 	}
 	if hasRelations {
@@ -318,18 +456,20 @@ func GenerateORM(root string, state config.ConfigState) (int, error) {
 	out.WriteString(body.String())
 	formatted, err := format.Source([]byte(out.String()))
 	if err != nil {
-		return 0, err
+		return 0, nil, err
 	}
+	// Apaga antes de escrever para vencer arquivo somente-leitura, o que acontece em
+	// pasta gerada versionada. O WriteFile logo abaixo é quem reporta a falha real.
 	_ = os.Remove(target)
 	if err := os.WriteFile(target, formatted, 0o644); err != nil {
-		return 0, err
+		return 0, nil, err
 	}
 
 	// response.gen.go — envelope padrão de resposta JSON (data/meta/error).
 	if err := writeResponseEnvelope(filepath.Dir(target)); err != nil {
-		return len(names), err
+		return len(names), naoNavegaveis, err
 	}
-	return len(names), nil
+	return len(names), naoNavegaveis, nil
 }
 
 // writeResponseEnvelope gera o response.gen.go: porta fiel do padrão do cliente
@@ -445,10 +585,36 @@ func Error(w http.ResponseWriter, r *http.Request, status int, args ...any) {
 		case error:
 			if v != nil {
 				message = v.Error()
+				// {{gen_resp_db_mask}}
+				if limpa, ehDeBanco := databaseMessage(v); ehDeBanco {
+					log.Printf("{{gen_msg_db_log}}", RequestIDFn(r.Context()), status, v)
+					message = limpa
+				}
 			}
 		}
 	}
 	emitError(w, r, status, message, nil)
+}
+
+// {{gen_resp_db_message}}
+func databaseMessage(err error) (string, bool) {
+	switch {
+	case errors.Is(err, gokitorm.ErrDuplicate):
+		return "{{gen_msg_db_duplicate}}", true
+	case errors.Is(err, gokitorm.ErrForeignKey):
+		return "{{gen_msg_db_foreign_key}}", true
+	case errors.Is(err, gokitorm.ErrNotNull):
+		return "{{gen_msg_db_not_null}}", true
+	case errors.Is(err, gokitorm.ErrCheck):
+		return "{{gen_msg_db_check}}", true
+	case errors.Is(err, gokitorm.ErrTooLong):
+		return "{{gen_msg_db_too_long}}", true
+	case errors.Is(err, gokitorm.ErrInvalidValue):
+		return "{{gen_msg_db_invalid_value}}", true
+	case errors.Is(err, gokitorm.ErrOutOfRange):
+		return "{{gen_msg_db_out_of_range}}", true
+	}
+	return "", false
 }
 
 // {{gen_resp_error_details}}
@@ -597,6 +763,21 @@ func statusOf(err error) int {
 	if errors.Is(err, gokitorm.ErrNotFound) {
 		return http.StatusNotFound
 	}
+	// {{gen_resp_status_class}}
+	if errors.Is(err, gokitorm.ErrDuplicate) {
+		return http.StatusConflict
+	}
+	switch {
+	case errors.Is(err, gokitorm.ErrForeignKey),
+		errors.Is(err, gokitorm.ErrNotNull),
+		errors.Is(err, gokitorm.ErrCheck),
+		errors.Is(err, gokitorm.ErrTooLong),
+		errors.Is(err, gokitorm.ErrInvalidValue),
+		errors.Is(err, gokitorm.ErrOutOfRange):
+		return http.StatusUnprocessableEntity
+	}
+	// ErrObjetoIndefinido fica em 500 de propósito: tabela ou coluna que não existe é
+	// migration pendente ou SQL cru errado, e o cliente não tem o que corrigir.
 	return http.StatusInternalServerError
 }
 
@@ -648,6 +829,7 @@ func RespondError(w http.ResponseWriter, r *http.Request, err error) { Error(w, 
 		return err
 	}
 	target := filepath.Join(dir, "response.gen.go")
+	// Mesmo caso: Remove por causa de somente-leitura, WriteFile reporta.
 	_ = os.Remove(target)
 	return os.WriteFile(target, formatted, 0o644)
 }
@@ -774,11 +956,17 @@ func relNameFromFK(col string) string {
 // emitLoader write o loader tipado de uma relação (belongsTo ou hasMany) que
 // o descritor gokitorm.Relation carrega. Faz o type-assert dos pais e delega
 // para os helpers genéricos do motor.
-func emitLoader(b *strings.Builder, selfEntity, relName, kind, target, fkColumn string, fkNullable bool) {
+// emitLoader escreve o carregador da relação.
+//
+// parentKey é a coluna do lado "um" — a que a FK referencia. Era o literal `Id`, e
+// isso presumia que toda chave se chamasse assim.
+func emitLoader(b *strings.Builder, selfEntity, relName, kind, targetEntity, fkColumn, parentKey string, fkNullable bool) {
 	selfRow := selfEntity + "Row"
-	targetEntity := exportedORMIdentifier(target)
+	// targetEntity já chega DERIVADO pelo catálogo. Derivar aqui do nome da tabela
+	// perderia o apelido do desempate e o loader apontaria para a entidade errada.
 	targetRow := targetEntity + "Row"
 	loaderName := "load" + selfEntity + relName
+	parentField := exportedORMIdentifier(parentKey)
 
 	fmt.Fprintf(b, "func %s(ctx context.Context, r gokitorm.Runner, parentsAny any, rel gokitorm.Relation) error {\n", loaderName)
 	fmt.Fprintf(b, "\tparents, ok := parentsAny.([]%s)\n", selfRow)
@@ -794,8 +982,8 @@ func emitLoader(b *strings.Builder, selfEntity, relName, kind, target, fkColumn 
 		} else {
 			fmt.Fprintf(b, "\t\tfunc(p %s) (int64, bool) { return p.%s, true },\n", selfRow, fkField)
 		}
-		fmt.Fprintf(b, "\t\t%s.Model, %s.Column.Id,\n", targetEntity, targetEntity)
-		fmt.Fprintf(b, "\t\tfunc(c %s) int64 { return c.Id },\n", targetRow)
+		fmt.Fprintf(b, "\t\t%s.Model, %s.Column.%s,\n", targetEntity, targetEntity, parentField)
+		fmt.Fprintf(b, "\t\tfunc(c %s) int64 { return c.%s },\n", targetRow, parentField)
 		fmt.Fprintf(b, "\t\tfunc(p *%s, c *%s) { p.%s = c },\n", selfRow, targetRow, relName)
 		b.WriteString("\t\trel)\n}\n\n")
 		return
@@ -803,7 +991,7 @@ func emitLoader(b *strings.Builder, selfEntity, relName, kind, target, fkColumn 
 
 	childFk := exportedORMIdentifier(fkColumn)
 	b.WriteString("\treturn gokitorm.HasMany(ctx, r, parents,\n")
-	fmt.Fprintf(b, "\t\tfunc(p %s) int64 { return p.Id },\n", selfRow)
+	fmt.Fprintf(b, "\t\tfunc(p %s) int64 { return p.%s },\n", selfRow, parentField)
 	fmt.Fprintf(b, "\t\t%s.Model, %s.Column.%s,\n", targetEntity, targetEntity, childFk)
 	if fkNullable {
 		fmt.Fprintf(b, "\t\tfunc(c %s) (int64, bool) {\n\t\t\tif c.%s == nil {\n\t\t\t\treturn 0, false\n\t\t\t}\n\t\t\treturn *c.%s, true\n\t\t},\n", targetRow, childFk, childFk)

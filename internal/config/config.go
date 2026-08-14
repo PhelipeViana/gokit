@@ -169,11 +169,15 @@ func (c ConnConfig) BuildURL() string {
 
 type OutputConfig struct {
 	Settings string `json:"settings"`
-	ORM      string `json:"orm"`
-	Migrate  string `json:"migrate"`
-	Factory  string `json:"factory"`
-	Seed     string `json:"seed"`
-	Docs     string `json:"docs"`
+	// Special é a raiz do registro de view, function e procedure. Fica FORA da pasta
+	// de migrations porque esses três não são migration — o gokit os mapeia, não os
+	// aplica. Vazio usa internal/gokit/special.
+	Special string `json:"special,omitempty"`
+	ORM     string `json:"orm"`
+	Migrate string `json:"migrate"`
+	Factory string `json:"factory"`
+	Seed    string `json:"seed"`
+	Docs    string `json:"docs"`
 }
 
 type MigrateConfig struct {
@@ -193,7 +197,8 @@ type FactoryExpressions struct {
 }
 
 type NotificationsConfig struct {
-	Slack SlackConfig `json:"slack"`
+	Slack  SlackConfig `json:"slack"`
+	Niveis []string    `json:"niveis,omitempty"`
 }
 
 type SlackConfig struct {
@@ -201,18 +206,27 @@ type SlackConfig struct {
 	WebhookURL string `json:"webhook_url"`
 }
 
+// Niveis filtra o que é notificado, por GRAVIDADE. Quem classifica é o gokit; o
+// projeto só escolhe o que quer receber. Vazio usa o padrão do pacote aviso, que é
+// tudo menos info.
+//
+//	"niveis": ["warning", "error", "danger"]
+
 type ConfigState struct {
 	ScaffoldCreated bool
 	ConfigPath      string
 	ConfigFileError error
 	Config          *Config
 	EnvWarnings     []string
-	ActiveClient    string
-	ActiveDialect   string
-	ActiveURL       string
-	ConnError       error
-	ConnSuccess     bool
-	ActiveEnv       string
+	// SetupWarnings é o que falhou ao CRIAR o projeto — arquivo do scaffold que não
+	// foi escrito. Separado de EnvWarnings porque a causa e a solução são outras.
+	SetupWarnings []string
+	ActiveClient  string
+	ActiveDialect string
+	ActiveURL     string
+	ConnError     error
+	ConnSuccess   bool
+	ActiveEnv     string
 }
 
 // LoadEnvFile lê o arquivo .env, injeta as variáveis no sistema e retorna chaves duplicadas
@@ -303,10 +317,16 @@ func ExpandEnvWithDefaults(str string) string {
 }
 
 // checkFolderEmpty verifica se o projeto está vazio (sem migrations e sem outros códigos Go)
+// O erro da varredura NÃO pode ser descartado: quem responde "vazio" aqui autoriza
+// o scaffold completo a escrever em cima da pasta. Se a varredura falhou, não se sabe
+// o que tem dentro — e a resposta segura é "não está vazio".
 func checkFolderEmpty() bool {
 	goFilesFound := false
-	_ = filepath.Walk(".", func(path string, info os.FileInfo, err error) error {
+	erroDaVarredura := filepath.Walk(".", func(path string, info os.FileInfo, err error) error {
 		if err != nil {
+			// Pasta que não se abre é pasta cujo conteúdo se desconhece: conta como
+			// código presente, para não autorizar a escrita.
+			goFilesFound = true
 			return nil
 		}
 		if !info.IsDir() && strings.HasSuffix(info.Name(), ".go") {
@@ -318,7 +338,7 @@ func checkFolderEmpty() bool {
 		return nil
 	})
 
-	if goFilesFound {
+	if erroDaVarredura != nil || goFilesFound {
 		return false
 	}
 
@@ -332,6 +352,12 @@ func checkFolderEmpty() bool {
 }
 
 func createOnboardingScaffold() error {
+	// As escritas do scaffold passam por aqui em vez de descartarem o erro. Projeto
+	// que nasce sem a migration de exemplo, sem o docker-compose ou sem o .gitignore é
+	// projeto quebrado, e o silêncio faz a pessoa descobrir muito depois — sem
+	// relacionar com a criação.
+	escreve := novoEscritor()
+
 	// O modo da criação: dev quando o gokit está na pasta irmã, prod quando não
 	// está. É palpite só aqui — a partir deste ponto o valor fica declarado em
 	// go.mode no gokit.json, e é ele que manda.
@@ -560,7 +586,7 @@ volumes:
   # oracle_data:
   # mssql_data:
 `, localGoKitVolume, mysqlPort, postgresPort, oraclePort, mssqlPort)
-	_ = os.WriteFile("docker-compose.yml", []byte(dockerCompose), 0o644)
+	escreve.arquivo("docker-compose.yml", []byte(dockerCompose))
 
 	dockerIgnore := `.git
 .env
@@ -570,26 +596,31 @@ gokit
 gokit_local
 *.log
 `
-	_ = os.WriteFile(".dockerignore", []byte(dockerIgnore), 0o644)
+	escreve.arquivo(".dockerignore", []byte(dockerIgnore))
 	// go.work é decisão de máquina, não de projeto: cada dev aponta para o seu
 	// checkout do gokit. Por isso fica fora do Git.
-	gitIgnore := "internal/gokit/.state/\ngo.work\ngo.work.sum\n"
+	// O .env entra aqui porque ele guarda SEGREDO: senha dos quatro bancos e, quando
+	// há notificação, o webhook do Slack — quem tem a URL posta no canal. O
+	// .dockerignore já o excluía, e o .gitignore não: todo projeto gerado nascia
+	// pronto para commitar credencial.
+	gitIgnore := ".env\ninternal/gokit/.state/\ngo.work\ngo.work.sum\n"
 	if current, err := os.ReadFile(".gitignore"); err == nil {
-		if !strings.Contains(string(current), "internal/gokit/.state/") {
-			_ = os.WriteFile(".gitignore", append(current, []byte("\n"+gitIgnore)...), 0o644)
+		if !strings.Contains(string(current), ".env") {
+			escreve.arquivo(".gitignore", append(current, []byte("\n"+gitIgnore)...))
 		}
 	} else if os.IsNotExist(err) {
-		_ = os.WriteFile(".gitignore", []byte(gitIgnore), 0o644)
+		escreve.arquivo(".gitignore", []byte(gitIgnore))
 	}
 
 	// Configuração de editor no scaffold: a árvore de anotações e o executor de
 	// .http já valem no primeiro dia. Falha aqui não impede o projeto de nascer.
-	_, _, _ = EscreverConfigEditores(".")
+	_, _, erroDeEditor := EscreverConfigEditores(".")
+	escreve.registrar("configuração do editor", erroDeEditor)
 
-	_ = os.MkdirAll(filepath.Join("internal", "gokit", "migrate", "create_table"), 0o755)
-	_ = os.MkdirAll(filepath.Join("internal", "gokit", "migrate", "add_column"), 0o755)
-	_ = os.MkdirAll(filepath.Join("internal", "gokit", "seed", "users"), 0o755)
-	_ = os.MkdirAll(filepath.Join("internal", "gokit", "factory"), 0o755)
+	escreve.pasta(filepath.Join("internal", "gokit", "migrate", "create_table"))
+	escreve.pasta(filepath.Join("internal", "gokit", "migrate", "add_column"))
+	escreve.pasta(filepath.Join("internal", "gokit", "seed", "users"))
+	escreve.pasta(filepath.Join("internal", "gokit", "factory"))
 
 	cidadesMig := `package migrations
 
@@ -604,7 +635,7 @@ func Migration_2026_08_08_000001_CreateCidadesTable() migrate.Definition {
 	)
 }
 `
-	_ = os.WriteFile(filepath.Join("internal", "gokit", "migrate", "create_table", "2026_08_08_000001_create_cidades_table.go"), []byte(cidadesMig), 0o644)
+	escreve.arquivo(filepath.Join("internal", "gokit", "migrate", "create_table", "2026_08_08_000001_create_cidades_table.go"), []byte(cidadesMig))
 
 	usersMig := `package migrations
 
@@ -620,7 +651,7 @@ func Migration_2026_08_08_000002_CreateUsersTable() migrate.Definition {
 	)
 }
 `
-	_ = os.WriteFile(filepath.Join("internal", "gokit", "migrate", "create_table", "2026_08_08_000002_create_users_table.go"), []byte(usersMig), 0o644)
+	escreve.arquivo(filepath.Join("internal", "gokit", "migrate", "create_table", "2026_08_08_000002_create_users_table.go"), []byte(usersMig))
 
 	fkMig := fmt.Sprintf(`package migrations
 
@@ -637,7 +668,7 @@ func Migration_2026_08_08_000003_AddCidadeToUsers() migrate.Definition {
 	)
 }
 `, moduleResult.Module+"/internal/gokit/core")
-	_ = os.WriteFile(filepath.Join("internal", "gokit", "migrate", "add_column", "2026_08_08_000003_add_cidade_to_users.go"), []byte(fkMig), 0o644)
+	escreve.arquivo(filepath.Join("internal", "gokit", "migrate", "add_column", "2026_08_08_000003_add_cidade_to_users.go"), []byte(fkMig))
 
 	seederContent := `package users
 
@@ -650,7 +681,7 @@ func Seeder_2026_08_08_000001_Users() migrate.Rows {
 	}
 }
 `
-	_ = os.WriteFile(filepath.Join("internal", "gokit", "seed", "users", "2026_08_08_000001_users_seeder.go"), []byte(seederContent), 0o644)
+	escreve.arquivo(filepath.Join("internal", "gokit", "seed", "users", "2026_08_08_000001_users_seeder.go"), []byte(seederContent))
 
 	// Um arquivo só, com uma função por tabela: é a forma que o gerador mantém.
 	// O Active é por FUNÇÃO, então conviver no mesmo arquivo não acopla nada.
@@ -682,12 +713,12 @@ func UsersFactory() migrate.Factory {
 	}
 }
 `
-	_ = os.WriteFile(filepath.Join("internal", "gokit", "factory", "factories.go"), []byte(factories), 0o644)
+	escreve.arquivo(filepath.Join("internal", "gokit", "factory", "factories.go"), []byte(factories))
 
 	// Atualiza o catálogo do Core para gerar o dsl.gen.go contendo os aliases Cidades e Users recém-criados
-	_ = migrationgo.RefreshCatalog(".", filepath.Join("internal", "gokit", "migrate"))
+	escreve.registrar("catálogo do core", migrationgo.RefreshCatalog(".", filepath.Join("internal", "gokit", "migrate")))
 
-	return nil
+	return escreve.Erro()
 }
 
 func readEnvAndBuildGokitJSON() string {
@@ -843,29 +874,47 @@ func readEnvAndBuildGokitJSON() string {
 }`, envPath, mysqlHost, mysqlPort, mysqlUser, mysqlDatabase, postgresHost, postgresPort, postgresUser, postgresDatabase, oracleHost, oraclePort, oracleUser, oracleService, mssqlHost, mssqlPort, mssqlUser, mssqlDatabase)
 }
 
-// EnsureConfigExistsAndLoad lê o gokit.json, criando a pasta/arquivo se não existirem
-func EnsureConfigExistsAndLoad() (*Config, string, []string, error) {
+// EnsureConfigExistsAndLoad lê o gokit.json, criando a pasta/arquivo se não existirem.
+//
+// O quarto retorno são as chaves duplicadas do .env; o quinto, o que falhou na
+// CRIAÇÃO do projeto. São listas separadas de propósito: a primeira é problema do
+// ambiente de quem roda, a segunda é arquivo que o scaffold não conseguiu escrever —
+// misturar as duas dá mensagem errada para as duas.
+func EnsureConfigExistsAndLoad() (*Config, string, []string, []string, error) {
 	configPath := filepath.Join("internal", "gokit", "gokit.json")
 
+	// Falha na criação não pode mais ser descartada. Antes o erro do scaffold e o da
+	// escrita do gokit.json eram os dois jogados fora, e a única pista que sobrava era
+	// o "cfg_read_failed" logo abaixo — que aponta para a leitura, não para a causa.
+	var avisosDaCriacao []string
 	if _, err := os.Stat(configPath); os.IsNotExist(err) {
 		if checkFolderEmpty() {
-			_ = createOnboardingScaffold()
+			if erroDoScaffold := createOnboardingScaffold(); erroDoScaffold != nil {
+				avisosDaCriacao = append(avisosDaCriacao, erroDoScaffold.Error())
+			}
 		} else {
-			_ = os.MkdirAll(filepath.Join("internal", "gokit"), 0o755)
+			// Projeto que já tem arquivos: só a configuração é criada. Aqui a falha é
+			// FATAL, porque sem o gokit.json nada funciona — e o erro tem de dizer isso,
+			// não deixar a leitura seguinte reclamar de arquivo ausente.
+			escreve := novoEscritor()
+			escreve.pasta(filepath.Join("internal", "gokit"))
 			gokitJSON := readEnvAndBuildGokitJSON()
-			_ = os.WriteFile(configPath, []byte(gokitJSON), 0o644)
+			escreve.arquivo(configPath, []byte(gokitJSON))
+			if err := escreve.Erro(); err != nil {
+				return nil, configPath, nil, avisosDaCriacao, i18n.Errf("cfg_create_failed", err)
+			}
 		}
 	}
 
 	data, err := os.ReadFile(configPath)
 	if err != nil {
-		return nil, configPath, nil, i18n.Errf("cfg_read_failed", err)
+		return nil, configPath, nil, avisosDaCriacao, i18n.Errf("cfg_read_failed", err)
 	}
 
 	var rawConfig Config
 	err = json.Unmarshal(data, &rawConfig)
 	if err != nil {
-		return nil, configPath, nil, i18n.Errf("cfg_bad_json", err)
+		return nil, configPath, nil, avisosDaCriacao, i18n.Errf("cfg_bad_json", err)
 	}
 
 	// Inicializa o idioma ativo baseado na configuração
@@ -877,7 +926,16 @@ func EnsureConfigExistsAndLoad() (*Config, string, []string, error) {
 	envPath := rawConfig.Environment.MapperEnv
 	var envWarnings []string
 	if envPath != "" {
-		envWarnings, _ = LoadEnvFile(envPath)
+		var erroDoEnv error
+		envWarnings, erroDoEnv = LoadEnvFile(envPath)
+		// Arquivo mapeado e ilegível é a pior falha silenciosa da configuração: sem as
+		// variáveis, toda conexão sai com host e senha vazios, e o usuário vê "não
+		// conectou" — que aponta para o banco, não para o .env que não abriu.
+		if erroDoEnv != nil {
+			avisosDaCriacao = append(avisosDaCriacao,
+				fmt.Sprintf("o .env mapeado em environment.mapper_env (%s) não pôde ser lido: %v — "+
+					"as conexões vão sair sem host, usuário e senha", envPath, erroDoEnv))
+		}
 	}
 
 	// Substitui variáveis de ambiente nas conexões
@@ -921,7 +979,7 @@ func EnsureConfigExistsAndLoad() (*Config, string, []string, error) {
 		interpolatedConfig.Output.Docs = "internal/gokit/docs"
 	}
 
-	return &interpolatedConfig, configPath, envWarnings, nil
+	return &interpolatedConfig, configPath, envWarnings, avisosDaCriacao, nil
 }
 
 // TestDatabaseConnection abre conexão e faz ping
@@ -984,9 +1042,10 @@ func RunConfigChecks() ConfigState {
 	_, statErr := os.Stat(configPath)
 	state.ScaffoldCreated = os.IsNotExist(statErr)
 
-	cfg, path, warnings, err := EnsureConfigExistsAndLoad()
+	cfg, path, warnings, avisosDaCriacao, err := EnsureConfigExistsAndLoad()
 	state.ConfigPath = path
 	state.EnvWarnings = warnings
+	state.SetupWarnings = avisosDaCriacao
 	if err != nil {
 		state.ConfigFileError = err
 		return state

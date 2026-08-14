@@ -135,9 +135,21 @@ func constraintJaExiste(err error) bool {
 //
 // É idempotente por construção, então pode rodar em toda migração sem custo além
 // de um ALTER recusado por constraint.
-func conciliarForeignKeys(ctx context.Context, db *sql.DB, dialect, schema string, files []migrationFile) (int, error) {
+func conciliarForeignKeys(ctx context.Context, db *sql.DB, dialect, schema string, files []migrationFile, history map[string]string) (int, error) {
 	criadas := 0
 	for _, file := range files {
+		// Só migration JÁ APLICADA entra na conciliação, e é por definição: o que ela
+		// conserta é FK ausente em tabela que já existe. Migration pendente cria a
+		// própria FK quando rodar, e a tabela dela ainda não existe.
+		//
+		// Sem este filtro, `migrate run` em banco NOVO tentava criar a FK antes do
+		// CREATE TABLE e abortava — em qualquer dialeto, com qualquer corpus que
+		// tivesse um .References(). Não aparecia porque o projeto de teste já estava
+		// migrado (a conciliação achava tudo no lugar e não fazia nada); só quebra na
+		// execução limpa. Medido com um corpus de duas migrations.
+		if !aplicada(file, history) {
+			continue
+		}
 		for _, operation := range file.Plan.Operations {
 			colunas := operation.Columns
 			if operation.Column != nil {
@@ -185,6 +197,17 @@ func conciliarForeignKeys(ctx context.Context, db *sql.DB, dialect, schema strin
 	return criadas, nil
 }
 
+// aplicada diz se a migration já consta no histórico. As duas chaves são
+// consultadas porque o histórico antigo era indexado pelo NOME do arquivo, e o atual
+// pelo ID — o mesmo par que o laço de aplicação verifica.
+func aplicada(file migrationFile, history map[string]string) bool {
+	if _, tem := history[file.ID]; tem {
+		return true
+	}
+	_, tem := history[file.Name]
+	return tem
+}
+
 // nomeDaConstraint devolve o nome que foreignKeySQL usaria, para a checagem
 // prévia olhar exatamente o mesmo objeto que o ALTER criaria.
 func nomeDaConstraint(table string, fk acao.ForeignKey) string {
@@ -229,4 +252,90 @@ func constraintExiste(ctx context.Context, db *sql.DB, dialect, schema, nome str
 		return false, err
 	}
 	return total > 0, nil
+}
+
+// indiceExcedeLimiteDeColunas reconhece o limite DURO de colunas por índice.
+//
+// O Oracle para em 32 (ORA-01793); o SQL Server aceita mais, e schema legado tem —
+// `idx_folha_proc_anomesgrupo` cobre 58 colunas, provavelmente um "índice de
+// cobertura" que alguém montou copiando a lista inteira do SELECT.
+//
+// Só é tolerável para índice NÃO único: aí é otimização, e perdê-la custa desempenho.
+// Índice único com mais de 32 colunas não tem tolerância possível — a unicidade é
+// regra de integridade, e aplicar o schema sem ela seria mentir.
+// motivoImpossivel devolve a chave i18n do motivo, ou vazio se o erro não é uma
+// recusa estrutural do Oracle.
+func motivoImpossivel(err error) string {
+	chave, _ := indiceImpossivelNoOracle(err)
+	return chave
+}
+
+// indiceImpossivelNoOracle reconhece as recusas ESTRUTURAIS de índice do Oracle e
+// devolve a chave da mensagem que explica cada uma.
+//
+// São limites do produto, não defeito da declaração: nenhum ajuste no corpus faz o
+// Oracle indexar 58 colunas ou um CLOB. Os três outros dialetos aceitam, e por isso o
+// mesmo corpus atravessa neles inteiro.
+//
+// Vale só para índice NÃO único — a decisão de tolerar é de quem chama. Índice comum é
+// desempenho; único é integridade, e integridade não se tolera perder.
+func indiceImpossivelNoOracle(err error) (string, bool) {
+	mensagem := strings.ToLower(err.Error())
+	switch {
+	case strings.Contains(mensagem, "ora-01793"):
+		// Máximo de 32 colunas por índice.
+		return "run_index_skip_too_many", true
+	case strings.Contains(mensagem, "ora-02327"):
+		// Coluna de tipo LOB. Chega aqui porque VARCHAR acima de 4000 no SQL Server
+		// não cabe em VARCHAR2 e vira CLOB — e CLOB não se indexa.
+		return "run_index_skip_lob", true
+	}
+	return "", false
+}
+
+// indiceRedundante reconhece a recusa de índice cuja lista de colunas JÁ está
+// indexada — não por nome duplicado, mas por conteúdo duplicado.
+//
+// Só o Oracle recusa isso; os outros três criam o segundo índice sem reclamar. É a
+// divergência mais comum ao levar schema legado do SQL Server para o Oracle, porque a
+// redundância se acumula ao longo de anos: o índice da FK e o índice "manual" sobre a
+// mesma coluna.
+//
+// Nome duplicado NÃO entra aqui: aquilo é ORA-00955 e continua sendo erro, porque
+// significa outro objeto ocupando o nome — situação diferente e que o usuário resolve.
+// São dois códigos porque são dois níveis do mesmo fato:
+//
+//	ORA-01408  segundo ÍNDICE sobre a mesma lista de colunas
+//	ORA-02261  segunda CONSTRAINT de unicidade sobre a mesma lista
+//
+// O segundo passou a aparecer quando o índice único começou a ser criado como
+// constraint no Oracle — a mudança que a FK exige. Nos dois casos a unicidade da lista
+// está garantida; o que não existe é o objeto com o nome declarado.
+func indiceRedundante(err error) bool {
+	mensagem := strings.ToLower(err.Error())
+	return strings.Contains(mensagem, "ora-01408") || strings.Contains(mensagem, "ora-02261")
+}
+
+// avisarIndiceRedundante conta o que foi tolerado. Sai no fim do run, agrupado.
+//
+// O motivo entra na linha porque os dois casos tolerados têm consequências
+// diferentes: redundante significa "a lista está indexada, só com outro nome";
+// excedeu o limite significa "não há índice nenhum aqui".
+func avisarIndiceRedundante(nome, tabela string, colunas []string, motivo string) {
+	indicesRedundantes = append(indicesRedundantes, fmt.Sprintf("%s em %s(%d coluna(s)) — %s",
+		nome, strings.ToLower(tabela), len(colunas), motivo))
+}
+
+// indicesRedundantes acumula os índices que o banco recusou por redundância.
+//
+// Variável de pacote porque o executor de operação não carrega um coletor — e a
+// alternativa, propagar um por toda a cadeia de execução, tocaria dezenas de
+// assinaturas para um aviso. É lida e zerada por quem inicia o run.
+var indicesRedundantes []string
+
+// IndicesRedundantes devolve e ZERA a lista acumulada.
+func IndicesRedundantes() []string {
+	saida := indicesRedundantes
+	indicesRedundantes = nil
+	return saida
 }

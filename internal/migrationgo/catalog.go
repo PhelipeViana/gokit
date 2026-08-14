@@ -49,7 +49,13 @@ func caminhoDoCatalogoDeColunas(projectRoot string) string {
 // A atribuição coluna→tabela sai da ÁRVORE da chamada: em
 // CreateTable("cidades", Col("id"), Col("nome")) os Col são argumentos do
 // CreateTable, então basta descer na subárvore de cada operação que recebe tabela.
-func colunasPorTabela(migrationsFolder string, tabelas map[string]string) map[string]map[string]bool {
+//
+// O erro da varredura sobe. Cada arquivo ilegível já é tolerado dentro da função
+// (justamente porque o corpus pode não compilar), mas falha na RAIZ é outra coisa: o
+// mapa sai vazio, o catálogo de colunas é reescrito sem nenhuma coluna, e toda
+// migration que cita core.Column.X.Y para de compilar. Isso não pode passar por
+// "nenhuma coluna encontrada".
+func colunasPorTabela(migrationsFolder string, tabelas map[string]string) (map[string]map[string]bool, error) {
 	acumulado := map[string]map[string]bool{}
 
 	// operacoesComTabela são as que trazem tabela no 1º argumento e coluna dentro.
@@ -57,7 +63,7 @@ func colunasPorTabela(migrationsFolder string, tabelas map[string]string) map[st
 		"CreateTable": true, "AddColumn": true, "AlterColumn": true, "DropColumn": true,
 	}
 
-	_ = filepath.WalkDir(migrationsFolder, func(caminho string, entrada fs.DirEntry, err error) error {
+	erroDaVarredura := filepath.WalkDir(migrationsFolder, func(caminho string, entrada fs.DirEntry, err error) error {
 		if err != nil || entrada.IsDir() || !strings.HasSuffix(entrada.Name(), ".go") {
 			return nil
 		}
@@ -91,7 +97,12 @@ func colunasPorTabela(migrationsFolder string, tabelas map[string]string) map[st
 		})
 		return nil
 	})
-	return acumulado
+	// Pasta que ainda não existe é projeto novo, não falha: o catálogo sai vazio porque
+	// não há corpus, e isso é a verdade. Qualquer outro erro esconderia corpus real.
+	if erroDaVarredura != nil && !os.IsNotExist(erroDaVarredura) {
+		return nil, erroDaVarredura
+	}
+	return acumulado, nil
 }
 
 // tabelaDoArgumento resolve o 1º argumento de uma operação: literal ("cidades")
@@ -158,6 +169,47 @@ func catalogoAcumulado(projectRoot string) map[string]string {
 		}
 	}
 	return acumulado
+}
+
+// identificadorPorFisico mapeia nome físico (em minúsculas) para o identificador Go
+// que o catálogo de tabelas já usa para ele.
+//
+// Existe porque o identificador NÃO pode ser derivado duas vezes. O catálogo de
+// tabelas desempata colisão dando apelido; o de colunas recebe nome físico literal,
+// vindo do texto da migration. Derivando por conta própria, os dois discordavam: o de
+// tabelas escrevia EventosBkp435037 e EventosBkp435037Alias2, e o de colunas escrevia
+// EventosBkp435037 duas vezes — arquivo que não compila, com `validate` passando,
+// porque validate não compila nada.
+//
+// Tabela sem comentário `// physical:` não passou por desempate, então o valor do
+// catálogo já É o nome físico.
+func identificadorPorFisico(projectRoot string) map[string]string {
+	porFisico := map[string]string{}
+	caminhos := append(caminhosLegadosDoCatalogo(projectRoot), caminhoDoCatalogo(projectRoot))
+	for _, caminho := range caminhos {
+		dados, err := os.ReadFile(caminho)
+		if err != nil {
+			continue
+		}
+		for _, casado := range tableEntryComFisico.FindAllStringSubmatch(string(dados), -1) {
+			identificador, apelido, fisico := casado[1], casado[2], casado[3]
+			if fisico == "" {
+				fisico = apelido
+			}
+			porFisico[strings.ToLower(fisico)] = identificador
+		}
+	}
+	return porFisico
+}
+
+// IdentifierByPhysical expõe o mapa nome físico → identificador Go do catálogo.
+//
+// É a MESMA decisão que o catálogo de tabelas tomou, e existe para que nenhum outro
+// gerador derive o identificador por conta própria. Quem derivou de novo já discordou
+// duas vezes: o catálogo de colunas e o mapeamento da ORM, os dois emitindo a mesma
+// declaração duas vezes quando dois nomes físicos colapsam no mesmo identificador.
+func IdentifierByPhysical(projectRoot string) map[string]string {
+	return identificadorPorFisico(projectRoot)
 }
 
 // RefreshCatalog rebuilds the table catalog in GoKit's Core area from the tables already known
@@ -239,7 +291,7 @@ func RefreshCatalog(projectRoot string, migrationsFolder string) error {
 // do catálogo já reconhece, então escrita e leitura seguem casadas.
 //
 // fisico devolve o nome físico de cada entrada (só para o comentário); pode ser nil.
-func grupoDeCatalogo(nome, construtor string, entradas map[string]string, fisico map[string]string) string {
+func grupoDeCatalogo(nome, tipo, construtor string, entradas map[string]string, fisico map[string]string) string {
 	chaves := make([]string, 0, len(entradas))
 	for chave := range entradas {
 		chaves = append(chaves, chave)
@@ -254,7 +306,8 @@ func grupoDeCatalogo(nome, construtor string, entradas map[string]string, fisico
 	}
 	fmt.Fprintf(&source, "var %s = struct {\n", nome)
 	for _, chave := range chaves {
-		fmt.Fprintf(&source, "\t%s migrate.%s\n", chave, construtor)
+		// O TIPO do campo, não o construtor: para view os dois diferem.
+		fmt.Fprintf(&source, "\t%s migrate.%s\n", chave, tipo)
 	}
 	source.WriteString("}{\n")
 	for _, chave := range chaves {
@@ -269,7 +322,16 @@ func grupoDeCatalogo(nome, construtor string, entradas map[string]string, fisico
 }
 
 // escreverCatalogo grava o arquivo do agrupador no pacote core.
-func escreverCatalogo(path, nome, construtor string, entradas, fisico map[string]string, nota string) error {
+// escreverCatalogo grava um agrupador de catálogo.
+//
+// `tipo` e `construtor` são parâmetros SEPARADOS porque não são a mesma coisa. Para
+// tabela coincidem — `migrate.Table` é tipo e conversão ao mesmo tempo. Para view
+// não: o tipo é `migrate.View` e o construtor é `migrate.RegisteredView`, porque View
+// tem campo privado e não aceita conversão direta. Enquanto os dois vinham do mesmo
+// argumento, o view.gen.go saía com `X migrate.RegisteredView` — usando uma função
+// como tipo — e não compilava. Não aparecia porque o único projeto de teste tinha
+// ZERO views, e aí o agrupador degenera para `struct{}{}`.
+func escreverCatalogo(path, nome, tipo, construtor string, entradas, fisico map[string]string, nota string) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
@@ -279,12 +341,15 @@ func escreverCatalogo(path, nome, construtor string, entradas, fisico map[string
 		source.WriteString("import migrate \"github.com/PhelipeViana/gokit/migration\"\n\n")
 	}
 	source.WriteString(nota)
-	source.WriteString(grupoDeCatalogo(nome, construtor, entradas, fisico))
+	source.WriteString(grupoDeCatalogo(nome, tipo, construtor, entradas, fisico))
 
 	formatted, err := format.Source([]byte(source.String()))
 	if err != nil {
 		return err
 	}
+	// Apaga antes de escrever para vencer arquivo marcado como somente-leitura, o que
+	// acontece em pasta gerada versionada. O erro é descartado porque o WriteFile logo
+	// abaixo é quem sabe se o arquivo pôde ou não ser gravado.
 	_ = os.Remove(path)
 	return os.WriteFile(path, formatted, 0o644)
 }
@@ -294,7 +359,7 @@ func writeCatalog(path string, names []string) error {
 	for _, name := range names {
 		entradas[exportedIdentifier(name)] = name
 	}
-	return escreverCatalogo(path, "Table", "Table", entradas, nil, "")
+	return escreverCatalogo(path, "Table", "Table", "Table", entradas, nil, "")
 }
 
 // WriteCoreCatalog writes the project-owned alias catalog in GoKit's
@@ -323,7 +388,7 @@ func WriteCoreCatalog(projectRoot string, aliases map[string]string) error {
 		entradas[identifier] = alias
 		fisico[identifier] = aliases[alias]
 	}
-	return escreverCatalogo(caminhoDoCatalogo(projectRoot), "Table", "Table",
+	return escreverCatalogo(caminhoDoCatalogo(projectRoot), "Table", "Table", "Table",
 		entradas, fisico, i18n.T("cat_gen_alias_note"))
 }
 
@@ -377,7 +442,10 @@ func PrimeCoreCatalog(projectRoot string, paths []string) error {
 // "table" não colide com o nome da tabela.
 func WriteCoreColumnCatalog(projectRoot, migrationsFolder string) error {
 	tabelas := catalogoAcumulado(projectRoot)
-	porTabela := colunasPorTabela(migrationsFolder, tabelas)
+	porTabela, err := colunasPorTabela(migrationsFolder, tabelas)
+	if err != nil {
+		return err
+	}
 
 	// Identificador de tabela → o de coluna, já normalizado, com a guarda de
 	// colisão. Duas colunas que colapsam no mesmo identificador não têm .Alias()
@@ -393,6 +461,11 @@ func WriteCoreColumnCatalog(projectRoot, migrationsFolder string) error {
 	}
 	sort.Strings(tabelasOrdenadas)
 
+	// O identificador da tabela vem do catálogo de TABELAS, que é quem decidiu o
+	// desempate. Derivar aqui de novo fazia os dois arquivos discordarem.
+	identificadores := identificadorPorFisico(projectRoot)
+	ocupados := map[string]string{}
+
 	for _, tabela := range tabelasOrdenadas {
 		colunas := map[string]string{}
 		nomes := make([]string, 0, len(porTabela[tabela]))
@@ -407,8 +480,26 @@ func WriteCoreColumnCatalog(projectRoot, migrationsFolder string) error {
 			}
 			colunas[identificador] = coluna
 		}
-		entradas = append(entradas, entrada{identificador: ExportedIdentifier(tabela), colunas: colunas})
+		identificadorDaTabela, temNoCatalogo := identificadores[strings.ToLower(tabela)]
+		if !temNoCatalogo {
+			// Tabela que o catálogo ainda não conhece: o corpus foi escrito à mão e o
+			// RefreshCatalog não rodou. Derivar é o certo aqui — é o mesmo que o
+			// catálogo de tabelas vai derivar quando rodar.
+			identificadorDaTabela = ExportedIdentifier(tabela)
+		}
+		// Guarda de colisão no nível da TABELA. Com o identificador vindo do catálogo
+		// isto não deve acontecer; se acontecer, é erro alto e não arquivo quebrado —
+		// duas structs com o mesmo nome não compilam, e o compilador aponta para um
+		// arquivo gerado que ninguém escreveu.
+		if anterior, ocupado := ocupados[identificadorDaTabela]; ocupado {
+			return i18n.Errf("cat_table_collision", anterior, tabela, identificadorDaTabela)
+		}
+		ocupados[identificadorDaTabela] = tabela
+		entradas = append(entradas, entrada{identificador: identificadorDaTabela, colunas: colunas})
 	}
+	// A ordem de saída passa a ser a do identificador, não a do nome físico: o apelido
+	// pode reordenar, e diff estável entre execuções vale mais que a ordem original.
+	sort.Slice(entradas, func(i, j int) bool { return entradas[i].identificador < entradas[j].identificador })
 
 	var corpo strings.Builder
 	corpo.WriteString("// Code generated by GoKit. DO NOT EDIT.\npackage core\n\n")
@@ -452,6 +543,8 @@ func WriteCoreColumnCatalog(projectRoot, migrationsFolder string) error {
 	if err := os.MkdirAll(filepath.Dir(caminho), 0o755); err != nil {
 		return err
 	}
+	// Mesmo caso do catálogo de tabelas: o Remove é para vencer somente-leitura, e o
+	// WriteFile abaixo é quem reporta.
 	_ = os.Remove(caminho)
 	return os.WriteFile(caminho, formatado, 0o644)
 }
@@ -511,7 +604,7 @@ func WriteCoreViewCatalog(projectRoot string, views map[string]bool) error {
 	for name := range views {
 		entradas[ViewIdentifier(name)] = name
 	}
-	return escreverCatalogo(caminhoDoCatalogoDeViews(projectRoot), "View", "RegisteredView",
+	return escreverCatalogo(caminhoDoCatalogoDeViews(projectRoot), "View", "View", "RegisteredView",
 		entradas, nil, i18n.T("cat_gen_view_note"))
 }
 

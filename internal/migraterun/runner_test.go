@@ -27,7 +27,7 @@ func TestCreateScaffoldMigrationAllMethods(t *testing.T) {
 	methods := []string{
 		"create_table", "drop_table", "add_column", "alter_column", "drop_column",
 		"add_foreign_key", "drop_foreign_key", "create_index", "drop_index",
-		"create_view", "alter_view", "drop_view", "create_sequence", "drop_sequence",
+		"create_sequence", "drop_sequence",
 		"rename_table", "rename_column", "add_primary_key", "add_unique", "add_check",
 		"drop_constraint", "raw_sql", "todo",
 	}

@@ -94,7 +94,7 @@ func (m Model[T]) InsertManyWith(ctx context.Context, r Runner, linhas []Values)
 	if err != nil {
 		return Result{}, ClassifyError(err)
 	}
-	afetadas, _ := saida.RowsAffected()
+	afetadas := linhasAfetadas(saida)
 	return Result{Affected: afetadas}, nil
 }
 
@@ -126,7 +126,7 @@ func (q Query[T]) UpdateWith(ctx context.Context, r Runner, valores Values) (Res
 	if err != nil {
 		return Result{}, ClassifyError(err)
 	}
-	afetadas, _ := saida.RowsAffected()
+	afetadas := linhasAfetadas(saida)
 	return Result{Affected: afetadas}, nil
 }
 
@@ -151,7 +151,7 @@ func (q Query[T]) DeleteWith(ctx context.Context, r Runner) (Result, error) {
 	if err != nil {
 		return Result{}, ClassifyError(err)
 	}
-	afetadas, _ := saida.RowsAffected()
+	afetadas := linhasAfetadas(saida)
 	return Result{Affected: afetadas}, nil
 }
 

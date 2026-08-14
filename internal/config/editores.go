@@ -182,6 +182,8 @@ func gravarJSON(caminho string, valor any) error {
 	return nil
 }
 
+// O erro do Marshal é descartado porque a entrada é um literal de mapa de strings
+// fixo: não existe valor aqui que o encoder de JSON recuse.
 func extensionsJSON() string {
 	corpo, _ := json.MarshalIndent(map[string][]string{
 		"recommendations": {

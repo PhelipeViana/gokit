@@ -49,7 +49,7 @@ func Migration() migrate.Definition { return migrate.Define(migrate.CreateTable(
 		t.Fatal(err)
 	}
 	state := config.ConfigState{Config: &config.Config{Output: config.OutputConfig{Migrate: "database/migrations", ORM: "internal/gokit/core"}}}
-	count, err := GenerateORM(root, state)
+	count, _, err := GenerateORM(root, state)
 	if err != nil || count != 1 {
 		t.Fatalf("GenerateORM: count=%d err=%v", count, err)
 	}

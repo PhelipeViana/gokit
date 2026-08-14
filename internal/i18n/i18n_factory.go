@@ -259,3 +259,30 @@ func init() {
 		},
 	})
 }
+
+// Falha ao LER uma factory já escrita. Antes era ignorada, e o custo era o
+// `factory create` reescrever o arquivo inteiro por cima do que a pessoa editou.
+func init() {
+	Register(Entradas{
+		"fac_read_failed": {
+			PT: "a factory %s já existente não pôde ser lida: %v",
+			ES: "la factory %s ya existente no pudo ser leída: %v",
+			EN: "the existing factory %s could not be read: %v",
+		},
+		"fac_read_failed_fix": {
+			PT: "Corrija o arquivo antes de gerar de novo — `gokit factory validate` aponta a função. Gerar em cima apagaria as expressões ajustadas à mão.",
+			ES: "Corrija el archivo antes de generar de nuevo — `gokit factory validate` señala la función. Generar encima borraría las expresiones ajustadas a mano.",
+			EN: "Fix the file before generating again — `gokit factory validate` points at the function. Generating over it would erase hand-tuned expressions.",
+		},
+	})
+}
+
+func init() {
+	Register(Entradas{
+		"fac_skip_identity_only": {
+			PT: "%d tabela(s) sem factory: as únicas colunas são de identidade, e quem as preenche é o banco:",
+			ES: "%d tabla(s) sin factory: las únicas columnas son de identidad, y quien las llena es la base:",
+			EN: "%d table(s) without a factory: their only columns are identity, and the database fills those:",
+		},
+	})
+}

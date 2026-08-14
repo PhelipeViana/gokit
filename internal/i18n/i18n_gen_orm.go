@@ -40,6 +40,13 @@ func init() {
 			ES: "la tabla %q genera la entidad core.%s, que colisiona con el agrupador core.%s del catálogo; asigne un alias a la tabla con CreateTable(%q).Alias(\"otro_nombre\")",
 			EN: "table %q generates entity core.%s, which collides with the catalog group core.%s; give the table a nickname with CreateTable(%q).Alias(\"another_name\")",
 		},
+		// Sobra do nome antigo do arquivo gerado. A mensagem diz o caminho porque a
+		// solução é apagar à mão: normalmente é editor ou build com o arquivo aberto.
+		"gen_orm_legacy_leftover": {
+			PT: "o arquivo antigo %s não pôde ser removido: %w — ele declara as mesmas entidades do entities.gen.go e o pacote não vai compilar com os dois; apague-o à mão e gere de novo",
+			ES: "el archivo antiguo %s no pudo ser eliminado: %w — declara las mismas entidades que entities.gen.go y el paquete no compilará con ambos; bórrelo a mano y genere de nuevo",
+			EN: "the legacy file %s could not be removed: %w — it declares the same entities as entities.gen.go and the package will not compile with both; delete it by hand and generate again",
+		},
 		"gen_orm_row": {
 			PT: "Linha tipada da entidade (retorno de Get/First). Coluna anulável vira ponteiro.",
 			ES: "Fila tipada de la entidad (retorno de Get/First). Columna anulable es puntero.",
@@ -84,6 +91,18 @@ func init() {
 			PT: "Loader tipado da relação: converte os pais, delega ao motor e costura o resultado.",
 			ES: "Loader tipado de la relación: convierte los padres, delega al motor y cose el resultado.",
 			EN: "Typed relation loader: asserts the parents, delegates to the engine and stitches the result.",
+		},
+	})
+}
+
+// Aviso das FKs que não viram atalho de navegação. É informativo, não erro: o
+// carregador da ORM é tipado em int64, e chave não numérica não cabe nele.
+func init() {
+	Register(Entradas{
+		"gen_orm_rel_skipped": {
+			PT: "%d chave(s) estrangeira(s) sem atalho de navegação — a coluna referenciada não é numérica. A entidade existe e é consultável; só o .With() dessa relação não sai:",
+			ES: "%d clave(s) foránea(s) sin atajo de navegación — la columna referenciada no es numérica. La entidad existe y es consultable; solo el .With() de esa relación no sale:",
+			EN: "%d foreign key(s) without a navigation shortcut — the referenced column is not numeric. The entity exists and is queryable; only the .With() for that relation is absent:",
 		},
 	})
 }

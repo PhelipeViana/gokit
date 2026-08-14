@@ -152,10 +152,14 @@ func tableForeignKeys(root string, state config.ConfigState) (map[string][]strin
 
 // loadFactories lê as factories e as casa com o schema das migrations.
 func loadFactories(root string, state config.ConfigState) ([]plano, error) {
-	arquivos, err := factorygo.CarregarPasta(factoryRoot(root, state))
+	pastaDeFactories := factoryRoot(root, state)
+	arquivos, err := factorygo.CarregarPasta(pastaDeFactories)
 	if err != nil {
 		return nil, err
 	}
+	// Identificador de catálogo → nome físico, antes de qualquer comparação com o
+	// corpus. Ver o invariante em factoryresolve.go.
+	arquivos = resolverNomesFisicos(arquivos, raizDoProjetoDaFactory(pastaDeFactories))
 	if len(arquivos) == 0 {
 		return nil, nil
 	}

@@ -25,7 +25,7 @@ func executarInsert(ctx context.Context, r Runner, exec Executor, entity EntityF
 		if err != nil {
 			return Result{}, ClassifyError(err)
 		}
-		afetadas, _ := saida.RowsAffected()
+		afetadas := linhasAfetadas(saida)
 		return Result{Affected: afetadas}, nil
 	}
 
@@ -36,7 +36,7 @@ func executarInsert(ctx context.Context, r Runner, exec Executor, entity EntityF
 		if err != nil {
 			return Result{}, ClassifyError(err)
 		}
-		afetadas, _ := saida.RowsAffected()
+		afetadas := linhasAfetadas(saida)
 		id, err := saida.LastInsertId()
 		if err != nil {
 			// Driver que não sabe informar não invalida o INSERT, que já ocorreu.
@@ -74,7 +74,7 @@ func executarInsert(ctx context.Context, r Runner, exec Executor, entity EntityF
 		if err != nil {
 			return Result{}, ClassifyError(err)
 		}
-		afetadas, _ := saida.RowsAffected()
+		afetadas := linhasAfetadas(saida)
 		return Result{Affected: afetadas, LastID: id}, nil
 	}
 
@@ -82,7 +82,7 @@ func executarInsert(ctx context.Context, r Runner, exec Executor, entity EntityF
 	if err != nil {
 		return Result{}, ClassifyError(err)
 	}
-	afetadas, _ := saida.RowsAffected()
+	afetadas := linhasAfetadas(saida)
 	return Result{Affected: afetadas}, nil
 }
 
@@ -111,4 +111,20 @@ func indiceDe(texto, alvo string) int {
 		}
 	}
 	return -1
+}
+
+// linhasAfetadas lê a contagem de linhas de um comando que JÁ foi executado com
+// sucesso.
+//
+// O erro é engolido aqui, num lugar só, e de propósito: RowsAffected é opcional no
+// contrato do database/sql, e driver que não sabe informar não desfaz a escrita — o
+// comando aconteceu. Devolver erro faria o chamador tratar como falha um UPDATE que
+// gravou. Ficam os dois casos claros para quem usa: a escrita falhou → err != nil; a
+// escrita ocorreu e o driver não contou → Affected 0.
+func linhasAfetadas(saida sql.Result) int64 {
+	afetadas, err := saida.RowsAffected()
+	if err != nil {
+		return 0
+	}
+	return afetadas
 }

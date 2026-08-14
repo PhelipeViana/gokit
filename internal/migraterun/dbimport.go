@@ -17,6 +17,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/PhelipeViana/gokit/internal/aviso"
 	"github.com/PhelipeViana/gokit/internal/cliui"
 	"github.com/PhelipeViana/gokit/internal/config"
 	"github.com/PhelipeViana/gokit/internal/i18n"
@@ -134,11 +135,10 @@ func MigrateImport(root string, state config.ConfigState, confirmar bool) error 
 		}
 	}
 
-	// As views entram depois das tabelas, e com timestamp posterior ao da última:
-	// view costuma selecionar de tabela, então criá-la antes falharia.
-	depoisDasTabelas := base.Add(time.Duration(len(pendentes)+1) * time.Second)
+	// As views não têm mais ordem a respeitar: elas não são aplicadas pelo migrate, só
+	// registradas. Quem cria a view — a pessoa, no banco — resolve a ordem lá.
 	viewsPendentes = viewsImportaveis(viewsPendentes, monitor)
-	planejadasViews, err := importarViews(root, state.Config.Output.Migrate, strings.ToLower(state.ActiveDialect), viewsPendentes, depoisDasTabelas, monitor)
+	planejadasViews, err := registrarViewsMapeadas(root, state.Config.Output.Migrate, strings.ToLower(state.ActiveDialect), viewsPendentes, monitor)
 	if err != nil {
 		return err
 	}
@@ -171,6 +171,21 @@ func MigrateImport(root string, state config.ConfigState, confirmar bool) error 
 	}
 
 	for _, planejado := range planejados {
+		// View é REGISTRO, não migration: vem sem caminho de arquivo .go, e só o .sql
+		// do dialeto é gravado. O `Caminho` vazio é o que distingue os dois.
+		if planejado.Caminho == "" {
+			if planejado.SQLDaView == "" {
+				continue
+			}
+			if err := os.MkdirAll(planejado.PastaDaView, 0o755); err != nil {
+				return err
+			}
+			arquivoSQL := filepath.Join(planejado.PastaDaView, planejado.DialetoDaView+".sql")
+			if err := os.WriteFile(arquivoSQL, []byte(planejado.SQLDaView+"\n"), 0o644); err != nil {
+				return err
+			}
+			continue
+		}
 		if err := os.MkdirAll(filepath.Dir(planejado.Caminho), 0o755); err != nil {
 			return err
 		}
@@ -184,17 +199,6 @@ func MigrateImport(root string, state config.ConfigState, confirmar bool) error 
 		}
 		if err := os.WriteFile(planejado.Caminho, []byte(planejado.Conteudo), 0o644); err != nil {
 			return err
-		}
-		// O SQL da view vai ANTES de qualquer leitura do corpus: o parser recusa a
-		// migration de view cuja definição não está no lugar.
-		if planejado.SQLDaView != "" {
-			if err := os.MkdirAll(planejado.PastaDaView, 0o755); err != nil {
-				return err
-			}
-			arquivoSQL := filepath.Join(planejado.PastaDaView, planejado.DialetoDaView+".sql")
-			if err := os.WriteFile(arquivoSQL, []byte(planejado.SQLDaView+"\n"), 0o644); err != nil {
-				return err
-			}
 		}
 		if err := recordGeneratedFile(root, planejado.Tabela, "migration", planejado.Caminho); err != nil {
 			return i18n.Errf("run_mig_register_failed", err)
@@ -228,6 +232,10 @@ func MigrateImport(root string, state config.ConfigState, confirmar bool) error 
 		for _, linha := range monitor.Resumo() {
 			fmt.Printf("  %s %s\n", cliui.Muted("·"), linha)
 		}
+		// O canal recebe o resumo agrupado por nível; o detalhe de cada ocorrência
+		// fica no arquivo. Um schema legado gera centenas, e centenas de posts no
+		// canal seria o mesmo que nenhum.
+		monitor.Notificar(aviso.DoEstado(state), caminhoDoMonitor)
 	}
 
 	fmt.Printf("\n  %s %s\n\n", cliui.Success("✓ OK"), i18n.Tf("imp_written", len(planejados)))
@@ -322,15 +330,38 @@ func migrationDaTabela(root, saida, dialect, importCore string, tabela TabelaDoB
 	for _, coluna := range tabela.PrimaryKey {
 		chave[strings.ToLower(coluna)] = true
 	}
-	pai := map[string]FKDoBanco{}
+	// As colunas de uma FK COMPOSTA vêm em linhas separadas do catálogo, amarradas
+	// pelo nome da constraint. Agrupar é o que distingue "duas FKs de uma coluna" de
+	// "uma FK de duas colunas" — e as duas coisas exigem integridade diferente.
+	porConstraint := map[string][]FKDoBanco{}
+	var ordemDasConstraints []string
 	for _, fk := range tabela.ForeignKeys {
-		pai[strings.ToLower(fk.Coluna)] = fk
+		nome := strings.ToLower(fk.Constraint)
+		if _, visto := porConstraint[nome]; !visto {
+			ordemDasConstraints = append(ordemDasConstraints, nome)
+		}
+		porConstraint[nome] = append(porConstraint[nome], fk)
+	}
+
+	// `pai` só recebe a FK de UMA coluna: é a que vira `.References()` na própria
+	// coluna. A composta não cabe ali — o DSL da coluna aceita um par só — e sai como
+	// operação de tabela, depois do CreateTable.
+	pai := map[string]FKDoBanco{}
+	var compostas []string
+	for _, nome := range ordemDasConstraints {
+		partes := porConstraint[nome]
+		if len(partes) == 1 {
+			pai[strings.ToLower(partes[0].Coluna)] = partes[0]
+			continue
+		}
+		compostas = append(compostas, nome)
 	}
 
 	var linhas []string
 	for _, coluna := range tabela.Colunas {
 		nome := strings.ToLower(coluna.Nome)
 		declaracao := "\t\tmigrate.Col(" + fmt.Sprintf("%q", nome) + ")" + declaracaoDaColuna(coluna, dialect)
+		registrarDefaultNaoPortavel(monitor, tabela.Nome, coluna)
 		// PrimaryKey em cada coluna também na chave composta: o executor detecta
 		// mais de uma e emite constraint de tabela, porque PRIMARY KEY inline
 		// repetido dá ORA-02260.
@@ -386,24 +417,86 @@ func migrationDaTabela(root, saida, dialect, importCore string, tabela TabelaDoB
 	if importCore != "" {
 		refTabela = "core.Table." + migrationgo.ExportedIdentifier(alias)
 	}
+
+	// FK composta, como operação de tabela. Vem antes dos índices só por leitura: é
+	// integridade, e integridade lê-se antes de otimização.
+	for _, nome := range compostas {
+		partes := porConstraint[nome]
+		if refTabela == "" {
+			monitor.Registrar(Ocorrencia{
+				Tipo:    OcorrenciaNaoLido,
+				Tabela:  fisica,
+				Objeto:  nome,
+				Origem:  "chave estrangeira composta",
+				Decisao: "não declarada: o módulo do projeto não foi resolvido, e a operação exige core.Table.*",
+			})
+			continue
+		}
+		mapeamentos := make([]string, 0, len(partes))
+		for _, parte := range partes {
+			mapeamentos = append(mapeamentos, fmt.Sprintf("%q",
+				strings.ToLower(parte.Coluna)+":"+strings.ToLower(parte.ColunaPai)))
+		}
+		operacoes = append(operacoes, fmt.Sprintf("migrate.AddCompositeForeignKey(%s, %q, %q, %s)",
+			refTabela, sanearNomeGerado(strings.ToLower(nome)), strings.ToLower(partes[0].TabelaPai),
+			strings.Join(mapeamentos, ", ")))
+	}
+	// Índice já declarado, por nome+colunas. Schema legado acumula redundância — a
+	// mesma coluna com duas unique constraints de nome gerado pelo banco
+	// (UQ__MOTIVO_EXCLUSAO__214BF109 e UQ__MOTIVO_EXCLUSAO__6339AFF7) — e, como o nome
+	// gerado aqui deriva de tabela+colunas, as duas colapsam no mesmo nome. Declarar
+	// duas vezes o mesmo índice não adiciona garantia nenhuma e não compila como DDL.
+	jaDeclarados := map[string]bool{}
 	for _, indice := range tabela.Indices {
 		if refTabela == "" {
 			break
 		}
-		// Nome que o corpus não sabe expressar é PULADO, não saneado. O banco legado
-		// tem índices chamados `<IDX_ALGO>`: alguém copiou um modelo e deixou os
-		// sinais no nome. Sanear inventaria um nome que não existe no banco, e aí um
-		// DropIndex futuro procuraria o objeto errado.
-		if !acao.NomeFisicoValido(strings.ToLower(indice.Nome)) {
+		nomeDoIndice := strings.ToLower(indice.Nome)
+		if !acao.NomeFisicoValido(nomeDoIndice) {
+			// Aqui a decisão depende do que se perde.
+			//
+			// Índice COMUM é otimização: pular preserva a verdade — sanear inventaria um
+			// nome que não existe no banco, e um DropIndex futuro procuraria o objeto
+			// errado. O legado tem índices chamados `<IDX_ALGO>`, com os sinais do
+			// modelo que alguém copiou.
+			//
+			// Índice ÚNICO é garantia de integridade, e pular apaga a garantia: o schema
+			// migrado aceitaria duplicata que a origem recusa. Entre perder o nome e
+			// perder a regra, perde-se o nome. O nome gerado é registrado, para que
+			// ninguém procure no banco de destino o nome que estava na origem.
+			if !indice.Unico {
+				monitor.Registrar(Ocorrencia{
+					Tipo:    OcorrenciaNaoLido,
+					Tabela:  fisica,
+					Objeto:  indice.Nome,
+					Origem:  "nome de índice fora da convenção do corpus",
+					Decisao: "não declarado: renomeie o índice no banco e importe de novo",
+				})
+				continue
+			}
+			gerado := nomeGeradoDeIndiceUnico(fisica, indice.Colunas)
 			monitor.Registrar(Ocorrencia{
 				Tipo:    OcorrenciaNaoLido,
 				Tabela:  fisica,
 				Objeto:  indice.Nome,
-				Origem:  "nome de índice fora da convenção do corpus",
-				Decisao: "não declarado: renomeie o índice no banco e importe de novo",
+				Origem:  "nome de índice ÚNICO fora da convenção do corpus",
+				Decisao: "declarado com o nome gerado " + gerado + ": perder o nome é melhor que perder a unicidade",
+			})
+			nomeDoIndice = gerado
+		}
+		chave := nomeDoIndice + "(" + strings.ToLower(strings.Join(indice.Colunas, ",")) + ")"
+		if jaDeclarados[chave] {
+			monitor.Registrar(Ocorrencia{
+				Tipo:    OcorrenciaNaoLido,
+				Tabela:  fisica,
+				Objeto:  indice.Nome,
+				Origem:  "índice redundante: mesma lista de colunas de um já declarado",
+				Decisao: "não declarado de novo; a garantia do primeiro é idêntica",
 			})
 			continue
 		}
+		jaDeclarados[chave] = true
+
 		metodo := "migrate.CreateIndex"
 		if indice.Unico {
 			metodo = "migrate.CreateUniqueIndex"
@@ -413,7 +506,7 @@ func migrationDaTabela(root, saida, dialect, importCore string, tabela TabelaDoB
 			colunas = append(colunas, fmt.Sprintf("%q", coluna))
 		}
 		operacoes = append(operacoes, fmt.Sprintf("%s(%s, %q, %s)",
-			metodo, refTabela, strings.ToLower(indice.Nome), strings.Join(colunas, ", ")))
+			metodo, refTabela, nomeDoIndice, strings.Join(colunas, ", ")))
 	}
 	corpo := strings.Join(operacoes, ",\n\t\t")
 
@@ -458,8 +551,13 @@ func pastaDeMigrations(root, saida string) string {
 	return filepath.Join(root, caminho)
 }
 
-// importarViews escreve uma migration `create_view` por view que existe no banco e
-// não está declarada no corpus.
+// registrarViewsMapeadas grava a definição de cada view do banco no layout MAPEADO,
+// sem gerar migration nenhuma.
+//
+// View saiu do corpus: `migrate run` não cria view. O que existe é o REGISTRO —
+// `<pasta de migrate>/views/<nome>/<dialeto>.sql` — e o BANCO é a verdade. Quem cria a
+// view é a pessoa, no banco; o gokit lê e anota. Isso isola a responsabilidade: o
+// migrate cuida do que o gokit declara e aplica, o mapper cuida do que ele só observa.
 //
 // O texto vai para o arquivo do DIALETO DE ORIGEM — `sqlserver.sql`, não
 // `common.sql` — e essa é a decisão central: aquele SQL comprovadamente funciona num
@@ -471,7 +569,7 @@ func pastaDeMigrations(root, saida string) string {
 // Converter automaticamente foi considerado e recusado: `TOP` do SQL Server,
 // `ROWNUM` do Oracle e `LIMIT` dos outros dois não têm tradução confiável, e
 // conversão errada viraria mentira gravada em histórico versionado.
-func importarViews(root, saida, dialect string, views map[string]ViewDoBanco, base time.Time, monitor *Monitor) ([]arquivoPlanejado, error) {
+func registrarViewsMapeadas(root, saida, dialect string, views map[string]ViewDoBanco, monitor *Monitor) ([]arquivoPlanejado, error) {
 	nomes := make([]string, 0, len(views))
 	for nome := range views {
 		nomes = append(nomes, nome)
@@ -479,7 +577,7 @@ func importarViews(root, saida, dialect string, views map[string]ViewDoBanco, ba
 	sort.Strings(nomes)
 
 	planejados := make([]arquivoPlanejado, 0, len(nomes))
-	for posicao, nome := range nomes {
+	for _, nome := range nomes {
 		view := views[nome]
 		if strings.TrimSpace(view.SQL) == "" {
 			monitor.Registrar(Ocorrencia{
@@ -491,33 +589,14 @@ func importarViews(root, saida, dialect string, views map[string]ViewDoBanco, ba
 			continue
 		}
 
-		quando := base.Add(time.Duration(posicao) * time.Second)
-		timestamp := quando.Format("2006_01_02_150405")
-		arquivo := fmt.Sprintf("%s_create_view_%s.go", timestamp, nome)
-		pasta := filepath.Join(pastaDeMigrations(root, saida), "create_view")
-
-		declaracao := dynamicDeclarationName("Migration", arquivo)
-		conteudo := "package migrations\n\n" +
-			fmt.Sprintf("import (\n\tcore %q\n\tmigrate \"github.com/PhelipeViana/gokit/migration\"\n)\n\n", importCoreDaView(root)) +
-			i18n.Tf("imp_view_doc", nome, dialect) +
-			"func " + declaracao + "() migrate.Definition {\n" +
-			"\treturn migrate.Define(\n\t\tmigrate.CreateView(core.View." + migrationgo.ViewIdentifier(nome) + "),\n\t)\n}\n"
-
-		formatado, err := format.Source([]byte(conteudo))
-		if err != nil {
-			return nil, i18n.Errf("imp_format_failed", arquivo, err)
-		}
-
+		// Sem arquivo .go e sem timestamp: a pasta da view é PLANA, uma por nome, com um
+		// .sql por dialeto. O timestamp existia para casar com a migration, e não há
+		// mais migration para casar.
 		planejados = append(planejados, arquivoPlanejado{
-			Nome:     arquivo,
-			Caminho:  filepath.Join(pasta, arquivo),
-			Tabela:   nome,
-			Conteudo: string(formatado),
-			// O SQL acompanha o plano: ele é gravado na pasta versionada da view,
-			// cujo nome tem de ser o MESMO timestamp do arquivo de migration — é assim
-			// que o parser encontra a definição.
+			Nome:          nome,
+			Tabela:        nome,
 			SQLDaView:     view.SQL,
-			PastaDaView:   filepath.Join(pasta, "views", nome, timestamp),
+			PastaDaView:   filepath.Join(pastaDeMigrations(root, saida), "views", nome),
 			DialetoDaView: dialect,
 		})
 
@@ -697,4 +776,42 @@ func viewsImportaveis(views map[string]ViewDoBanco, monitor *Monitor) map[string
 		aceitas[nome] = views[nome]
 	}
 	return aceitas
+}
+
+// nomeGeradoDeIndiceUnico monta um nome válido para índice único cujo nome de origem
+// o corpus não sabe expressar.
+//
+// Deriva de tabela + colunas, então é determinístico: reimportar o mesmo banco dá o
+// mesmo nome, e o corpus não muda sem motivo. O prefixo `uq_` diz o que é.
+func nomeGeradoDeIndiceUnico(tabela string, colunas []string) string {
+	partes := make([]string, 0, len(colunas)+2)
+	partes = append(partes, "uq", strings.ToLower(tabela))
+	for _, coluna := range colunas {
+		partes = append(partes, strings.ToLower(coluna))
+	}
+	// O limite de 30 é o do Oracle, o menor dos quatro; shortenIdentifier anexa hash
+	// determinístico quando corta, então dois nomes longos não colapsam em um.
+	//
+	// O saneamento vem DEPOIS do corte, e é obrigatório: cortar no meio de um nome
+	// pode deixar `_` no fim, e com o hash anexado sai `usr__9b0424` — underscore
+	// duplo, que o validador de nome físico recusa. O corpus não aceitaria o arquivo
+	// que ele mesmo gerou.
+	return sanearNomeGerado(shortenIdentifier(strings.Join(partes, "_"), 30))
+}
+
+// sanearNomeGerado colapsa `_` repetido e apara as pontas.
+//
+// O underscore duplo é rejeitado de propósito pelo validador — `pessoas__ativas` e
+// `pessoas_ativas` colidiriam —, então nome gerado não pode produzi-lo.
+func sanearNomeGerado(nome string) string {
+	var saida strings.Builder
+	anterior := byte(0)
+	for i := 0; i < len(nome); i++ {
+		if nome[i] == '_' && anterior == '_' {
+			continue
+		}
+		saida.WriteByte(nome[i])
+		anterior = nome[i]
+	}
+	return strings.Trim(saida.String(), "_")
 }

@@ -62,7 +62,7 @@ func Migration() migrate.Definition {
 	state := config.ConfigState{Config: &config.Config{Output: config.OutputConfig{
 		Migrate: "database/migrations", ORM: "internal/gokit/core"}}}
 
-	_, err := GenerateORM(root, state)
+	_, _, err := GenerateORM(root, state)
 	if err == nil {
 		t.Fatal("colunas que colidem no identificador deveriam ser recusadas")
 	}

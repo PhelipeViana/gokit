@@ -520,7 +520,14 @@ func CreateSeedFile(root string, state config.ConfigState, target string) (strin
 	if err := os.MkdirAll(folder, 0o755); err != nil {
 		return "", 0, err
 	}
-	existentes, _ := os.ReadDir(folder)
+	// A pasta acabou de ser criada pelo MkdirAll acima, então falha em lê-la é problema
+	// de permissão — e não pode ser descartada: sem a lista, `primeiro` fica true e o
+	// seeder novo nasce se declarando o primeiro da tabela, com o cabeçalho e os IDs
+	// fixos de um seeder inicial, em cima de outros que já existem.
+	existentes, err := os.ReadDir(folder)
+	if err != nil {
+		return "", 0, err
+	}
 	primeiro := true
 	for _, entry := range existentes {
 		if seedFileName.MatchString(entry.Name()) {

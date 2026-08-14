@@ -8,6 +8,7 @@ package config
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -52,7 +53,15 @@ func AplicarModo(root string, cfg *Config) (gomodule.Result, error) {
 	// modo dev acabou de criar esse arquivo. Commitá-lo levaria para o
 	// repositório um caminho que só existe nesta máquina — exatamente o que a
 	// mudança para go.work resolve.
-	_ = ignorarGoWork(root)
+	//
+	// A falha aqui não impede o modo de ser aplicado, mas não pode ser silenciosa: o
+	// go.work fica no repositório e a próxima pessoa a clonar recebe o caminho da
+	// máquina de quem commitou. Sai no stderr porque este pacote é o mais baixo da
+	// pilha — quem notifica em canal depende dele.
+	if err := ignorarGoWork(root); err != nil {
+		fmt.Fprintf(os.Stderr, "Aviso: não foi possível pôr go.work no .gitignore de %s: %v\n"+
+			"  Acrescente as linhas `go.work` e `go.work.sum` à mão antes de commitar.\n", root, err)
+	}
 	return resultado, nil
 }
 

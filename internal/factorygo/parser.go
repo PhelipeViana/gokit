@@ -290,14 +290,20 @@ func lerData(set *token.FileSet, expressao ast.Expr) ([]Campo, error) {
 		if !ok {
 			return nil, i18n.Errf("fcp_data_line_shape", posicao(set, elemento.Pos()))
 		}
-		coluna, ok := nomeDeColuna(par.Key)
+		coluna, referencia, ok := nomeDeColuna(par.Key)
 		if !ok {
 			return nil, i18n.Errf("fcp_data_column_quoted", posicao(set, par.Key.Pos()))
 		}
-		if vistas[strings.ToUpper(coluna)] {
+		// Referência de catálogo compara EXATO (Go é sensível a caixa); nome físico
+		// compara em maiúsculas, porque nome de coluna no banco não distingue caixa.
+		chaveVista := coluna
+		if !referencia {
+			chaveVista = strings.ToUpper(coluna)
+		}
+		if vistas[chaveVista] {
 			return nil, i18n.Errf("fcp_data_dup_column", coluna)
 		}
-		vistas[strings.ToUpper(coluna)] = true
+		vistas[chaveVista] = true
 
 		campo, err := ambiente.campo(coluna, par.Value)
 		if err != nil {
@@ -341,23 +347,35 @@ func nomeDeTabela(expressao ast.Expr) (string, error) {
 //
 // O agrupador de coluna tem um nível a mais que o de tabela, porque a coluna é
 // endereçada dentro da tabela dela.
-func nomeDeColuna(expressao ast.Expr) (string, bool) {
-	if nome, err := astparser.StringLiteral(expressao); err == nil {
-		return nome, true
+// nomeDeColuna aceita as duas formas de endereçar uma coluna e diz QUAL delas veio.
+//
+// O terceiro retorno não é conveniência: ele decide como a chave pode ser comparada.
+// Nome físico é insensível a caixa — `"NOME"` e `"nome"` são a mesma coluna, e escrever
+// as duas em Data é duplicidade de verdade. Identificador de catálogo é Go, e Go é
+// sensível a caixa: `DataNomeacao` e `Datanomeacao` são DUAS colunas, vindas de
+// `data_nomeacao` e `datanomeacao`.
+//
+// Comparando tudo em maiúsculas, as duas colidiam e o parser recusava um arquivo
+// válido — que ele mesmo havia gerado. E o efeito não parava aí: com as factories num
+// arquivo só, o parse falhava inteiro, a pasta parecia vazia e o `factory create`
+// reescrevia tudo por cima do que a pessoa tinha ajustado.
+func nomeDeColuna(expressao ast.Expr) (nome string, referenciaDeCatalogo bool, ok bool) {
+	if literal, err := astparser.StringLiteral(expressao); err == nil {
+		return literal, false, true
 	}
-	seletor, ok := expressao.(*ast.SelectorExpr)
-	if !ok {
-		return "", false
+	seletor, certo := expressao.(*ast.SelectorExpr)
+	if !certo {
+		return "", false, false
 	}
 	// X.Column.Tabela.Coluna → o pai do seletor é X.Column.Tabela
-	tabelaSeletor, ok := seletor.X.(*ast.SelectorExpr)
-	if !ok {
-		return "", false
+	tabelaSeletor, certo := seletor.X.(*ast.SelectorExpr)
+	if !certo {
+		return "", false, false
 	}
-	if grupo, ok := tabelaSeletor.X.(*ast.SelectorExpr); !ok || grupo.Sel.Name != "Column" {
-		return "", false
+	if grupo, certo := tabelaSeletor.X.(*ast.SelectorExpr); !certo || grupo.Sel.Name != "Column" {
+		return "", false, false
 	}
-	return seletor.Sel.Name, true
+	return seletor.Sel.Name, true, true
 }
 
 // referenciaDeGrupo resolve `X.<grupo>.Nome` e devolve o Nome.
@@ -437,7 +455,7 @@ func (ambiente ambienteDeAvaliacao) referencia(chamada *ast.CallExpr) (*migrate.
 		return &link, nil
 	}
 
-	coluna, ok := nomeDeColuna(chamada.Args[1])
+	coluna, _, ok := nomeDeColuna(chamada.Args[1])
 	if !ok {
 		return nil, i18n.Errf("fcp_link_column_quoted")
 	}

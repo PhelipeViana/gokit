@@ -245,7 +245,7 @@ func Start(version, commitHash string) error {
 		methodsChoices: []string{
 			"create_table", "drop_table", "add_column", "alter_column", "drop_column",
 			"add_foreign_key", "drop_foreign_key", "create_index", "drop_index",
-			"create_view", "alter_view", "drop_view", "create_sequence", "drop_sequence",
+			"create_sequence", "drop_sequence",
 			"rename_table", "rename_column", "add_primary_key", "add_unique", "add_check",
 			"drop_constraint", "raw_sql", "todo",
 		},
@@ -398,7 +398,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case "enter":
 				if strings.TrimSpace(m.migrationNameInput) != "" {
 					method := m.methodsChoices[m.methodCursor]
-					if method == "create_table" || method == "create_view" || method == "create_sequence" || method == "raw_sql" || method == "todo" {
+					if method == "create_table" || method == "create_sequence" || method == "raw_sql" || method == "todo" {
 						name, err := migraterun.CreateScaffoldMigration(".", m.configData, m.migrationNameInput, method, "")
 						m.migrationError = err
 						m.migrationOutput = name
@@ -448,7 +448,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			case "esc":
 				method := m.methodsChoices[m.methodCursor]
-				if method == "create_table" || method == "create_view" || method == "create_sequence" || method == "raw_sql" || method == "todo" {
+				if method == "create_table" || method == "create_sequence" || method == "raw_sql" || method == "todo" {
 					m.state = stateMigrationSelectMethod
 				} else {
 					m.state = stateMigrationSelectTable
@@ -497,19 +497,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.availableViews = views
 
 				switch method {
-				case "create_table", "create_view", "create_sequence", "raw_sql", "todo":
+				case "create_table", "create_sequence", "raw_sql", "todo":
 					m.state = stateMigrationInputName
 					m.migrationNameInput = ""
 					m.selectedTableOrView = ""
-					return m, nil
-				case "alter_view", "drop_view":
-					if len(views) == 0 {
-						m.migrationError = i18n.Errf("tui_no_view_available")
-						m.state = stateMigrationCreating
-						return m, tea.ClearScreen
-					}
-					m.state = stateMigrationSelectView
-					m.viewCursor = 0
 					return m, nil
 				default:
 					if len(tables) == 0 {
@@ -570,43 +561,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.selectedTableOrView = chosenTable
 					return m, nil
 				}
-			case "esc":
-				m.state = stateMigrationSelectMethod
-				return m, nil
-			}
-		}
-
-		if m.state == stateMigrationSelectView {
-			switch msg.String() {
-			case "ctrl+c":
-				return m, tea.Quit
-			case "up", "k":
-				m.viewCursor--
-				if m.viewCursor < 0 {
-					m.viewCursor = len(m.availableViews) - 1
-				}
-				return m, nil
-			case "down", "j":
-				m.viewCursor++
-				if m.viewCursor >= len(m.availableViews) {
-					m.viewCursor = 0
-				}
-				return m, nil
-			case "enter":
-				chosenView := m.availableViews[m.viewCursor]
-				method := m.methodsChoices[m.methodCursor]
-				fileNameDesc := ""
-				switch method {
-				case "alter_view":
-					fileNameDesc = "alter_" + chosenView
-				case "drop_view":
-					fileNameDesc = "drop_" + chosenView
-				}
-				name, err := migraterun.CreateScaffoldMigration(".", m.configData, fileNameDesc, method, chosenView)
-				m.migrationError = err
-				m.migrationOutput = name
-				m.state = stateMigrationCreating
-				return m, tea.ClearScreen
 			case "esc":
 				m.state = stateMigrationSelectMethod
 				return m, nil
@@ -1142,17 +1096,6 @@ func (m model) View() string {
 			s.WriteString(footerStyle.Render(i18n.Tf("tui_counter", m.tableCursor+1, len(m.availableTables))) + "\n")
 		}
 		s.WriteString(i18n.T("tui_nav_next_actions"))
-
-	case stateMigrationSelectView:
-		s.WriteString("  " + lipgloss.NewStyle().Bold(true).Render(i18n.T("tui_pick_view")) + "\n\n")
-
-		if len(m.availableViews) == 0 {
-			s.WriteString("  " + lipgloss.NewStyle().Foreground(lipgloss.Color("#FF5555")).Render(i18n.T("tui_no_views")) + "\n")
-		} else {
-			s.WriteString(renderScrollableList(m.availableViews, m.viewCursor, 12))
-			s.WriteString(footerStyle.Render(i18n.Tf("tui_counter", m.viewCursor+1, len(m.availableViews))) + "\n")
-		}
-		s.WriteString(i18n.T("tui_nav_confirm_actions"))
 
 	case stateMigrationCreating:
 		var content string

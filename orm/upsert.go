@@ -98,7 +98,7 @@ func (m Model[T]) gravarIdempotente(ctx context.Context, r Runner, valores Value
 	if err != nil {
 		return Result{}, ClassifyError(err)
 	}
-	afetadas, _ := saida.RowsAffected()
+	afetadas := linhasAfetadas(saida)
 	return Result{Affected: normalizarAfetadas(afetadas)}, nil
 }
 
