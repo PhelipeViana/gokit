@@ -89,6 +89,14 @@ func SpecialMap(root string, state config.ConfigState, confirmar bool) error {
 	for _, problema := range problemas {
 		fmt.Println(cliui.Warning(i18n.Tf("spc_read_partial", problema)))
 	}
+	// Leitura parcial NÃO é evidência de ausência.
+	//
+	// O que foi lido continua valendo — é evidência positiva. O que não pode ser
+	// concluído é o contrário: com o banco fora, TODA consulta falha, o mapa sai vazio e
+	// os passos 3 e 4, que decidem por ausência, veriam o registro inteiro como órfão.
+	// A poda então apagaria pasta de objeto que existe. Mesmo critério do `conferido` da
+	// conferência de pendência: sem leitura confiável, não se age sobre ausência.
+	leituraCompleta := len(problemas) == 0
 
 	base := pastaDeEspeciais(root, state)
 	monitor := NovoMonitor("special map", state.ActiveClient, dialect)
@@ -131,6 +139,10 @@ func SpecialMap(root string, state config.ConfigState, confirmar bool) error {
 	emDisco, err := pastasRegistradas(base)
 	if err != nil {
 		return err
+	}
+	if !leituraCompleta {
+		emDisco = nil
+		fmt.Println(cliui.Warning(i18n.T("spc_absence_unknown")))
 	}
 	for _, registro := range emDisco {
 		if _, existeNoBanco := objetos[registro.Tipo][registro.Nome]; existeNoBanco {
@@ -190,6 +202,45 @@ func SpecialMap(root string, state config.ConfigState, confirmar bool) error {
 			if err := os.RemoveAll(acao.Caminho); err != nil {
 				return err
 			}
+		}
+	}
+
+	// PASSO 5 — o acessador.
+	//
+	// Só das views, e só depois de gravar: a forma de uma view existe apenas no banco,
+	// então o gerador consome o que acabou de ser lido. Function e procedure ainda não
+	// têm acessador — falta a chamada tipada no runtime.
+	//
+	// Com leitura parcial isto NÃO roda: o gerador reflete o que leu, então um mapa vazio
+	// por banco fora reescreveria o view.gen.go sem view nenhuma — e aí o projeto para de
+	// compilar por causa de um `core.View.X` que o código do usuário cita.
+	if !leituraCompleta {
+		return nil
+	}
+	geradas, semAcessador, err := GerarAcessadorDeViews(root, state, objetos[EspecialView])
+	if err != nil {
+		return err
+	}
+	if geradas > 0 {
+		fmt.Printf("\n%s\n", i18n.Tf("spc_gen_done", geradas, arquivoDeViews))
+	} else if disponiveis := len(objetos[EspecialView]); disponiveis > 0 {
+		// Sem acessador nenhum o comando pareceria não ter feito nada pelo código. Dizer
+		// quantas estão disponíveis e como pedir é o que fecha o ciclo — o registro já
+		// aconteceu, e o passo seguinte é escolha de quem vai consumir.
+		fmt.Printf("\n%s\n", i18n.Tf("spc_gen_optin", disponiveis))
+	}
+	for _, motivo := range semAcessador {
+		monitor.Registrar(Ocorrencia{
+			Tipo:    OcorrenciaNaoLido,
+			Objeto:  "view " + motivo,
+			Origem:  "acessador não gerado",
+			Decisao: "a view segue registrada; só não é consultável pelo core",
+		})
+	}
+	if len(semAcessador) > 0 {
+		fmt.Println(cliui.Warning(i18n.Tf("spc_gen_skipped", len(semAcessador))))
+		for _, motivo := range semAcessador {
+			fmt.Printf("  %s %s\n", cliui.Muted("·"), motivo)
 		}
 	}
 

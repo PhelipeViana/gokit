@@ -332,13 +332,20 @@ func lerParametrosDeRotinas(ctx context.Context, db *sql.DB, dialect, schema str
 	default:
 		// position 0 no Oracle é o retorno da função, como o parameter_id 0 do SQL
 		// Server. argument_name nulo acontece em retorno e em tipo interno.
+		//
+		// `package_name IS NULL` restringe a rotina SOLTA — argumento de rotina dentro de
+		// package tem outro endereçamento e não é chamável do mesmo jeito. O filtro
+		// também é o que mantém a consulta barata: sem ele, o join com all_objects abre
+		// para todo argumento de todo package visível ao usuário.
 		comando = `SELECT a.object_name,
 			CASE WHEN o.object_type = 'PROCEDURE' THEN 'procedure' ELSE 'function' END,
 			NVL(a.argument_name, ''), NVL(a.data_type, ''), a.position, NVL(a.in_out, 'IN')
 			FROM all_arguments a
-			JOIN all_objects o ON o.owner = a.owner AND o.object_name = a.object_name
-			  AND o.object_type = CASE WHEN a.package_name IS NULL THEN o.object_type ELSE o.object_type END
-			WHERE a.owner = :1 AND a.position > 0 AND o.object_type IN ('PROCEDURE', 'FUNCTION')
+			JOIN all_objects o
+			  ON o.owner = a.owner
+			 AND o.object_name = a.object_name
+			 AND o.object_type IN ('PROCEDURE', 'FUNCTION')
+			WHERE a.owner = :1 AND a.package_name IS NULL AND a.position > 0
 			ORDER BY a.object_name, a.position`
 		argumentos = []any{strings.ToUpper(schema)}
 	}

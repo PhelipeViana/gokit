@@ -254,40 +254,51 @@ func constraintExiste(ctx context.Context, db *sql.DB, dialect, schema, nome str
 	return total > 0, nil
 }
 
-// indiceExcedeLimiteDeColunas reconhece o limite DURO de colunas por índice.
-//
-// O Oracle para em 32 (ORA-01793); o SQL Server aceita mais, e schema legado tem —
-// `idx_folha_proc_anomesgrupo` cobre 58 colunas, provavelmente um "índice de
-// cobertura" que alguém montou copiando a lista inteira do SELECT.
-//
-// Só é tolerável para índice NÃO único: aí é otimização, e perdê-la custa desempenho.
-// Índice único com mais de 32 colunas não tem tolerância possível — a unicidade é
-// regra de integridade, e aplicar o schema sem ela seria mentir.
-// motivoImpossivel devolve a chave i18n do motivo, ou vazio se o erro não é uma
-// recusa estrutural do Oracle.
+// motivoImpossivel devolve a chave i18n do motivo, ou vazio se o erro não é uma recusa
+// estrutural de índice.
 func motivoImpossivel(err error) string {
-	chave, _ := indiceImpossivelNoOracle(err)
+	chave, _ := indiceEstruturalmenteImpossivel(err)
 	return chave
 }
 
-// indiceImpossivelNoOracle reconhece as recusas ESTRUTURAIS de índice do Oracle e
-// devolve a chave da mensagem que explica cada uma.
+// indiceEstruturalmenteImpossivel reconhece a recusa de índice que é LIMITE DO PRODUTO,
+// em qualquer um dos quatro, e devolve a chave da mensagem que explica cada uma.
 //
-// São limites do produto, não defeito da declaração: nenhum ajuste no corpus faz o
-// Oracle indexar 58 colunas ou um CLOB. Os três outros dialetos aceitam, e por isso o
-// mesmo corpus atravessa neles inteiro.
+// São limites do motor de banco, não defeito da declaração: nenhum ajuste no corpus faz
+// um índice de 58 colunas caber onde o teto é 32, nem indexar um LOB.
 //
 // Vale só para índice NÃO único — a decisão de tolerar é de quem chama. Índice comum é
 // desempenho; único é integridade, e integridade não se tolera perder.
-func indiceImpossivelNoOracle(err error) (string, bool) {
+//
+// Isto já foi escrito como "impossível no Oracle", com o comentário afirmando que "os
+// três outros dialetos aceitam". Medido no corpus legado de 754 tabelas: **o SQL Server
+// recusa igual**, com teto de 32 colunas na CHAVE do índice. A afirmação era suposição, e
+// o efeito era o corpus morrer no primeiro índice largo do dialeto de ORIGEM. Cada marca
+// abaixo veio de execução, não de documentação.
+func indiceEstruturalmenteImpossivel(err error) (string, bool) {
 	mensagem := strings.ToLower(err.Error())
 	switch {
+	// ── teto de colunas na chave ───────────────────────────────────────────────────
 	case strings.Contains(mensagem, "ora-01793"):
-		// Máximo de 32 colunas por índice.
+		// Oracle: máximo de 32 colunas por índice.
 		return "run_index_skip_too_many", true
+	case strings.Contains(mensagem, "maximum limit for index key column list"):
+		// SQL Server: mesmo teto de 32, e a mensagem diz quantas foram pedidas.
+		return "run_index_skip_too_many", true
+	case strings.Contains(mensagem, "too many key parts specified"):
+		// MySQL: teto de 16 — o mais baixo dos quatro.
+		return "run_index_skip_too_many", true
+	case strings.Contains(mensagem, "cannot use more than") && strings.Contains(mensagem, "columns in an index"):
+		// Postgres: teto de 32.
+		return "run_index_skip_too_many", true
+
+	// ── tipo que não se indexa ─────────────────────────────────────────────────────
 	case strings.Contains(mensagem, "ora-02327"):
-		// Coluna de tipo LOB. Chega aqui porque VARCHAR acima de 4000 no SQL Server
-		// não cabe em VARCHAR2 e vira CLOB — e CLOB não se indexa.
+		// Oracle: coluna de tipo LOB. Chega aqui porque VARCHAR acima de 4000 no SQL
+		// Server não cabe em VARCHAR2 e vira CLOB — e CLOB não se indexa.
+		return "run_index_skip_lob", true
+	case strings.Contains(mensagem, "is of a type that is invalid for use as a key column"):
+		// SQL Server: text/ntext/image/xml/varchar(max) na chave.
 		return "run_index_skip_lob", true
 	}
 	return "", false

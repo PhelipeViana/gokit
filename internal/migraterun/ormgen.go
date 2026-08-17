@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/PhelipeViana/gokit/internal/cliui"
 	"github.com/PhelipeViana/gokit/internal/config"
 	"github.com/PhelipeViana/gokit/internal/i18n"
 	"github.com/PhelipeViana/gokit/internal/migrationgo"
@@ -152,6 +153,22 @@ func projectRootDoORM(root string, state config.ConfigState) string {
 // GenerateORM rebuilds the application-owned mapping layer from migrations.
 // Runtime behaviour never goes into this output: it remains in gokit/orm.
 func GenerateORM(root string, state config.ConfigState) (int, []string, error) {
+	// Migration pendente IMPEDE a geração.
+	//
+	// A entidade é derivada do corpus, então ela descreve a tabela que a migration
+	// DECLARA — não a que o banco tem. Gerar com pendência produz artefato tipado para
+	// tabela inexistente: compila, o editor completa, e falha no primeiro uso. Quem sente
+	// é quem consumiu; a causa é uma migration que outra pessoa não aplicou.
+	//
+	// Recusar aqui é o único ponto em que dá para separar as duas coisas. Depois de
+	// gerado, nada distingue a entidade de uma tabela real da de uma tabela declarada.
+	if pendentes, conferido := pendenciaNoBanco(root, state); conferido && len(pendentes) > 0 {
+		return 0, nil, cliui.NewUserError(
+			i18n.Tf("gen_orm_pending", len(pendentes), primeirosNomes(pendentes, 5)),
+			i18n.T("gen_orm_pending_fix"),
+		)
+	}
+
 	shapes, err := tableShapes(root, state)
 	if err != nil {
 		return 0, nil, err

@@ -681,11 +681,6 @@ func init() {
 		// Avisos, não falhas: a migration já está criada quando isto acontece. O caso
 		// normal é o scaffold recém-criado ainda não estar preenchido, então o corpus
 		// não descreve um schema válido — e aí regerar de propósito não dá certo.
-		"run_regen_orm_skipped": {
-			PT: "a migration foi criada, mas o core não pôde ser regerado agora (%w); rode `gokit orm` depois de preencher a migration",
-			ES: "la migración fue creada, pero el core no pudo regenerarse ahora (%w); ejecute `gokit orm` después de completar la migración",
-			EN: "the migration was created, but the core could not be regenerated now (%w); run `gokit orm` after filling the migration in",
-		},
 		"run_regen_factory_skipped": {
 			PT: "a migration foi criada, mas as factories não pôderam ser atualizadas agora (%w); rode `gokit factory create` depois de preencher a migration",
 			ES: "la migración fue creada, pero las factories no pudieron actualizarse ahora (%w); ejecute `gokit factory create` después de completar la migración",
@@ -699,14 +694,21 @@ func init() {
 	})
 }
 
-// Índice recusado por redundância — só o Oracle faz isso. Info, não erro: a
-// intenção da operação (aquela lista de colunas indexada) está satisfeita.
+// Cabeçalho do grupo de índices que o run tolerou. Info, não erro.
+//
+// Ele NÃO declara a causa: o mesmo grupo reúne motivos com consequências opostas — na
+// redundância a lista está indexada com outro nome, no limite de colunas e no tipo grande
+// não existe índice nenhum. A versão anterior afirmava "a lista de colunas já estava
+// indexada (só o Oracle recusa)" e logo abaixo listava itens onde nada foi indexado,
+// rodando em SQL Server. O motivo de cada item vem em cada linha, que é onde ele é
+// verdade; o que o cabeçalho garante é só o que vale para todos: nenhum foi criado com o
+// nome declarado, então rollback por nome não acha.
 func init() {
 	Register(Entradas{
 		"run_index_redundant": {
-			PT: "%d índice(s) não criados: a lista de colunas já estava indexada (só o Oracle recusa). A intenção está satisfeita, mas o nome declarado NÃO existe no banco — um rollback por nome não vai encontrá-lo:",
-			ES: "%d índice(s) no creados: la lista de columnas ya estaba indexada (solo Oracle lo rechaza). La intención está satisfecha, pero el nombre declarado NO existe en la base — un rollback por nombre no lo encontrará:",
-			EN: "%d index(es) not created: the column list was already indexed (only Oracle refuses this). The intent is satisfied, but the declared name does NOT exist in the database — a rollback by name will not find it:",
+			PT: "%d índice(s) não criados, cada um pelo motivo indicado. O nome declarado NÃO existe no banco — um rollback por nome não vai encontrá-lo:",
+			ES: "%d índice(s) no creados, cada uno por el motivo indicado. El nombre declarado NO existe en la base — un rollback por nombre no lo encontrará:",
+			EN: "%d index(es) not created, each for the reason shown. The declared name does NOT exist in the database — a rollback by name will not find it:",
 		},
 	})
 }
@@ -721,20 +723,25 @@ func init() {
 			ES: "la lista de columnas ya estaba indexada; el nombre declarado no existe en la base",
 			EN: "the column list was already indexed; the declared name does not exist in the database",
 		},
+		// O limite existe nos QUATRO, com tetos diferentes (MySQL 16, os outros três 32).
+		// A mensagem não nomeia dialeto de propósito: nomear era mentira quando o mesmo
+		// aviso saía rodando em SQL Server dizendo "do Oracle".
 		"run_index_skip_too_many": {
-			PT: "acima do limite de 32 colunas por índice do Oracle; NENHUM índice foi criado, é desempenho perdido",
-			ES: "por encima del límite de 32 columnas por índice de Oracle; NINGÚN índice fue creado, es rendimiento perdido",
-			EN: "above Oracle's 32-column index limit; NO index was created — this is lost performance",
+			PT: "colunas acima do teto de índice deste banco; NENHUM índice foi criado, é desempenho perdido",
+			ES: "columnas por encima del tope de índice de esta base; NINGÚN índice fue creado, es rendimiento perdido",
+			EN: "more columns than this database's index ceiling; NO index was created — this is lost performance",
 		},
 	})
 }
 
 func init() {
 	Register(Entradas{
+		// Também não é exclusivo do Oracle: no SQL Server text/ntext/image/xml e
+		// varchar(max) são igualmente inválidos como coluna de chave.
 		"run_index_skip_lob": {
-			PT: "coluna de tipo LOB (CLOB/BLOB) não é indexável no Oracle; NENHUM índice foi criado, é desempenho perdido",
-			ES: "columna de tipo LOB (CLOB/BLOB) no es indexable en Oracle; NINGÚN índice fue creado, es rendimiento perdido",
-			EN: "a LOB column (CLOB/BLOB) cannot be indexed on Oracle; NO index was created — this is lost performance",
+			PT: "coluna de tipo grande (LOB/CLOB/BLOB/text/xml) não é indexável neste banco; NENHUM índice foi criado, é desempenho perdido",
+			ES: "columna de tipo grande (LOB/CLOB/BLOB/text/xml) no es indexable en esta base; NINGÚN índice fue creado, es rendimiento perdido",
+			EN: "a large-type column (LOB/CLOB/BLOB/text/xml) cannot be indexed on this database; NO index was created — this is lost performance",
 		},
 	})
 }

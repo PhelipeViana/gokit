@@ -105,6 +105,7 @@ type Config struct {
 	Migrate       MigrateConfig         `json:"migrate"`
 	Seed          SeedConfig            `json:"seed"`
 	Factory       FactoryConfig         `json:"factory"`
+	Special       SpecialConfig         `json:"special,omitempty"`
 	Notifications NotificationsConfig   `json:"notifications"`
 }
 
@@ -186,6 +187,22 @@ type MigrateConfig struct {
 
 type SeedConfig struct {
 	Table string `json:"table"`
+}
+
+// SpecialConfig governa o Special Mapper.
+//
+// Accessors é a lista de views que ganham acessador tipado em core.View.<View>. É
+// OPT-IN, e a razão é medida: gerar para as 553 views de um legado põe 5,3 MB e 553
+// instanciações de View[T] no mesmo pacote das entidades, e recompilar esse pacote
+// passa de DEZ MINUTOS. O editor fica inutilizável muito antes disso.
+//
+// O registro dos .sql continua sendo de TODOS os objetos — é texto, custa nada, e é o
+// inventário. O que é opt-in é só o código Go, que é o que custa. Quem lê uma view no
+// código lista aquela view aqui; quem só quer o inventário não paga nada.
+//
+//	"special": { "accessors": ["vwseg_get_segurado", "vw_rpt_progressao"] }
+type SpecialConfig struct {
+	Accessors []string `json:"accessors,omitempty"`
 }
 
 type FactoryConfig struct {

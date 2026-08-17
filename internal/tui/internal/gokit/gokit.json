@@ -1,0 +1,64 @@
+{
+  "language": "pt",
+  "environment": {
+    "mapper_env": ".env",
+    "ambient": "APP_ENV",
+    "client": "DB_DIALECT"
+  },
+  "connections": {
+    "mysql": {
+      "dialect": "mysql",
+      "host": "${MYSQL_HOST:-127.0.0.1}",
+      "port": "${MYSQL_PORT:-3306}",
+      "user": "${MYSQL_USER:-root}",
+      "password": "${MYSQL_PASSWORD}",
+      "database": "${MYSQL_DATABASE:-gokit_onboarding}"
+    },
+    "postgres": {
+      "dialect": "postgres",
+      "host": "${POSTGRES_HOST:-127.0.0.1}",
+      "port": "${POSTGRES_PORT:-5432}",
+      "user": "${POSTGRES_USER:-postgres}",
+      "password": "${POSTGRES_PASSWORD}",
+      "database": "${POSTGRES_DB:-postgres}",
+      "schema": "${POSTGRES_SCHEMA:-public}"
+    },
+    "oracle": {
+      "dialect": "oracle",
+      "host": "${ORACLE_HOST:-127.0.0.1}",
+      "port": "${ORACLE_PORT:-1521}",
+      "user": "${ORACLE_USER:-system}",
+      "password": "${ORACLE_PASSWORD}",
+      "service": "${ORACLE_SERVICE:-FREEPDB1}",
+      "schema": "${ORACLE_SCHEMA:-PREVCONTAS_TEST}"
+    },
+    "sqlserver": {
+      "dialect": "sqlserver",
+      "host": "${MSSQL_HOST:-127.0.0.1}",
+      "port": "${MSSQL_PORT:-1433}",
+      "user": "${MSSQL_USER:-sa}",
+      "password": "${MSSQL_SA_PASSWORD}",
+      "database": "${MSSQL_DATABASE:-master}",
+      "schema": "${MSSQL_SCHEMA:-dbo}"
+    }
+  },
+  "output": {
+    "migrate": "",
+    "factory": "",
+    "seed": "",
+    "docs": ""
+  },
+  "migrate": {
+    "table": "migrations_gokit"
+  },
+  "seed": {
+    "table": "seeders_gokit"
+  },
+  "factory": {
+    "expressions": {
+      "mappers": {
+        "tabela.campo": "migrate.FakeInt(0, 1)"
+      }
+    }
+  }
+}

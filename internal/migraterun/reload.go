@@ -15,7 +15,6 @@ import (
 
 	"github.com/PhelipeViana/gokit/internal/config"
 	"github.com/PhelipeViana/gokit/internal/i18n"
-	"github.com/PhelipeViana/gokit/internal/migrationgo"
 )
 
 // ReloadStep represents a single task in the reload pipeline
@@ -110,8 +109,11 @@ func InitReloadPipeline() ReloadPipeline {
 			{Name: "run_seeds", Description: i18n.T("rel_step_seeders")},
 			{Name: "run_factories", Description: i18n.T("rel_step_factories")},
 		},
+		// O reload NÃO gera as entidades da ORM. Ele cuida do núcleo — ambiente,
+		// sintaxe, migration pendente, seeder, factory — e do catálogo, que migrate e
+		// factory consomem. Entidade é camada opcional e tem comando próprio
+		// (`gokit orm`): quem quer, pede.
 		Group3: []ReloadStep{
-			{Name: "generate_orm", Description: i18n.T("rel_step_orm")},
 			{Name: "refresh_catalog", Description: i18n.T("rel_step_dsl")},
 			{Name: "generate_docs", Description: i18n.T("rel_step_docs")},
 			{Name: "generate_editors", Description: i18n.T("rel_step_editors")},
@@ -144,8 +146,6 @@ func executeStep(step *ReloadStep, state config.ConfigState) error {
 		err = executeFactories(step, state)
 	case "refresh_catalog":
 		err = refreshCoreCatalog(step, state)
-	case "generate_orm":
-		err = generateORM(step, state)
 	case "generate_docs":
 		err = generateDocumentation(step, state)
 	case "generate_editors":
@@ -533,20 +533,9 @@ func executeFactories(step *ReloadStep, state config.ConfigState) error {
 // GRUPO 3: METADADOS
 // ==========================================
 
-func generateORM(step *ReloadStep, state config.ConfigState) error {
-	count, _, err := GenerateORM(".", state)
-	if err != nil {
-		step.Message = i18n.Tf("rel_orm_failed", err)
-		return err
-	}
-	step.Message = i18n.Tf("rel_orm_done", count)
-	return nil
-}
-
 func refreshCoreCatalog(step *ReloadStep, state config.ConfigState) error {
 	folder := filepath.Join(".", filepath.FromSlash(state.Config.Output.Migrate))
-	err := migrationgo.RefreshCatalog(".", folder)
-	if err != nil {
+	if err := AtualizarCatalogos(".", folder); err != nil {
 		step.Message = i18n.Tf("rel_catalog_failed", err)
 		return err
 	}

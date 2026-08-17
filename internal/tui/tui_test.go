@@ -9,7 +9,9 @@ import (
 
 	"github.com/PhelipeViana/gokit/internal/cliui"
 	"github.com/PhelipeViana/gokit/internal/config"
+	"github.com/PhelipeViana/gokit/internal/i18n"
 	"github.com/PhelipeViana/gokit/internal/updater"
+	tea "github.com/charmbracelet/bubbletea"
 )
 
 func osStdout() *os.File { return os.Stdout }
@@ -301,5 +303,85 @@ func TestMenuDeMigrationsOfereceLeituraDoBanco(t *testing.T) {
 		if !strings.Contains(m.migrationsChoices[posicao], prefixo) {
 			t.Fatalf("posição %d deveria conter %q, tem %q", posicao, prefixo, m.migrationsChoices[posicao])
 		}
+	}
+}
+
+// A área ORM tem o mesmo risco de índice do menu de migrations, com um agravante: um
+// dos itens é DESABILITADO e outro APAGA pasta. Deslocar a lista sem acertar os `case`
+// faria "Voltar" rodar o Special Mapper com --confirm.
+func TestMenuDaORMMantemAOrdemQueOSwitchTrata(t *testing.T) {
+	m := menuDeTeste()
+	m.ormChoices = opcoesDaORM()
+	m.state = stateORMMenu
+
+	esperados := []string{"Tudo", "Colunas, tabelas e entidades", "prévia", "aplicar", "indisponível", "Voltar"}
+	if len(m.ormChoices) != len(esperados) {
+		t.Fatalf("o menu tem %d itens, o switch trata %d", len(m.ormChoices), len(esperados))
+	}
+	for posicao, trecho := range esperados {
+		if !strings.Contains(m.ormChoices[posicao], trecho) {
+			t.Fatalf("posição %d deveria conter %q, tem %q", posicao, trecho, m.ormChoices[posicao])
+		}
+	}
+	// O índice do item desabilitado é uma constante usada pelo switch E pela pintura.
+	if !strings.Contains(m.ormChoices[indiceDeServicosNaORM], "Serviços") {
+		t.Fatalf("indiceDeServicosNaORM aponta para %q", m.ormChoices[indiceDeServicosNaORM])
+	}
+
+	// O cabeçalho declara que nada aqui escreve no banco — é o que separa este menu do
+	// reload para quem escolhe.
+	saida := m.View()
+	if !strings.Contains(saida, "nenhuma opção escreve no banco") {
+		t.Fatalf("o menu deveria declarar que não escreve no banco:\n%s", saida)
+	}
+}
+
+// O menu principal ganhou a área ORM entre Factories e Configuração. A ordem importa:
+// o switch de stateMainMenu despacha por índice.
+func TestMenuPrincipalOfereceAreaORM(t *testing.T) {
+	m := menuDeTeste()
+	m.choices = []string{"Reload", "Migrations", "Seeds", "Factories", i18n.T("menu_orm"), "Configuração", "Sair"}
+	m.state = stateMainMenu
+	if !strings.Contains(m.View(), "Área ORM") {
+		t.Fatalf("o menu principal deveria listar a Área ORM:\n%s", m.View())
+	}
+}
+
+// A tela de resultado da área ORM volta para o menu da ORM, não para o principal: as
+// ações se encadeiam (gerar entidade, depois mapear os especiais). O `default` do switch
+// mandava tudo para o principal, então isto precisa de um `case` próprio — e de guarda,
+// porque o `default` é fácil de reconquistar sem querer.
+func TestResultadoDaORMVoltaParaOMenuDaORM(t *testing.T) {
+	m := menuDeTeste()
+	m.ormChoices = opcoesDaORM()
+	m.state = stateORMRunning
+	m.cursor = 3
+
+	atualizado, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	depois, ok := atualizado.(model)
+	if !ok {
+		t.Fatalf("Update devolveu %T", atualizado)
+	}
+	if depois.state != stateORMMenu {
+		t.Errorf("deveria voltar ao menu da ORM, foi para o estado %d", depois.state)
+	}
+	if depois.cursor != 0 {
+		t.Errorf("o cursor deveria voltar ao topo, está em %d", depois.cursor)
+	}
+}
+
+// O contraste: a tela de resultado da factory continua voltando ao menu principal. Sem
+// isto, dar `case` próprio a um estado novo poderia ser generalizado por engano.
+func TestResultadoDaFactoryContinuaVoltandoAoPrincipal(t *testing.T) {
+	m := menuDeTeste()
+	m.state = stateFactoryRunning
+
+	atualizado, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	depois, ok := atualizado.(model)
+	if !ok {
+		t.Fatalf("Update devolveu %T", atualizado)
+	}
+	if depois.state != stateMainMenu {
+		t.Errorf("deveria voltar ao menu principal, foi para o estado %d", depois.state)
 	}
 }

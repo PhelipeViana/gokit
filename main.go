@@ -268,7 +268,10 @@ func main() {
 		// mexer no schema, regerar o mapa sozinho é o que se quer noventa por cento
 		// das vezes, e não depende de banco: a fonte é o corpus em AST.
 		if os.Args[1] == "orm" {
-			total, semAtalho, err := migraterun.GenerateORM(".", state)
+			// Catálogos antes das entidades, pela mesma sequência que o menu usa: a
+			// entidade cita `core.Table.X`, e gerar entidade contra catálogo velho
+			// produz arquivo que não compila por um nome que ninguém escreveu.
+			total, semAtalho, err := migraterun.AtualizarEntidades(".", state)
 			if err != nil {
 				fmt.Printf("Erro: %v\n", err)
 				os.Exit(1)

@@ -843,7 +843,6 @@ func loadPlans(folder string) ([]migrationFile, error) {
 		return nil, err
 	}
 	aliases := map[string]string{}
-	views := map[string]bool{}
 	for _, file := range result {
 		for _, operation := range file.Plan.Operations {
 			if operation.Kind == string(acao.CreateTable) {
@@ -858,9 +857,6 @@ func loadPlans(folder string) ([]migrationFile, error) {
 	if projectRoot != "" {
 		if err := migrationgo.WriteCoreCatalog(projectRoot, aliases); err != nil {
 			return nil, i18n.Errf("run_alias_catalog_gen", err)
-		}
-		if err := migrationgo.WriteCoreViewCatalog(projectRoot, views); err != nil {
-			return nil, i18n.Errf("run_view_catalog_gen", err)
 		}
 		// O catálogo de colunas sai no mesmo gatilho do de tabelas, e depois dele:
 		// ele resolve `core.Table.X` no primeiro argumento das operações usando o
@@ -2481,7 +2477,7 @@ func columnTypeSQL(dialect string, column acao.ColunaDefinicao) string {
 // or type is not allowed here" —, mensagem que não menciona DEFAULT nem a coluna.
 func columnDefaultSQL(dialect string, column acao.ColunaDefinicao) string {
 	if !column.DefaultRaw {
-		return defaultSQL(dialect, column.Default)
+		return defaultSQL(dialect, normalizaDefaultBooleano(column))
 	}
 	// O `()` sai da comparação: `getdate()` e `getdate` são a mesma intenção, e cada
 	// banco quer a forma dele.
@@ -2577,18 +2573,51 @@ func defaultPortavel(expressao string) bool {
 	return oracle != expressao || postgres != expressao
 }
 
+// normalizaDefaultBooleano traduz o DEFAULT numérico de uma coluna booleana para a
+// intenção — true/false — e deixa o defaultSQL escrever a forma de cada banco.
+//
+// Onde isto morde: o corpus legado vem do SQL Server, onde a coluna é BIT e o default é
+// `0`. O gokit mapeia `boolean` para BOOLEAN no Postgres e no MySQL, NUMBER(1) no Oracle e
+// BIT no SQL Server. Três aceitam `DEFAULT 0`; o Postgres recusa com
+// "column is of type boolean but default expression is of type integer" — ele não faz a
+// coerção implícita que os outros fazem.
+//
+// O 0/1 não pode virar true/false para coluna NÃO booleana: ali é um número, e trocá-lo
+// mudaria o valor gravado. Daí a decisão depender do TIPO da coluna, que é por isso que
+// esta função recebe a coluna e não só a expressão.
+func normalizaDefaultBooleano(column acao.ColunaDefinicao) string {
+	if strings.ToLower(strings.TrimSpace(column.Type)) != "boolean" {
+		return column.Default
+	}
+	switch strings.TrimSpace(column.Default) {
+	case "0":
+		return "false"
+	case "1":
+		return "true"
+	}
+	return column.Default
+}
+
 var numericLiteral = regexp.MustCompile(`^-?\d+(\.\d+)?$`)
 
 func defaultSQL(dialect, value string) string {
 	lower := strings.ToLower(strings.TrimSpace(value))
+	// Oracle e SQL Server não têm literal booleano: o tipo é NUMBER(1) e BIT, e a
+	// palavra é erro de identificador desconhecido nos dois ("Invalid column name
+	// 'FALSE'"). Postgres e MySQL têm BOOLEAN e aceitam a palavra.
+	//
+	// O SQL Server estava junto com os que aceitam. Não aparecia porque o corpus legado
+	// escreve `Default("0")`, que ia pelo ramo de literal numérico — só passou a
+	// importar quando o 0/1 de coluna booleana começou a ser normalizado para a palavra.
+	semLiteralBooleano := dialect == "oracle" || dialect == "sqlserver"
 	if lower == "true" {
-		if dialect == "oracle" {
+		if semLiteralBooleano {
 			return "1"
 		}
 		return "TRUE"
 	}
 	if lower == "false" {
-		if dialect == "oracle" {
+		if semLiteralBooleano {
 			return "0"
 		}
 		return "FALSE"
@@ -3085,12 +3114,24 @@ func ` + declarationName + `() migrate.Definition {
 func regerarDerivados(root string, state config.ConfigState) []error {
 	var avisos []error
 
-	if _, _, err := GenerateORM(root, state); err != nil {
-		avisos = append(avisos, i18n.Errf("run_regen_orm_skipped", err))
-	}
-	// A factory preserva a expressão de cada coluna e o Ruler; só a lista de
-	// colunas é acertada contra a migration — e isso não é opcional, senão a
-	// factory continuaria citando coluna que a tabela não tem mais.
+	// As ENTIDADES da ORM não são regeradas aqui, e isso é decisão de escopo.
+	//
+	// `migrate run` é núcleo — migrate, seeder e factory. A entidade é camada OPCIONAL:
+	// migrate consome `core.Table`, factory consome `core.Column`, e nenhum dos dois
+	// toca `entities.gen.go`. Gerá-la aqui obrigava todo projeto a carregar a ORM só por
+	// ter rodado uma migration.
+	//
+	// O custo era medido e alto: num schema de 754 tabelas o entities.gen.go tem 8,6 MB,
+	// e o pacote `core` com ele passa de DEZ MINUTOS para compilar, contra 21 s sem.
+	// Cada `migrate run` deixava o projeto nesse estado.
+	//
+	// Agora a entidade existe se, e somente se, alguém rodar `gokit orm`. Opt-in por
+	// AÇÃO, sem precisar de chave de configuração — `output.orm` vazio já recebe o
+	// caminho padrão, então nunca serviu para desligar.
+	//
+	// A factory FICA: ela é núcleo, e regerar acerta a lista de colunas contra a
+	// migration. Sem isso a factory continuaria citando coluna que a tabela não tem
+	// mais. A expressão de cada coluna e o Ruler são preservados.
 	if err := FactoryCreate(root, state, ""); err != nil {
 		avisos = append(avisos, i18n.Errf("run_regen_factory_skipped", err))
 	}

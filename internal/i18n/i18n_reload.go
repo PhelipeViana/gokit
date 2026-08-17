@@ -110,11 +110,6 @@ func init() {
 			ES: "Verificar y ejecutar factories activas",
 			EN: "Check and run active factories",
 		},
-		"rel_step_orm": {
-			PT: "Gerar mapeamentos ORM a partir das migrations",
-			ES: "Generar mapeos ORM a partir de las migraciones",
-			EN: "Generate ORM mappings from the migrations",
-		},
 		"rel_step_dsl": {
 			PT: "Reconstruir catálogo de autocomplete do Core (dsl.gen.go)",
 			ES: "Reconstruir el catálogo de autocompletado del Core (dsl.gen.go)",
@@ -399,11 +394,6 @@ func init() {
 			PT: "%d tabelas populadas",
 			ES: "%d tablas pobladas",
 			EN: "%d tables populated",
-		},
-		"rel_orm_failed": {
-			PT: "Falha ao gerar ORM: %v",
-			ES: "Fallo al generar el ORM: %v",
-			EN: "Failed to generate the ORM: %v",
 		},
 		"rel_orm_done": {
 			PT: "%d entidade(s) mapeada(s) em entities.gen.go.",

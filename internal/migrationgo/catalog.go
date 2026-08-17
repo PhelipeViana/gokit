@@ -215,13 +215,26 @@ func IdentifierByPhysical(projectRoot string) map[string]string {
 // RefreshCatalog rebuilds the table catalog in GoKit's Core area from the tables already known
 // by the catalog and from migrate.CreateTable calls written in migration files.
 func RefreshCatalog(projectRoot string, migrationsFolder string) error {
-	catalogPath := caminhoDoCatalogo(projectRoot)
-	tables := catalogoAcumulado(projectRoot)
-
-	known := make(map[string]bool, len(tables))
-	for _, name := range tables {
-		known[name] = true
-	}
+	// O catálogo reflete o CORPUS, e nada além dele. Não há semente do arquivo anterior:
+	// a migration é a fonte, e guardar entrada que o corpus não declara mais é guardar
+	// verdade fora dela.
+	//
+	// A acumulação que existia aqui dizia proteger a migration que DERRUBOU uma tabela e
+	// cita o apelido dela. Não era preciso: o `CreateTable` daquela tabela continua no
+	// corpus, então o apelido continua derivável.
+	//
+	// E o custo era alto. Esta função gravava por NOME, tratando apelido e nome físico
+	// como a mesma coisa e sem guarda de colisão — então `eventos_bkp435037` e
+	// `eventos_bkp_435037` colapsavam num identificador só, em silêncio. Como ela roda no
+	// passo `refresh_catalog` do reload, que é do Grupo 3, ela era o ÚLTIMO escritor: o
+	// comando que existe para "cuidar de tudo" desfazia o desempate de apelido.
+	//
+	// Agora deriva apelido → físico, igual ao executor, e grava por WriteCoreCatalog, que
+	// tem a guarda de colisão.
+	aliases := map[string]string{}
+	// apelidados marca o nome físico que já veio com `.Alias(...)`, para o passe de
+	// fallback não sobrescrever o apelido declarado por um derivado.
+	apelidados := map[string]bool{}
 
 	err := filepath.WalkDir(migrationsFolder, func(path string, entry fs.DirEntry, err error) error {
 		if err != nil {
@@ -238,6 +251,21 @@ func RefreshCatalog(projectRoot string, migrationsFolder string) error {
 		if parseErr != nil {
 			return i18n.Errf("cat_read_tables_failed", entry.Name(), parseErr)
 		}
+		// Primeiro os que declaram apelido: `CreateTable("x", ...).Alias("y")` é uma
+		// chamada de `Alias` cujo receptor é o `CreateTable`, então o nó externo é o
+		// Alias. Este passe tem de vir antes do fallback.
+		ast.Inspect(file, func(node ast.Node) bool {
+			fisico, apelido, ok := createTableComApelido(node)
+			if !ok {
+				return true
+			}
+			aliases[apelido] = fisico
+			apelidados[fisico] = true
+			return true
+		})
+
+		// Depois os que não declaram: o apelido vira o identificador derivado, que é o
+		// mesmo default que o parser aplica no arquivo `_migration.go` legado.
 		ast.Inspect(file, func(node ast.Node) bool {
 			call, ok := node.(*ast.CallExpr)
 			if !ok || len(call.Args) == 0 {
@@ -251,9 +279,11 @@ func RefreshCatalog(projectRoot string, migrationsFolder string) error {
 			if !ok || literal.Kind != token.STRING {
 				return true
 			}
-			if name, unquoteErr := strconv.Unquote(literal.Value); unquoteErr == nil && name != "" {
-				known[name] = true
+			nome, unquoteErr := strconv.Unquote(literal.Value)
+			if unquoteErr != nil || nome == "" || apelidados[nome] {
+				return true
 			}
+			aliases[tableIdentifier(nome)] = nome
 			return true
 		})
 		return nil
@@ -263,16 +293,40 @@ func RefreshCatalog(projectRoot string, migrationsFolder string) error {
 		return err
 	}
 
-	names := make([]string, 0, len(known))
-	for name := range known {
-		names = append(names, name)
-	}
-	sort.Strings(names)
-
-	if err := os.MkdirAll(filepath.Dir(catalogPath), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(caminhoDoCatalogo(projectRoot)), 0o755); err != nil {
 		return err
 	}
-	return writeCatalog(catalogPath, names)
+	return WriteCoreCatalog(projectRoot, aliases)
+}
+
+// createTableComApelido reconhece `migrate.CreateTable("fisico", ...).Alias("apelido")`
+// e devolve o par.
+//
+// Existe como função porque o mesmo reconhecimento é feito em dois lugares — aqui e no
+// PrimeCoreCatalog — e ter duas cópias do padrão AST era garantia de divergirem.
+func createTableComApelido(node ast.Node) (fisico, apelido string, ok bool) {
+	aliasCall, certo := node.(*ast.CallExpr)
+	if !certo || len(aliasCall.Args) != 1 {
+		return "", "", false
+	}
+	aliasSelector, certo := aliasCall.Fun.(*ast.SelectorExpr)
+	if !certo || aliasSelector.Sel.Name != "Alias" {
+		return "", "", false
+	}
+	createCall, certo := aliasSelector.X.(*ast.CallExpr)
+	if !certo || len(createCall.Args) == 0 {
+		return "", "", false
+	}
+	createSelector, certo := createCall.Fun.(*ast.SelectorExpr)
+	if !certo || identName(createSelector.X) != "migrate" || createSelector.Sel.Name != "CreateTable" {
+		return "", "", false
+	}
+	fisico, fisicoOK := quotedLiteral(createCall.Args[0])
+	apelido, apelidoOK := quotedLiteral(aliasCall.Args[0])
+	if !fisicoOK || !apelidoOK || fisico == "" || apelido == "" {
+		return "", "", false
+	}
+	return fisico, apelido, true
 }
 
 // grupoDeCatalogo emite o agrupador do pacote core:
@@ -407,29 +461,16 @@ func PrimeCoreCatalog(projectRoot string, paths []string) error {
 			return i18n.Errf("cat_read_aliases_failed", filepath.Base(path), err)
 		}
 		ast.Inspect(file, func(node ast.Node) bool {
-			aliasCall, ok := node.(*ast.CallExpr)
-			if !ok || len(aliasCall.Args) != 1 {
+			// O reconhecimento do padrão é compartilhado com o RefreshCatalog: duas
+			// cópias do mesmo caminho de AST divergiriam na primeira mudança do DSL.
+			physical, alias, ok := createTableComApelido(node)
+			if !ok {
 				return true
 			}
-			aliasSelector, ok := aliasCall.Fun.(*ast.SelectorExpr)
-			if !ok || aliasSelector.Sel.Name != "Alias" {
-				return true
-			}
-			createCall, ok := aliasSelector.X.(*ast.CallExpr)
-			if !ok || len(createCall.Args) == 0 {
-				return true
-			}
-			createSelector, ok := createCall.Fun.(*ast.SelectorExpr)
-			if !ok || identName(createSelector.X) != "migrate" || createSelector.Sel.Name != "CreateTable" {
-				return true
-			}
-			physical, physicalOK := quotedLiteral(createCall.Args[0])
-			alias, aliasOK := quotedLiteral(aliasCall.Args[0])
-			if physicalOK && aliasOK && physical != "" && alias != "" {
-				aliases[alias] = physical
-			}
+			aliases[alias] = physical
 			return true
 		})
+		continue
 	}
 	return WriteCoreCatalog(projectRoot, aliases)
 }

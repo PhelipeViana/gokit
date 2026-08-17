@@ -52,6 +52,8 @@ const (
 	stateFactoryMenu
 	stateFactorySelectTable
 	stateFactoryRunning
+	stateORMMenu
+	stateORMRunning
 	stateConfigScreen
 	stateReloadRunning
 	stateUpdateConfirm
@@ -124,6 +126,7 @@ type model struct {
 	factoryChoices      []string
 	factoryTables       []string
 	factoryCursor       int
+	ormChoices          []string
 	doctorReport        migraterun.DoctorReport
 	updateStatus        updater.Status
 	updateMenuIndex     int
@@ -189,6 +192,27 @@ func opcoesDeMigration() []string {
 	}
 }
 
+// opcoesDaORM é a lista do menu da área ORM, na ordem que o switch de stateORMMenu
+// trata por ÍNDICE — mesma fragilidade e mesma guarda de teste da lista de migrations.
+//
+// "Tudo" primeiro porque é o que se quer depois de mexer no schema. O Special Mapper
+// aparece duas vezes de propósito: ele APAGA pasta de objeto que saiu do banco, e a
+// prévia é o que separa isso de uma surpresa.
+func opcoesDaORM() []string {
+	return []string{
+		i18n.T("orm_menu_all"),
+		i18n.T("orm_menu_entities"),
+		i18n.T("orm_menu_special_preview"),
+		i18n.T("orm_menu_special_apply"),
+		i18n.T("orm_menu_services"),
+		i18n.T("mig_back"),
+	}
+}
+
+// indiceDeServicosNaORM é o item desabilitado. Nomeado para o switch não depender do
+// literal: mover o item de lugar sem mexer no `case` faria "Voltar" gerar serviço.
+const indiceDeServicosNaORM = 4
+
 func Start(version, commitHash string) error {
 	Version = version
 
@@ -207,6 +231,7 @@ func Start(version, commitHash string) error {
 			i18n.T("menu_migrations"),
 			i18n.T("menu_seeds"),
 			i18n.T("menu_factories"),
+			i18n.T("menu_orm"),
 			i18n.T("menu_config"),
 		}
 	}
@@ -236,6 +261,7 @@ func Start(version, commitHash string) error {
 			i18n.T("mig_back"),
 		},
 		migrationsChoices: opcoesDeMigration(),
+		ormChoices:        opcoesDaORM(),
 		configData:      initialConfig,
 		updateStatus:    updateStatus,
 		updateMenuIndex: updateIndex,
@@ -602,6 +628,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if m.factoryCursor < 0 {
 					m.factoryCursor = len(m.factoryTables) - 1
 				}
+			} else if m.state == stateORMMenu {
+				m.cursor--
+				if m.cursor < 0 {
+					m.cursor = len(m.ormChoices) - 1
+				}
 			}
 
 		case "down", "j":
@@ -634,6 +665,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.factoryCursor++
 				if m.factoryCursor >= len(m.factoryTables) {
 					m.factoryCursor = 0
+				}
+			} else if m.state == stateORMMenu {
+				m.cursor++
+				if m.cursor >= len(m.ormChoices) {
+					m.cursor = 0
 				}
 			}
 
@@ -677,6 +713,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						m.cursor = 0
 						return m, tea.ClearScreen
 					case 4:
+						m.state = stateORMMenu
+						m.cursor = 0
+						return m, tea.ClearScreen
+					case 5:
 						m.state = stateConfigScreen
 						m.configData = config.RunConfigChecks()
 						m.doctorReport = migraterun.RunDoctor(m.configData)
@@ -743,6 +783,43 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.state = stateFactorySelectTable
 					return m, tea.ClearScreen
 				case 4:
+					m.state = stateMainMenu
+					m.cursor = 0
+					return m, tea.ClearScreen
+				}
+			case stateORMMenu:
+				switch m.cursor {
+				case 0:
+					m.state = stateORMRunning
+					m.migrationOutput, m.migrationError = captureOutput(func() error {
+						return relatarORM(migraterun.ORMTudo(".", m.configData, true))
+					})
+					return m, tea.ClearScreen
+				case 1:
+					m.state = stateORMRunning
+					m.migrationOutput, m.migrationError = captureOutput(func() error {
+						return relatarORM(migraterun.AtualizarEntidades(".", m.configData))
+					})
+					return m, tea.ClearScreen
+				case 2:
+					m.state = stateORMRunning
+					m.migrationOutput, m.migrationError = captureOutput(func() error {
+						return migraterun.SpecialMap(".", m.configData, false)
+					})
+					return m, tea.ClearScreen
+				case 3:
+					m.state = stateORMRunning
+					m.migrationOutput, m.migrationError = captureOutput(func() error {
+						return migraterun.SpecialMap(".", m.configData, true)
+					})
+					return m, tea.ClearScreen
+				case indiceDeServicosNaORM:
+					// Item desabilitado: informa em vez de não reagir. Tecla que não faz
+					// nada é indistinguível de travamento.
+					m.state = stateORMRunning
+					m.migrationOutput, m.migrationError = i18n.T("orm_services_missing"), nil
+					return m, tea.ClearScreen
+				case 5:
 					m.state = stateMainMenu
 					m.cursor = 0
 					return m, tea.ClearScreen
@@ -828,6 +905,16 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.configData = config.RunConfigChecks()
 					return m, tea.ClearScreen
 				}
+			// A tela de resultado da área ORM volta para o menu DELA, não para o
+			// principal: os itens se encadeiam de verdade — regerar entidade e depois
+			// mapear os objetos especiais é a sequência normal — e obrigar a descer o
+			// menu principal de novo entre um e outro é atrito sem motivo. As outras
+			// telas de resultado continuam voltando ao principal, que é o certo para
+			// elas: seed e factory terminam a tarefa.
+			case stateORMRunning:
+				m.state = stateORMMenu
+				m.cursor = 0
+				return m, tea.ClearScreen
 			default:
 				m.state = stateMainMenu
 				m.cursor = 0
@@ -837,6 +924,28 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	}
 	return m, nil
+}
+
+// relatarORM imprime o resultado das ações da área ORM e devolve o erro.
+//
+// A forma existe para casar com o captureOutput: as ações devolvem três valores, e o
+// captureOutput recebe um `func() error`. O relatório é o mesmo do `gokit orm` —
+// contagem e as FKs que não viraram atalho — porque quem lê é a mesma pessoa.
+func relatarORM(total int, semAtalho []string, err error) error {
+	if err != nil {
+		return err
+	}
+	fmt.Println(i18n.T("orm_done_catalogs"))
+	fmt.Printf(i18n.T("rel_orm_done"), total)
+	fmt.Println()
+	if len(semAtalho) > 0 {
+		fmt.Printf(i18n.T("gen_orm_rel_skipped"), len(semAtalho))
+		fmt.Println()
+		for _, linha := range semAtalho {
+			fmt.Printf("  · %s\n", linha)
+		}
+	}
+	return nil
 }
 
 // renderActionResult mostra a saída real do comando, não só um "deu certo".
@@ -1266,6 +1375,24 @@ func (m model) View() string {
 
 	case stateFactoryRunning:
 		s.WriteString(m.renderActionResult(i18n.T("tui_done"), i18n.T("tui_factory_failed")))
+
+	case stateORMMenu:
+		s.WriteString("  " + lipgloss.NewStyle().Bold(true).Render(i18n.T("tui_orm_options")) + "\n\n")
+		for i, choice := range m.ormChoices {
+			switch {
+			case m.cursor == i:
+				s.WriteString(selectedItemStyle.Render("➔ "+choice) + "\n")
+			case i == indiceDeServicosNaORM:
+				// Desabilitado tem de PARECER desabilitado: item que reage diferente e
+				// se lê igual aos vizinhos é o que faz o usuário achar que travou.
+				s.WriteString(itemStyle.Foreground(lipgloss.Color("#6272A4")).Render(choice) + "\n")
+			default:
+				s.WriteString(itemStyle.Render(choice) + "\n")
+			}
+		}
+
+	case stateORMRunning:
+		s.WriteString(m.renderActionResult(i18n.T("tui_done"), i18n.T("tui_orm_failed")))
 
 	case stateReloadRunning:
 		if m.actionRunning {

@@ -106,3 +106,21 @@ func init() {
 		},
 	})
 }
+
+// Recusa da geração quando há migration pendente. É erro de USO, com solução:
+// gerar entidade para tabela que o banco não tem produz artefato que falha longe da
+// causa, na mão de quem consome.
+func init() {
+	Register(Entradas{
+		"gen_orm_pending": {
+			PT: "%d migration(s) declaradas e NÃO aplicadas no banco ativo: %s",
+			ES: "%d migration(s) declaradas y NO aplicadas en la base activa: %s",
+			EN: "%d migration(s) declared and NOT applied to the active database: %s",
+		},
+		"gen_orm_pending_fix": {
+			PT: "Rode `gokit reload` (ou `gokit migrate run`) antes de gerar. A entidade descreve o que a migration DECLARA; com pendência ela sairia tipada para tabela que o banco não tem, e o erro apareceria só no primeiro uso, longe da causa.",
+			ES: "Ejecute `gokit reload` (o `gokit migrate run`) antes de generar. La entidad describe lo que la migración DECLARA; con pendencia saldría tipada para una tabla que la base no tiene, y el error aparecería solo en el primer uso, lejos de la causa.",
+			EN: "Run `gokit reload` (or `gokit migrate run`) before generating. The entity describes what the migration DECLARES; with pending migrations it would come out typed for a table the database does not have, and the error would surface only on first use, far from the cause.",
+		},
+	})
+}

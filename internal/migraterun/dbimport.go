@@ -59,12 +59,7 @@ func MigrateImport(root string, state config.ConfigState, confirmar bool) error 
 		}
 	}
 
-	viewsPendentes, err := viewsForaDoCorpus(root, state)
-	if err != nil {
-		return err
-	}
-
-	if len(pendentes) == 0 && len(viewsPendentes) == 0 {
+	if len(pendentes) == 0 {
 		fmt.Printf("\n  %s %s\n\n", cliui.Success("✓ OK"), i18n.T("scan_in_sync"))
 		return nil
 	}
@@ -75,7 +70,7 @@ func MigrateImport(root string, state config.ConfigState, confirmar bool) error 
 	// existe, e o erro só aparece no `migrate run`.
 	pendentes = ordenaPorDependencia(pendentes, noCorpus)
 
-	fmt.Printf("\n%s\n", i18n.Tf("imp_header", len(pendentes)+len(viewsPendentes)))
+	fmt.Printf("\n%s\n", i18n.Tf("imp_header", len(pendentes)))
 
 	// Um segundo de diferença entre arquivos, na ordem de dependência. Segundo é a
 	// resolução do nome do arquivo; sem o passo, 40 tabelas nasceriam com o mesmo
@@ -135,18 +130,8 @@ func MigrateImport(root string, state config.ConfigState, confirmar bool) error 
 		}
 	}
 
-	// As views não têm mais ordem a respeitar: elas não são aplicadas pelo migrate, só
-	// registradas. Quem cria a view — a pessoa, no banco — resolve a ordem lá.
-	viewsPendentes = viewsImportaveis(viewsPendentes, monitor)
-	planejadasViews, err := registrarViewsMapeadas(root, state.Config.Output.Migrate, strings.ToLower(state.ActiveDialect), viewsPendentes, monitor)
-	if err != nil {
-		return err
-	}
-	for _, planejada := range planejadasViews {
-		fmt.Printf("  %s %-34s %s\n", cliui.Warning("+"), planejada.Nome,
-			cliui.Muted(i18n.Tf("imp_view_summary", planejada.Tabela, planejada.DialetoDaView)))
-	}
-	planejados = append(planejados, planejadasViews...)
+	// View, function e procedure NÃO passam por aqui: quem as mapeia é `gokit special`.
+	// O import cuida só do que o gokit DECLARA e aplica — tabela, chave, índice.
 
 	if len(planejados) == 0 {
 		fmt.Printf("\n  %s %s\n\n", cliui.Success("✓ OK"), i18n.T("scan_in_sync"))
@@ -212,12 +197,6 @@ func MigrateImport(root string, state config.ConfigState, confirmar bool) error 
 	pRoot := projectRoot(root)
 	if pRoot == "" {
 		pRoot = root
-	}
-	// A view entra no catálogo ANTES do RefreshCatalog, porque este relê o corpus —
-	// e reler o corpus inclui parsear a migration de view, que exige core.View.X
-	// já existente.
-	if err := registrarViewsNoCatalogo(pRoot, viewsPendentes); err != nil {
-		return i18n.Errf("imp_catalog_failed", err)
 	}
 	if err := migrationgo.RefreshCatalog(pRoot, pastaDeMigrations(root, state.Config.Output.Migrate)); err != nil {
 		return i18n.Errf("imp_catalog_failed", err)
@@ -665,26 +644,6 @@ func viewsForaDoCorpus(root string, state config.ConfigState) (map[string]ViewDo
 		}
 	}
 	return pendentes, nil
-}
-
-// registrarViewsNoCatalogo acrescenta as views importadas ao catálogo do core.
-//
-// Tem de acontecer antes de qualquer leitura do corpus: a migration gerada
-// referencia core.View.X, e o parser recusa referência que não está no catálogo.
-func registrarViewsNoCatalogo(pRoot string, novas map[string]ViewDoBanco) error {
-	if len(novas) == 0 {
-		return nil
-	}
-	todas := map[string]bool{}
-	for _, nome := range migrationgo.ViewNames(pRoot) {
-		if fisico, tem := migrationgo.ViewPhysicalName(pRoot, nome); tem {
-			todas[fisico] = true
-		}
-	}
-	for nome := range novas {
-		todas[nome] = true
-	}
-	return migrationgo.WriteCoreViewCatalog(pRoot, todas)
 }
 
 // aliasesUnicos escolhe um apelido por tabela, garantindo que dois nomes físicos
