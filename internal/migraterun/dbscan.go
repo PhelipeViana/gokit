@@ -446,10 +446,14 @@ func EhExpressao(valor string) bool {
 // não é PK. O Oracle recusa com ORA-02270 ("no matching unique or primary key for this
 // column-list"), porque para ele a coluna não tem unicidade nenhuma. Medido em
 // motivo_exclusao_id, que na origem tem DUAS unique constraints.
-func lerIndices(ctx context.Context, db *sql.DB, dialect, schema string, tabelas map[string]TabelaDoBanco) error {
+// consultaDeIndices monta a consulta de índices de cada dialeto.
+//
+// Separada do lerIndices para poder ser conferida sem banco de pé: o filtro de coluna
+// de INCLUDE do SQL Server é uma regra de correção que não aparece em nenhum lugar
+// senão no texto do SQL, e sem ela o corpus sai com índice que ninguém aceita.
+func consultaDeIndices(dialect, schema string) (string, []any) {
 	var comando string
 	var argumentos []any
-
 	switch dialect {
 	case "postgres":
 		// `attnum = ANY(indkey)` perde a ORDEM das colunas do índice: ele casa o
@@ -474,6 +478,16 @@ func lerIndices(ctx context.Context, db *sql.DB, dialect, schema string, tabelas
 			ORDER BY s.table_name, s.index_name, s.seq_in_index`
 
 	case "sqlserver":
+		// `ic.is_included_column = 0` é obrigatório.
+		//
+		// Coluna de INCLUDE não faz parte da CHAVE do índice: ela é carga de cobertura, e
+		// no catálogo vem com `key_ordinal = 0`. Sem o filtro ela entrava misturada na
+		// lista, e o DSL — que não tem INCLUDE — declarava tudo como chave.
+		//
+		// Medido no SISPREV: `IDX_FOLHA_PROC_ANOMESGRUPO` tem 1 coluna de chave e 57 de
+		// INCLUDE; o corpus saía com um índice de 58 colunas de chave, acima do teto de 32
+		// dos quatro bancos. Ou seja, o leitor produzia um índice que NENHUM dialeto
+		// aceita, nem o de origem. São 53 índices com INCLUDE em 431 no schema.
 		comando = `SELECT t.name, i.name, c.name, CAST(i.is_unique AS INT)
 			FROM sys.indexes i
 			JOIN sys.tables t ON t.object_id = i.object_id
@@ -481,6 +495,7 @@ func lerIndices(ctx context.Context, db *sql.DB, dialect, schema string, tabelas
 			JOIN sys.index_columns ic ON ic.object_id = i.object_id AND ic.index_id = i.index_id
 			JOIN sys.columns c ON c.object_id = ic.object_id AND c.column_id = ic.column_id
 			WHERE s.name = @p1 AND i.is_primary_key = 0 AND i.type > 0
+			  AND ic.is_included_column = 0
 			ORDER BY t.name, i.name, ic.key_ordinal`
 		argumentos = []any{schemaOr(schema, "dbo")}
 
@@ -495,6 +510,11 @@ func lerIndices(ctx context.Context, db *sql.DB, dialect, schema string, tabelas
 			ORDER BY i.table_name, i.index_name, c.column_position`
 		argumentos = []any{strings.ToUpper(schema)}
 	}
+	return comando, argumentos
+}
+
+func lerIndices(ctx context.Context, db *sql.DB, dialect, schema string, tabelas map[string]TabelaDoBanco) error {
+	comando, argumentos := consultaDeIndices(dialect, schema)
 
 	rows, err := db.QueryContext(ctx, comando, argumentos...)
 	if err != nil {

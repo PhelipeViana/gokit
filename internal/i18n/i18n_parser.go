@@ -135,6 +135,20 @@ func init() {
 			ES: "CreateTable exige nombre y columnas",
 			EN: "CreateTable requires a name and columns",
 		},
+		// Corpus escrito antes de view sair do DSL. Não é "método inválido" — é um
+		// método que existiu, e quem tem o arquivo em disco precisa saber para onde a
+		// responsabilidade foi, não só que ela não está mais ali.
+		// `.Index()` de coluna saiu do DSL: só funcionava no MySQL.
+		"mgp_col_index_removido": {
+			PT: "o método de coluna .%s() não existe mais: ele só funcionava no MySQL e dava a ilusão de ser portável. Declare o índice como operação: migrate.CreateIndex(core.Table.<Tabela>, \"nome_do_indice\", \"coluna\")",
+			ES: "el método de columna .%s() ya no existe: solo funcionaba en MySQL y daba la ilusión de ser portable. Declare el índice como operación: migrate.CreateIndex(core.Table.<Tabla>, \"nombre_del_indice\", \"columna\")",
+			EN: "the column method .%s() no longer exists: it only worked on MySQL and gave the illusion of portability. Declare the index as an operation: migrate.CreateIndex(core.Table.<Table>, \"index_name\", \"column\")",
+		},
+		"mgp_view_removida": {
+			PT: "%s não existe mais: view, function e procedure saíram do corpus de migrations. O gokit não as cria — ele as MAPEIA do banco com `gokit special`. Apague esta operação do arquivo; a definição da view fica no banco e o registro em internal/gokit/special/views/<nome>/<dialeto>.sql",
+			ES: "%s ya no existe: view, function y procedure salieron del corpus de migraciones. GoKit no las crea — las MAPEA de la base con `gokit special`. Borre esta operación del archivo; la definición de la view queda en la base y el registro en internal/gokit/special/views/<nombre>/<dialecto>.sql",
+			EN: "%s no longer exists: view, function and procedure left the migration corpus. GoKit does not create them — it MAPS them from the database with `gokit special`. Remove this operation from the file; the view definition lives in the database and the registry in internal/gokit/special/views/<name>/<dialect>.sql",
+		},
 		"mgp_needs_alias_ref": {
 			PT: "%s exige core.Table.*",
 			ES: "%s exige core.Table.*",

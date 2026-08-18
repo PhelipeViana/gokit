@@ -198,6 +198,17 @@ func Run(root string, state config.ConfigState) error {
 		)
 	}
 
+	// Índices de TODO o corpus, antes de aplicar nada.
+	//
+	// A promoção para TEXT do MySQL consulta este mapa para não escolher justamente uma
+	// coluna que vai ser indexada — e o índice pode estar numa migration POSTERIOR ao
+	// create_table, quando a promoção já teria acontecido.
+	var todas []acao.Operacao
+	for _, arquivo := range files {
+		todas = append(todas, arquivo.Plan.Operations...)
+	}
+	RegistrarIndicesDoCorpus(todas)
+
 	connection := state.Config.Connections[state.ActiveClient]
 	dialect := state.ActiveDialect
 	historyTable := state.Config.Migrate.Table
@@ -255,6 +266,54 @@ func Run(root string, state config.ConfigState) error {
 				len(redundantes)),
 			Contexto: map[string]string{"comando": "migrate run"},
 			Bruto:    strings.Join(redundantes, "\n"),
+		})
+	}
+
+	// Colunas que o MySQL não conseguiu guardar como VARCHAR/CHAR e viraram TEXT.
+	//
+	// É aviso, não info: nessas tabelas o MySQL fica com semântica DIFERENTE dos outros três
+	// — TEXT não aceita DEFAULT literal e precisa de prefixo para ser indexado. Quem lê o
+	// schema pelo banco tem de saber que a diferença é do gokit, não do corpus.
+	if promovidas := PromocoesParaText(); len(promovidas) > 0 {
+		fmt.Println(cliui.Warning(i18n.Tf("run_mysql_text_promotion", len(promovidas))))
+		for _, linha := range promovidas {
+			fmt.Printf("  · %s\n", linha)
+		}
+		aviso.DoEstado(state).Notificar(aviso.Aviso{
+			Nivel: aviso.NivelWarning,
+			Acao:  "coluna promovida para TEXT no MySQL",
+			Corpo: fmt.Sprintf("%d tabela(s) não caberiam no teto de 65.535 bytes por linha do MySQL. "+
+				"As colunas de texto mais largas foram criadas como TEXT. Nessas tabelas o MySQL difere "+
+				"dos outros três dialetos: TEXT não aceita DEFAULT literal nem índice sem prefixo.",
+				len(promovidas)),
+			Contexto: map[string]string{"comando": "migrate run"},
+			Bruto:    strings.Join(promovidas, "\n"),
+		})
+	}
+
+	// FK tautológica pulada. Info: não perde integridade, mas quem comparar o schema com a
+	// origem vai achar a constraint faltando e precisa saber por quê.
+	if tautologicas := FKsTautologicas(); len(tautologicas) > 0 {
+		fmt.Println(cliui.Warning(i18n.Tf("run_fk_tautologica", len(tautologicas))))
+		for _, linha := range tautologicas {
+			fmt.Printf("  · %s\n", linha)
+		}
+	}
+
+	// Coluna mais curta no banco do que a migration declara. Aviso: nada foi alterado, mas a
+	// escrita no tamanho declarado vai falhar em tempo de execução, longe daqui.
+	if estreitas := FormasEstreitas(); len(estreitas) > 0 {
+		fmt.Println(cliui.Warning(i18n.Tf("run_shape_narrower_group", len(estreitas))))
+		for _, linha := range estreitas {
+			fmt.Printf("  · %s\n", linha)
+		}
+		aviso.DoEstado(state).Notificar(aviso.Aviso{
+			Nivel: aviso.NivelWarning,
+			Acao:  "coluna mais curta no banco do que o declarado",
+			Corpo: fmt.Sprintf("%d coluna(s) existem no banco com tamanho MENOR do que a migration declara. "+
+				"Nada foi alterado; gravar um valor no tamanho declarado vai falhar.", len(estreitas)),
+			Contexto: map[string]string{"comando": "migrate run"},
+			Bruto:    strings.Join(estreitas, "\n"),
 		})
 	}
 
@@ -1396,7 +1455,19 @@ func executeOperation(ctx context.Context, db *sql.DB, dialect, schema string, o
 			return err
 		}
 		if exists {
-			return nil
+			// Invariante 5: tabela que já existe é CONFERIDA, não ignorada.
+			if err := conferirFormaDaTabela(ctx, db, cache, dialect, operation.Table, operation.Columns); err != nil {
+				return err
+			}
+			// E a FK declarada nas colunas é criada mesmo assim.
+			//
+			// Retornar aqui deixava uma JANELA: o run terminava em verde com a constraint
+			// ausente, e só a conciliação da execução SEGUINTE a criava — porque ela só olha
+			// migration já aplicada, e esta acabou de ser registrada. Medido com o add_column
+			// do teste/: `fk_cidades_estado_id` sumia e voltava um run depois.
+			//
+			// A criação tolera constraint duplicada, então repetir não custa nada.
+			return criarForeignKeysDasColunas(ctx, db, dialect, schema, operation.Table, operation.Columns)
 		}
 		query, err := createTableSQL(dialect, schema, operation.Table, operation.Columns)
 		if err != nil {
@@ -1422,7 +1493,12 @@ func executeOperation(ctx context.Context, db *sql.DB, dialect, schema string, o
 			return err
 		}
 		if exists {
-			return nil
+			// Invariante 5: coluna que já existe é CONFERIDA, não ignorada — e a FK dela é
+			// criada mesmo assim, pela mesma razão do create_table acima.
+			if err := conferirColunaDeclarada(ctx, db, cache, dialect, operation.Table, *operation.Column); err != nil {
+				return err
+			}
+			return criarForeignKeysDasColunas(ctx, db, dialect, schema, operation.Table, []acao.ColunaDefinicao{*operation.Column})
 		}
 		query := fmt.Sprintf("ALTER TABLE %s ADD %s", qualified(dialect, schema, operation.Table), columnDefinition(dialect, *operation.Column, false))
 		if _, err := db.ExecContext(ctx, query); err != nil {
@@ -1704,11 +1780,7 @@ func placeholder(dialect string, position int) string {
 // registro que a aplicação gerou. Sobrescrever seria apagar dado real em
 // silêncio, então diverge = erro. Idêntica = no-op, o que mantém a operação
 // reexecutável sem efeito colateral.
-// owned traz as chaves que seeders anteriores da mesma tabela declararam
-// explicitamente. São os IDs fixos: os únicos que este seed pode editar. Uma
-// linha divergente fora desse conjunto veio de outro lugar — provavelmente da
-// aplicação — e sobrescrevê-la apagaria dado real.
-func executeSeedRows(ctx context.Context, db *sql.DB, dialect, schema string, operation acao.Operacao, owned map[string]bool) error {
+func executeSeedRows(ctx context.Context, db *sql.DB, dialect, schema string, operation acao.Operacao) error {
 	if len(operation.Rows) == 0 {
 		return nil
 	}
@@ -1740,6 +1812,50 @@ func executeSeedRows(ctx context.Context, db *sql.DB, dialect, schema string, op
 		}
 		identityOn = ligar
 		return nil
+	}
+
+	// Tabela SEM CHAVE PRIMÁRIA: o seeder substitui o conteúdo inteiro.
+	//
+	// Sem chave não existe identidade de linha, então não há como casar declarada com
+	// existente — nem para comparar, nem para editar. O que resta é a soberania: o conteúdo da
+	// tabela É o que o seeder declara. Apaga tudo e insere.
+	//
+	// Isto abre para o seeder as 306 tabelas de 754 do corpus legado que não têm chave (41%),
+	// que antes eram recusadas. E é o que faz a ordem `create_table` → `seeder` →
+	// `AddPrimaryKey` funcionar: a chave entra depois, sobre dado conhecido.
+	//
+	// Destrutivo por definição, então REPORTADO com as duas contagens. A transação é a mesma do
+	// resto do seed, então falha no meio não deixa a tabela vazia.
+	if len(operation.KeyColumns) == 0 {
+		// IDENTITY_INSERT precisa ser ligado ANTES dos inserts, como no caminho por linha.
+		//
+		// `vencimento_simula_reajuste` tem identidade FORA da chave (`AutoIncrement` sem
+		// `PrimaryKey`), e o seeder declara essa coluna. Sem ligar, o SQL Server recusa com
+		// "Cannot insert explicit value for identity column ... when IDENTITY_INSERT is set to
+		// OFF" — e só ele: os outros três aceitam valor explícito em coluna de identidade.
+		escreveIdentity := operation.IdentityColumn != ""
+		if escreveIdentity && len(operation.Rows) > 0 {
+			_, escreveIdentity = operation.Rows[0][operation.IdentityColumn]
+		}
+		if err := alternaIdentity(escreveIdentity); err != nil {
+			return err
+		}
+		apagadas, err := seedApagarTudo(ctx, transaction, target)
+		if err != nil {
+			return i18n.Errf("run_seed_replace_failed", operation.Table, err)
+		}
+		for index, row := range operation.Rows {
+			if err := seedInsert(ctx, transaction, dialect, target, sortedColumns(row), row); err != nil {
+				return i18n.Errf("run_seed_insert_failed", operation.Table, index+1, err)
+			}
+		}
+		// Só o resumo agrupado do fim do run relata isto: informação destrutiva pertence lá,
+		// junto do resto, e não repetida na linha de progresso.
+		avisarSeedSubstituicao(operation.Table, apagadas, len(operation.Rows))
+		if err := alternaIdentity(false); err != nil {
+			return err
+		}
+		return transaction.Commit()
 	}
 
 	inserted, updated, unchanged := 0, 0, 0
@@ -1776,17 +1892,22 @@ func executeSeedRows(ctx context.Context, db *sql.DB, dialect, schema string, op
 			return i18n.Errf("run_seed_query_failed", operation.Table, index+1, err)
 		}
 		if found {
-			difference := seedDifference(row, existing, columns)
+			difference := seedDifference(row, existing, columns, operation.Numericas)
 			if difference == "" {
 				unchanged++
 				continue
 			}
-			if !owned[chave] {
-				return cliui.NewUserError(
-					i18n.Tf("run_seed_row_conflict", operation.Table, chave, difference),
-					i18n.T("run_seed_conflict_advice"),
-				)
-			}
+			// O SEEDER É SOBERANO SOBRE OS DADOS: linha divergente é sobrescrita.
+			//
+			// Decisão do usuário, e substitui o invariante que dizia "seed nunca sobrescreve
+			// linha que não é dele". Antes, linha divergente que não fosse de um ID fixo
+			// declarado por seeder anterior (`owned`) abortava o run inteiro, para proteger
+			// dado que pudesse ter vindo da aplicação.
+			//
+			// O custo é real e foi aceito com ele à vista: onde há seeder, dado da aplicação
+			// naquela linha é substituído. Por isso cada sobrescrita é REPORTADA com o valor
+			// antigo e o novo — não impede a perda, mas deixa rastro do que foi trocado.
+			avisarSeedSobrescrita(operation.Table, chave, difference)
 			if err := seedUpdate(ctx, transaction, dialect, target, operation.KeyColumns, columns, row); err != nil {
 				return i18n.Errf("run_seed_update_failed", operation.Table, index+1, err)
 			}
@@ -1902,16 +2023,53 @@ func seedExistingRow(ctx context.Context, transaction *sql.Tx, dialect, target s
 
 // seedDifference descreve a primeira divergência entre o declarado e o banco,
 // ou "" quando a linha já está exatamente como o seed pede.
-func seedDifference(row acao.Linha, existing map[string]any, columns []string) string {
+func seedDifference(row acao.Linha, existing map[string]any, columns []string, numericas map[string]bool) string {
 	for _, column := range columns {
 		declared := normalizeSeedValue(row[column])
 		stored := normalizeSeedValue(existing[column])
-		if declared != stored {
-			return i18n.Tf("run_seed_difference", column, stored, declared)
+		if declared == stored {
+			continue
 		}
+		// Coluna numérica compara por VALOR, não por texto.
+		//
+		// DECIMAL(15,4) com 9.001 volta "9.0010" do MySQL, do Postgres e do SQL Server (texto
+		// com a escala cheia) e 9.001 do Oracle (float64). O seed declara 9.001. A comparação
+		// textual acusava divergência — e abortava o `seed run` sobre dado que o PRÓPRIO gokit
+		// havia escrito, em três dos quatro bancos.
+		//
+		// A canonização é textual e não passa por float: `strconv.ParseFloat` perderia dígitos
+		// num DECIMAL(15,10), e o objetivo é comparar, não converter.
+		if numericas[strings.ToLower(column)] &&
+			canonizaNumero(declared) == canonizaNumero(stored) {
+			continue
+		}
+		return i18n.Tf("run_seed_difference", column, stored, declared)
 	}
 	return ""
 }
+
+// canonizaNumero remove o que não muda o valor de um número em texto: zeros à direita na
+// parte fracionária, o ponto que sobra, e o sinal de um zero negativo.
+//
+// Texto que não é número plano volta intacto — assim uma coluna de texto que por acaso
+// parece número não é normalizada por acidente.
+func canonizaNumero(texto string) string {
+	if texto == "" || !numeroPlano.MatchString(texto) {
+		return texto
+	}
+	if strings.Contains(texto, ".") {
+		texto = strings.TrimRight(texto, "0")
+		texto = strings.TrimSuffix(texto, ".")
+	}
+	if texto == "-0" || texto == "" {
+		return "0"
+	}
+	return texto
+}
+
+// numeroPlano casa inteiro ou decimal com sinal, sem expoente: é a forma em que os quatro
+// drivers devolvem NUMBER/DECIMAL/INT.
+var numeroPlano = regexp.MustCompile(`^-?\d+(\.\d+)?$`)
 
 // normalizeSeedValue reduz valores a texto comparável. Os drivers devolvem o
 // mesmo número como int64, float64, string ou []byte dependendo do banco.
@@ -2315,6 +2473,15 @@ func createTableSQL(dialect, schema, table string, columns []acao.ColunaDefinica
 	if len(columns) == 0 {
 		return "", i18n.Errf("run_table_no_columns", table)
 	}
+	// Teto de linha do MySQL: se a linha não cabe, as colunas de texto mais largas viram
+	// TEXT. Só o MySQL tem esse limite, e a troca é reportada porque muda semântica.
+	if dialect == "mysql" {
+		ajustadas, promovidas := promoverParaTextNoMySQL(columns, colunasIndexadasNoCorpus(table))
+		if len(promovidas) > 0 {
+			columns = ajustadas
+			avisarPromocaoParaText(table, promovidas)
+		}
+	}
 	// Com mais de uma coluna marcada como PrimaryKey a chave é composta: o
 	// PRIMARY KEY inline em cada coluna faria o banco recusar a tabela
 	// (ORA-02260), então ela vira uma constraint no nível da tabela.
@@ -2484,6 +2651,20 @@ func columnDefaultSQL(dialect string, column acao.ColunaDefinicao) string {
 	lower := strings.ToLower(strings.TrimSpace(column.Default))
 	nu := strings.TrimSuffix(strings.TrimSpace(strings.TrimSuffix(lower, ")")), "(")
 	nu = strings.TrimSpace(nu)
+
+	// Coluna DATE com default de "agora": a intenção é a DATA de hoje, sem hora.
+	//
+	// O MySQL recusa `DATE DEFAULT CURRENT_TIMESTAMP` com "Invalid default value" — só
+	// DATETIME e TIMESTAMP aceitam. Os outros três toleram e convertem em silêncio. Medido:
+	// `arquivo_sisobi.data_envio` é `.Date().DefaultExpr("CURRENT_TIMESTAMP")` no corpus,
+	// vindo de uma coluna `date` do SQL Server — que não guarda hora nenhuma. Então a forma
+	// só-data é a fiel à origem nos quatro, não só a que o MySQL aceita.
+	if strings.ToLower(strings.TrimSpace(column.Type)) == "date" {
+		switch nu {
+		case "current_timestamp", "sysdate", "systimestamp", "getdate", "now", "localtimestamp":
+			nu = "current_date"
+		}
+	}
 
 	switch nu {
 	// Usuário da sessão. SQL Server: USER_NAME()/SUSER_SNAME(); MySQL exige os
@@ -3216,4 +3397,22 @@ func GetModuleName(projectRoot string) (string, error) {
 		return matches[1], nil
 	}
 	return "", i18n.Errf("run_module_not_found")
+}
+
+// seedApagarTudo limpa a tabela e devolve quantas linhas saíram.
+//
+// Usado só no seed de tabela SEM chave primária, onde o seeder é dono do conteúdo. DELETE e
+// não TRUNCATE: TRUNCATE é DDL em três dos quatro bancos e sairia da transação, deixando a
+// tabela vazia se o INSERT seguinte falhasse.
+func seedApagarTudo(ctx context.Context, transaction *sql.Tx, target string) (int, error) {
+	resultado, err := transaction.ExecContext(ctx, "DELETE FROM "+target)
+	if err != nil {
+		return 0, err
+	}
+	afetadas, err := resultado.RowsAffected()
+	if err != nil {
+		// Driver que não informa a contagem não invalida a operação: o DELETE aconteceu.
+		return 0, nil
+	}
+	return int(afetadas), nil
 }

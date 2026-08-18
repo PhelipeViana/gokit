@@ -66,3 +66,42 @@ func TestDefaultNumericoDeColunaNaoBooleanaNaoMuda(t *testing.T) {
 		}
 	}
 }
+
+// Coluna DATE com default de "agora" vira a forma só-data em cada banco.
+//
+// O MySQL recusa `DATE DEFAULT CURRENT_TIMESTAMP` ("Invalid default value"); os outros três
+// aceitam e convertem calados. O corpus legado tem
+// `arquivo_sisobi.data_envio` = `.Date().DefaultExpr("CURRENT_TIMESTAMP")`, vindo de uma
+// coluna `date` do SQL Server, que não guarda hora — então só-data é o fiel à origem.
+func TestDefaultDeAgoraEmColunaDateViraSoData(t *testing.T) {
+	data := func() acao.ColunaDefinicao {
+		return acao.ColunaDefinicao{Name: "data_envio", Type: "date",
+			Default: "CURRENT_TIMESTAMP", DefaultRaw: true}
+	}
+	esperado := map[string]string{
+		"mysql":     "(CURDATE())",
+		"postgres":  "CURRENT_DATE",
+		"oracle":    "TRUNC(SYSDATE)",
+		"sqlserver": "CAST(GETDATE() AS DATE)",
+	}
+	for dialeto, quero := range esperado {
+		if obtido := columnDefaultSQL(dialeto, data()); obtido != quero {
+			t.Errorf("date DEFAULT agora em %s: esperava %q, veio %q", dialeto, quero, obtido)
+		}
+	}
+}
+
+// Em coluna com HORA o default de "agora" continua sendo o timestamp completo — truncar
+// mudaria o valor gravado.
+func TestDefaultDeAgoraEmColunaComHoraNaoEhTruncado(t *testing.T) {
+	for _, tipo := range []string{"datetime", "timestamp"} {
+		coluna := acao.ColunaDefinicao{Name: "criado_em", Type: tipo,
+			Default: "GETDATE()", DefaultRaw: true}
+		if obtido := columnDefaultSQL("mysql", coluna); obtido != "CURRENT_TIMESTAMP" {
+			t.Errorf("tipo %q: esperava CURRENT_TIMESTAMP, veio %q", tipo, obtido)
+		}
+		if obtido := columnDefaultSQL("oracle", coluna); obtido != "SYSTIMESTAMP" {
+			t.Errorf("tipo %q em oracle: esperava SYSTIMESTAMP, veio %q", tipo, obtido)
+		}
+	}
+}

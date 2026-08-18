@@ -29,6 +29,7 @@ var tableEntry = regexp.MustCompile(`(?m)^\s*(?:var\s+)?([A-Za-z_][A-Za-z0-9_]*)
 // escrito na migration) não tem outro caminho.
 var tableEntryComFisico = regexp.MustCompile(
 	`(?m)^\s*(?:var\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*(?::|=)\s*migrate\.Table\("([^"]+)"\),?(?:[ \t]*//[ \t]*physical:[ \t]*(\S+))?`)
+
 // O `(?::|=)` e a vírgula opcional fazem o padrão casar tanto com a declaração
 // solta (`var X = migrate.RegisteredView("v")`, do pacote antigo) quanto com o
 // campo de struct (`X: migrate.RegisteredView("v"),`, do agrupador core.View). O
@@ -466,6 +467,36 @@ func tableIdentifier(name string) string {
 	return strings.Join(parts, "")
 }
 
+// metodoDeColunaRemovido são métodos de coluna que já existiram no DSL.
+//
+// `.Index()` saiu porque só funcionava no MySQL: nos outros três, índice de coluna não é
+// declarável na definição da coluna, e o método criava a ilusão de portabilidade.
+var metodoDeColunaRemovido = map[string]string{
+	"Index": "mgp_col_index_removido",
+}
+
+// metodoDeTabela lista os métodos cujo PRIMEIRO argumento é a tabela. Existe para que um
+// método desconhecido seja reportado como desconhecido, e não como "falta core.Table".
+//
+// Precisa acompanhar o switch de evalOperation: método novo lá sem entrada aqui passa a
+// ser recusado como inexistente.
+var metodoDeTabela = map[string]bool{
+	"DropTable": true, "AddColumn": true, "AlterColumn": true, "DropColumn": true,
+	"AddForeignKey": true, "DropForeignKey": true, "RenameTable": true,
+	"RenameColumn": true, "AddPrimaryKey": true, "AddUnique": true,
+	"AddCompositeForeignKey": true, "AddCheck": true, "DropConstraint": true,
+	"CreateIndex": true, "CreateUniqueIndex": true, "DropIndex": true,
+}
+
+// metodoRemovido são os métodos que JÁ EXISTIRAM no DSL. Um corpus escrito antes da
+// remoção continua em disco, e "método não suportado" não diz o que fazer com ele — daí
+// cada um ter mensagem própria, apontando o caminho novo.
+var metodoRemovido = map[string]string{
+	"CreateView": "mgp_view_removida",
+	"AlterView":  "mgp_view_removida",
+	"DropView":   "mgp_view_removida",
+}
+
 func evalOperation(expression ast.Expr, catalog, views map[string]string, path string) (acao.Operacao, error) {
 	call, ok := expression.(*ast.CallExpr)
 	if !ok {
@@ -533,6 +564,18 @@ func evalOperation(expression ast.Expr, catalog, views map[string]string, path s
 			return acao.Operacao{}, err
 		}
 		return acao.Operacao{Kind: string(acao.RawSQL), Dialect: dialect, SQL: statement}, nil
+	}
+	// O método é conferido ANTES de resolver a referência de tabela.
+	//
+	// A ordem inversa diagnosticava errado: método que não existe mais no DSL caía direto
+	// no tableReference e o usuário lia "exige core.Table.*" — mandado corrigir o primeiro
+	// argumento de um método inexistente. Medido com corpus antigo usando
+	// `migrate.CreateView("v", "SELECT ...")`.
+	if chave, foiRemovido := metodoRemovido[method]; foiRemovido {
+		return acao.Operacao{}, i18n.Errf(chave, method)
+	}
+	if !metodoDeTabela[method] {
+		return acao.Operacao{}, i18n.Errf("mgp_method_unsupported", method)
 	}
 	if len(call.Args) == 0 {
 		return acao.Operacao{}, i18n.Errf("mgp_needs_alias_ref", method)
@@ -928,6 +971,11 @@ func evalColumn(expression ast.Expr) (acao.Coluna, error) {
 		case "OnDeleteCascade":
 			column = column.OnDeleteCascade()
 		default:
+			// Método de coluna que JÁ EXISTIU. Mesma razão do metodoRemovido das
+			// operações: o arquivo está em disco, e "não suportado" não diz o que fazer.
+			if chave, foiRemovido := metodoDeColunaRemovido[call.Method]; foiRemovido {
+				return acao.Coluna{}, i18n.Errf(chave, call.Method)
+			}
 			return acao.Coluna{}, i18n.Errf("mgp_col_method_unsupported", call.Method)
 		}
 	}

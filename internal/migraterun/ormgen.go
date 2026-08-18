@@ -321,8 +321,8 @@ func GenerateORM(root string, state config.ConfigState) (int, []string, error) {
 	needsTime := false
 	for _, name := range names {
 		shape := shapes[name]
-		entity := nomeDaEntidade(shape.Table)             // ex.: Users
-		unexported := desexportar(entity)                  // ex.: users
+		entity := nomeDaEntidade(shape.Table) // ex.: Users
+		unexported := desexportar(entity)     // ex.: users
 
 		// Linha tipada da entidade (retorno de Get/First). Coluna nula → ponteiro.
 		// O comentário EMITIDO sai no idioma do gokit.json (i18n).
@@ -902,6 +902,7 @@ func filterConstructor(kind string) string {
 		return "gokitorm.StringCol"
 	}
 }
+
 // A normalização é uma só, e mora no migrationgo — o pacote mais baixo, que o
 // migraterun já importa. Estes dois ficam como atalho local para não espalhar o
 // nome longo pelas 22 chamadas.

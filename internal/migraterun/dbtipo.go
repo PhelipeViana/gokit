@@ -178,7 +178,12 @@ func familiaDoTipo(tipo, dialect string) string {
 		return "guid"
 	case "text", "clob", "nclob", "ntext", "longtext", "mediumtext", "tinytext", "long", "xmltype", "xml", "json", "jsonb":
 		return "texto_longo"
-	case "blob", "bytea", "binary", "varbinary", "image", "raw", "long raw", "bfile":
+	// As variantes de BLOB do MySQL estavam de fora, e `longblob` é justamente o que o
+	// gokit EMITE para `.Binary()` naquele dialeto. Ou seja: ele criava a coluna e depois
+	// não sabia lê-la de volta — o import caía no default e devolvia `.Text()`, trocando
+	// binário por texto em silêncio. As de TEXT já estavam todas.
+	case "blob", "tinyblob", "mediumblob", "longblob",
+		"bytea", "binary", "varbinary", "image", "raw", "long raw", "bfile":
 		return "binario"
 	}
 	return ""

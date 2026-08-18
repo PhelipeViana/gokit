@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/PhelipeViana/gokit/internal/aviso"
 	"github.com/PhelipeViana/gokit/internal/cliui"
 	"github.com/PhelipeViana/gokit/internal/config"
 	"github.com/PhelipeViana/gokit/internal/i18n"
@@ -37,16 +38,16 @@ import (
 var seedFileName = regexp.MustCompile(`^(\d{4}_\d{2}_\d{2}_\d{6})_.*\.go$`)
 
 type seedFile struct {
-	Table    string // nome físico, vindo da pasta
-	ID       string // <tabela>/<timestamp>, único no histórico
-	Stamp    string
-	Path     string
-	Checksum string
-	Rows     []acao.Linha
-	Keys     []string
-	Identity string
-	First    bool            // primeiro da pasta: é o seed fixo
-	Owned    map[string]bool // IDs fixos declarados por seeders anteriores
+	Table     string // nome físico, vindo da pasta
+	ID        string // <tabela>/<timestamp>, único no histórico
+	Stamp     string
+	Path      string
+	Checksum  string
+	Rows      []acao.Linha
+	Keys      []string
+	Identity  string
+	Numericas map[string]bool // colunas de tipo numérico, para a comparação não ser textual
+	First     bool            // primeiro da pasta: é o seed fixo
 }
 
 func seedRoot(root string, state config.ConfigState) string {
@@ -213,6 +214,20 @@ func loadSeeds(root string, state config.ConfigState) ([]seedFile, error) {
 			}
 		}
 
+		// Colunas de tipo NUMÉRICO, para a comparação do seed não ser textual.
+		//
+		// Os drivers devolvem DECIMAL de formas diferentes: o do Oracle entrega float64, e os
+		// dos outros três entregam texto com a escala completa. Um DECIMAL(15,4) com valor
+		// 9.001 volta "9.0010" do MySQL, do Postgres e do SQL Server, contra o 9.001 que o
+		// seed declara — e a comparação textual acusava divergência num dado que o próprio
+		// gokit escreveu. Saber quais colunas são números é o que permite comparar por valor.
+		numericas := map[string]bool{}
+		for _, column := range shape.Columns {
+			switch strings.ToLower(column.Type) {
+			case "int", "integer", "decimal":
+				numericas[strings.ToLower(column.Name)] = true
+			}
+		}
 		for index, stamp := range stamps {
 			path := byStamp[stamp]
 			display := filepath.ToSlash(filepath.Join(entry.Name(), filepath.Base(path)))
@@ -230,49 +245,16 @@ func loadSeeds(root string, state config.ConfigState) ([]seedFile, error) {
 			result = append(result, seedFile{
 				Table: shape.Table, ID: table + "/" + stamp, Stamp: stamp, Path: path,
 				Checksum: hex.EncodeToString(sum[:]), Rows: rows,
-				Keys: keys, Identity: identity, First: index == 0,
+				Keys: keys, Identity: identity, Numericas: numericas, First: index == 0,
 			})
 		}
 	}
 	sort.Slice(result, func(i, j int) bool { return result[i].ID < result[j].ID })
-	assignOwnedKeys(result)
 	validateSeeds(result, failures)
 	if err := failures.orNil(); err != nil {
 		return nil, err
 	}
 	return result, nil
-}
-
-// assignOwnedKeys percorre os seeders de cada tabela em ordem e registra, para
-// cada um, quais IDs fixos já haviam sido declarados antes dele. É esse
-// conjunto que autoriza uma edição: ID que ninguém declarou não é editável,
-// porque a linha correspondente no banco pode ter vindo da aplicação.
-func assignOwnedKeys(seeds []seedFile) {
-	acumulado := map[string]map[string]bool{}
-	for index := range seeds {
-		seed := &seeds[index]
-		if acumulado[seed.Table] == nil {
-			acumulado[seed.Table] = map[string]bool{}
-		}
-		herdado := make(map[string]bool, len(acumulado[seed.Table]))
-		for chave := range acumulado[seed.Table] {
-			herdado[chave] = true
-		}
-		seed.Owned = herdado
-
-		for _, row := range seed.Rows {
-			informou := true
-			for _, key := range seed.Keys {
-				if _, ok := row[key]; !ok {
-					informou = false
-					break
-				}
-			}
-			if informou {
-				acumulado[seed.Table][seedKeyLabel(seed.Keys, row)] = true
-			}
-		}
-	}
 }
 
 // validateSeeds aplica o contrato de ID fixo: só se edita linha cujo ID foi
@@ -284,8 +266,13 @@ func validateSeeds(seeds []seedFile, failures *LoadError) {
 
 	for _, seed := range seeds {
 		display := filepath.ToSlash(filepath.Join(seed.Table, filepath.Base(seed.Path)))
+		// Tabela SEM chave primária é aceita: o seeder é soberano e substitui o conteúdo
+		// inteiro. Sem chave não há o que conferir linha a linha — nem ID fixo, nem
+		// divergência —, então as checagens abaixo não se aplicam e o arquivo passa como está.
 		if len(seed.Keys) == 0 {
-			failures.add(display, i18n.T("sed_no_primary_key"), seed.Table)
+			if len(seed.Rows) == 0 {
+				failures.add(display, "%s", i18n.T("sed_empty"))
+			}
 			continue
 		}
 		if len(seed.Rows) == 0 {
@@ -445,15 +432,47 @@ func SeedRun(root string, state config.ConfigState, onlyFirst bool) error {
 		}
 		operation := acao.Operacao{
 			Kind: string(acao.SeedRows), Table: seed.Table, Rows: seed.Rows,
-			KeyColumns: seed.Keys, IdentityColumn: seed.Identity,
+			KeyColumns: seed.Keys, IdentityColumn: seed.Identity, Numericas: seed.Numericas,
 		}
-		if err := executeSeedRows(ctx, db, dialect, connection.Schema, operation, seed.Owned); err != nil {
+		if err := executeSeedRows(ctx, db, dialect, connection.Schema, operation); err != nil {
 			return fmt.Errorf("%s: %w", seed.ID, err)
 		}
 		if err := insertSeedHistory(ctx, db, dialect, connection.Schema, historyTable, seed); err != nil {
 			return i18n.Errf("sed_register_failed", seed.ID, err)
 		}
 		applied++
+	}
+	// Rastro da soberania do seeder. Sai ANTES do resumo, porque é o que o usuário precisa
+	// olhar: o resumo diz que deu certo, estas listas dizem o que foi perdido no caminho.
+	if sobrescritas := SeedSobrescritas(); len(sobrescritas) > 0 {
+		fmt.Println(cliui.Warning(i18n.Tf("run_seed_overwritten", len(sobrescritas))))
+		for _, linha := range sobrescritas {
+			fmt.Printf("  · %s\n", linha)
+		}
+		aviso.DoEstado(state).Notificar(aviso.Aviso{
+			Nivel: aviso.NivelWarning,
+			Acao:  "linha sobrescrita pelo seeder",
+			Corpo: fmt.Sprintf("%d linha(s) que já existiam no banco com outro conteúdo foram substituídas "+
+				"pelo seeder. O seeder é soberano sobre os dados, então dado da aplicação naquelas "+
+				"linhas foi perdido.", len(sobrescritas)),
+			Contexto: map[string]string{"comando": "seed run"},
+			Bruto:    strings.Join(sobrescritas, "\n"),
+		})
+	}
+	if substituidas := SeedSubstituicoes(); len(substituidas) > 0 {
+		fmt.Println(cliui.Warning(i18n.Tf("run_seed_replaced_group", len(substituidas))))
+		for _, linha := range substituidas {
+			fmt.Printf("  · %s\n", linha)
+		}
+		aviso.DoEstado(state).Notificar(aviso.Aviso{
+			Nivel: aviso.NivelWarning,
+			Acao:  "conteúdo de tabela substituído pelo seeder",
+			Corpo: fmt.Sprintf("%d tabela(s) sem chave primária tiveram o conteúdo apagado e reinserido pelo "+
+				"seeder. Sem chave não há como casar linha declarada com existente, então o seeder "+
+				"é dono do conteúdo.", len(substituidas)),
+			Contexto: map[string]string{"comando": "seed run"},
+			Bruto:    strings.Join(substituidas, "\n"),
+		})
 	}
 
 	if applied > 0 || !onlyFirst {
@@ -509,11 +528,14 @@ func CreateSeedFile(root string, state config.ConfigState, target string) (strin
 			hasKey = true
 		}
 	}
+	// Tabela sem chave primária É aceita: o seeder é soberano sobre os dados e substitui o
+	// conteúdo inteiro. Antes isto era recusado — sem chave não há como distinguir inserir de
+	// editar —, e a recusa deixava 306 das 754 tabelas do corpus legado fora do seeder.
+	//
+	// O aviso sai na criação, e não só na execução: quem gera o arquivo precisa saber que
+	// aquele seeder vai APAGAR o conteúdo da tabela, não somá-lo.
 	if !hasKey {
-		return "", 0, cliui.NewUserError(
-			i18n.Tf("sed_no_pk", shape.Table),
-			i18n.T("sed_no_pk_fix"),
-		)
+		fmt.Println(cliui.Warning(i18n.Tf("sed_no_pk_sovereign", shape.Table)))
 	}
 
 	folder := filepath.Join(seedRoot(root, state), shape.Table)

@@ -11,11 +11,6 @@ func init() {
 			ES: "no existe CreateTable para la tabla %q; la carpeta del seed necesita el nombre físico de la tabla",
 			EN: "there is no CreateTable for table %q; the seed folder must use the table's physical name",
 		},
-		"sed_no_primary_key": {
-			PT: "a tabela %s não declara chave primária no CreateTable; sem chave não há como distinguir inserir de editar",
-			ES: "la tabla %s no declara clave primaria en el CreateTable; sin clave no hay cómo distinguir insertar de editar",
-			EN: "table %s declares no primary key in CreateTable; without a key there is no way to tell an insert from an update",
-		},
 		"sed_empty": {
 			PT: "Seeder() está vazio; remova o arquivo se não há dados",
 			ES: "Seeder() está vacío; elimine el archivo si no hay datos",
@@ -95,16 +90,6 @@ func init() {
 			ES: "El seeder necesita una tabla declarada. Verifique el nombre físico o el alias.",
 			EN: "The seeder needs a declared table. Check the physical name or the alias.",
 		},
-		"sed_no_pk": {
-			PT: "A tabela %s não declara chave primária no CreateTable.",
-			ES: "La tabla %s no declara clave primaria en el CreateTable.",
-			EN: "Table %s declares no primary key in CreateTable.",
-		},
-		"sed_no_pk_fix": {
-			PT: "Sem chave não há como distinguir inserir de editar. Marque a coluna com .PrimaryKey().",
-			ES: "Sin clave no hay cómo distinguir insertar de editar. Marque la columna con .PrimaryKey().",
-			EN: "Without a key there is no way to tell an insert from an update. Mark the column with .PrimaryKey().",
-		},
 		"sed_gen_skeleton": {
 			PT: "// Esqueleto gerado: ajuste os valores e duplique a linha conforme precisar.",
 			ES: "// Esqueleto generado: ajuste los valores y duplique la fila según necesite.",
@@ -129,6 +114,33 @@ func init() {
 			PT: "registrar seeder gerado: %w",
 			ES: "registrar el seeder generado: %w",
 			EN: "registering the generated seeder: %w",
+		},
+	})
+}
+
+// O seeder é soberano sobre os dados. Substitui o invariante anterior, que recusava
+// sobrescrever linha divergente e recusava tabela sem chave primária. Decisão do usuário.
+func init() {
+	Register(Entradas{
+		"sed_no_pk_sovereign": {
+			PT: "a tabela %s não tem chave primária: este seeder vai SUBSTITUIR o conteúdo dela por inteiro a cada aplicação — sem chave não há como casar linha declarada com linha existente. Confira o arquivo antes de rodar.",
+			ES: "la tabla %s no tiene clave primaria: este seeder va a SUSTITUIR su contenido por completo en cada aplicación — sin clave no hay forma de emparejar la fila declarada con la existente. Revise el archivo antes de ejecutar.",
+			EN: "table %s has no primary key: this seeder will REPLACE its entire contents on every application — without a key there is no way to match a declared row to an existing one. Review the file before running.",
+		},
+		"run_seed_replace_failed": {
+			PT: "não foi possível limpar a tabela %s para substituir o conteúdo: %w",
+			ES: "no fue posible limpiar la tabla %s para sustituir el contenido: %w",
+			EN: "could not clear table %s to replace its contents: %w",
+		},
+		"run_seed_overwritten": {
+			PT: "%d linha(s) SOBRESCRITA(S) pelo seeder. O seeder é soberano sobre os dados, então dado que estava no banco foi substituído — inclusive se tiver vindo da aplicação:",
+			ES: "%d fila(s) SOBRESCRITA(S) por el seeder. El seeder es soberano sobre los datos, así que lo que estaba en la base fue sustituido — incluso si vino de la aplicación:",
+			EN: "%d row(s) OVERWRITTEN by the seeder. The seeder is sovereign over the data, so what was in the database was replaced — including anything that came from the application:",
+		},
+		"run_seed_replaced_group": {
+			PT: "%d tabela(s) sem chave primária tiveram o conteúdo SUBSTITUÍDO por inteiro:",
+			ES: "%d tabla(s) sin clave primaria tuvieron el contenido SUSTITUIDO por completo:",
+			EN: "%d table(s) without a primary key had their contents entirely REPLACED:",
 		},
 	})
 }

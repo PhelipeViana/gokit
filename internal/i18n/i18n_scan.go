@@ -235,3 +235,21 @@ func init() {
 		},
 	})
 }
+
+// Leitura do banco só em projeto em branco. Regra de consistência da ESCRITA: o corpus é
+// a fonte, e escrever por cima de um corpus existente mistura gerações do leitor no mesmo
+// lugar, sem como distinguir depois de onde veio cada arquivo.
+func init() {
+	Register(Entradas{
+		"imp_corpus_nao_vazio": {
+			PT: "o corpus de migrations já tem %d arquivo(s) (%s): ler o banco só funciona em projeto EM BRANCO",
+			ES: "el corpus de migraciones ya tiene %d archivo(s) (%s): leer la base solo funciona en proyecto EN BLANCO",
+			EN: "the migration corpus already has %d file(s) (%s): reading the database only works on a BLANK project",
+		},
+		"imp_corpus_nao_vazio_fix": {
+			PT: "Para reimportar, crie um projeto novo e aponte para o mesmo banco — depois compare os dois corpora.\nO diff entre eles é a medição do que a escrita mudou, e é exatamente isso que se perde importando por cima.\nPara acrescentar tabela a um corpus que já existe, escreva a migration à mão: `gokit migrate create`.",
+			ES: "Para reimportar, cree un proyecto nuevo apuntando a la misma base — luego compare los dos corpus.\nEl diff entre ellos es la medición de lo que la escritura cambió, y es exactamente eso lo que se pierde importando por encima.\nPara agregar una tabla a un corpus existente, escriba la migración a mano: `gokit migrate create`.",
+			EN: "To re-import, create a new project pointing at the same database — then compare the two corpora.\nThe diff between them measures what the writer changed, and that is exactly what importing on top destroys.\nTo add a table to an existing corpus, write the migration by hand: `gokit migrate create`.",
+		},
+	})
+}

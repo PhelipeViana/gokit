@@ -125,24 +125,32 @@ function Cmd-Contract($name) {
         }
 
         # -- 4 ------------------------------------------------------------
-        Write-Step "4. ID ocupado pela aplicação: erro, sem sobrescrever"
+        # O seeder é SOBERANO sobre os dados: linha da aplicação com o mesmo ID é
+        # SOBRESCRITA, não mais erro. Decisão do usuário, tomada com o custo à vista.
+        # O que o contrato guarda agora é o RASTRO: a perda não pode ser silenciosa.
+        Write-Step "4. ID ocupado pela aplicacao: sobrescrito e relatado"
         Set-ContractSeeder @('{"id": 10, "nome": "Ana"}', '{"id": 1, "nome": "Silva"}', '{"id": 11, "nome": "Conflito"}')
         foreach ($d in $dialects) {
             $run = Invoke-ContractRun $d
             $nome = Get-Scalar $d "SELECT nome FROM $ContractTable WHERE id = 11"
-            Assert-That $d "run falhou" $run.Failed "deveria ter falhado"
-            Assert-That $d "linha da app intacta" ($nome -eq "App") "veio '$nome'"
+            Assert-That $d "run passou" (-not $run.Failed) "saida: $($run.Output)"
+            Assert-That $d "linha da app sobrescrita" ($nome -eq "Conflito") "veio '$nome'"
+            Assert-That $d "sobrescrita relatada" ($run.Output -match "SOBRESCRITA") "saida: $($run.Output)"
+            Assert-That $d "relato traz o valor antigo" ($run.Output -match "App") "saida: $($run.Output)"
         }
 
         # -- 5 ------------------------------------------------------------
-        Write-Step "5. Atomicidade: insert válido antes do conflito é revertido"
+        # A falha usada aqui NAO pode mais ser um conflito de ID — ele deixou de falhar.
+        # A linha sem `nome` viola o NOT NULL nos quatro bancos, que e a falha mais
+        # uniforme disponivel: ORA-01400, 23502 no Postgres, 1048 no MySQL, 515 no SQL Server.
+        Write-Step "5. Atomicidade: insert valido antes da falha e revertido"
         Set-ContractSeeder @('{"id": 10, "nome": "Ana"}', '{"id": 1, "nome": "Silva"}',
-            '{"id": 500, "nome": "Some No Rollback"}', '{"id": 11, "nome": "Conflito"}')
+            '{"id": 500, "nome": "Some No Rollback"}', '{"id": 501}')
         foreach ($d in $dialects) {
             $run = Invoke-ContractRun $d
             $orfao = Get-Scalar $d "SELECT COUNT(*) FROM $ContractTable WHERE id = 500"
             Assert-That $d "run falhou" $run.Failed "deveria ter falhado"
-            Assert-That $d "id=500 não ficou gravado" ($orfao -eq "0") "veio '$orfao'"
+            Assert-That $d "id=500 nao ficou gravado" ($orfao -eq "0") "veio '$orfao'"
         }
 
         # -- 6 ------------------------------------------------------------

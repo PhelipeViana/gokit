@@ -28,6 +28,25 @@ import (
 // MigrateImport escreve uma migration `create_table` para cada tabela que existe
 // no banco e não está declarada no corpus. Sem `confirmar`, apenas mostra.
 func MigrateImport(root string, state config.ConfigState, confirmar bool) error {
+	// Ler o banco só funciona em projeto EM BRANCO.
+	//
+	// A leitura ESCREVE o corpus, e corpus é a fonte de tudo — "a migration é o rei".
+	// Importar sobre um corpus que já existe misturaria duas gerações de escrita no mesmo
+	// lugar: a antiga, feita por uma versão anterior do leitor, e a nova. O resultado é um
+	// corpus que ninguém consegue afirmar de onde veio, e cujas divergências não têm como
+	// ser atribuídas nem à origem nem ao leitor.
+	//
+	// Reimportar é criar projeto novo e comparar os dois corpora. O diff entre eles é a
+	// medição do que mudou — e é justamente ela que se perde importando por cima.
+	if arquivos, err := migrationsNoCorpus(root, state); err != nil {
+		return err
+	} else if len(arquivos) > 0 {
+		return cliui.NewUserError(
+			i18n.Tf("imp_corpus_nao_vazio", len(arquivos), primeirosNomes(arquivos, 3)),
+			i18n.T("imp_corpus_nao_vazio_fix"),
+		)
+	}
+
 	// O import do pacote core, para o CreateIndex endereçar a tabela por referência
 	// de catálogo — o validador não aceita string ali. Sem módulo resolvido não há
 	// referência possível, e nesse caso o índice fica de fora, avisado.
@@ -35,6 +54,20 @@ func MigrateImport(root string, state config.ConfigState, confirmar bool) error 
 	if pRoot := projectRoot(root); pRoot != "" {
 		if modulo, err := GetModuleName(pRoot); err == nil {
 			importCore = modulo + "/internal/gokit/core"
+		}
+	}
+
+	// Projeto em branco pode não ter a pasta ainda, e é o import quem vai escrever nela.
+	// Sem isto o `tableShapes` abaixo falha com erro cru de sistema de arquivos
+	// ("GetFileAttributesEx ...: The system cannot find the file specified"), que não diz
+	// nada a quem está fazendo justamente a primeira leitura do banco.
+	//
+	// A criação fica AQUI, no escritor, e não numa tolerância do leitor de corpus: pasta
+	// ausente virar "corpus vazio" no leitor esconderia caminho mal configurado em todo o
+	// resto do gokit.
+	if state.Config != nil {
+		if err := os.MkdirAll(pastaDeMigrations(root, state.Config.Output.Migrate), 0o755); err != nil {
+			return err
 		}
 	}
 
@@ -156,21 +189,6 @@ func MigrateImport(root string, state config.ConfigState, confirmar bool) error 
 	}
 
 	for _, planejado := range planejados {
-		// View é REGISTRO, não migration: vem sem caminho de arquivo .go, e só o .sql
-		// do dialeto é gravado. O `Caminho` vazio é o que distingue os dois.
-		if planejado.Caminho == "" {
-			if planejado.SQLDaView == "" {
-				continue
-			}
-			if err := os.MkdirAll(planejado.PastaDaView, 0o755); err != nil {
-				return err
-			}
-			arquivoSQL := filepath.Join(planejado.PastaDaView, planejado.DialetoDaView+".sql")
-			if err := os.WriteFile(arquivoSQL, []byte(planejado.SQLDaView+"\n"), 0o644); err != nil {
-				return err
-			}
-			continue
-		}
 		if err := os.MkdirAll(filepath.Dir(planejado.Caminho), 0o755); err != nil {
 			return err
 		}
@@ -238,11 +256,6 @@ type arquivoPlanejado struct {
 	Caminho  string
 	Tabela   string
 	Conteudo string
-	// Os três abaixo só valem para view: o SQL não vai dentro do .go, vai num
-	// arquivo .sql na pasta versionada que o parser procura pelo timestamp.
-	SQLDaView     string
-	PastaDaView   string
-	DialetoDaView string
 }
 
 // ordenaPorDependencia põe pai antes de filha. FK para tabela que já está no
@@ -528,65 +541,6 @@ func pastaDeMigrations(root, saida string) string {
 		return caminho
 	}
 	return filepath.Join(root, caminho)
-}
-
-// registrarViewsMapeadas grava a definição de cada view do banco no layout MAPEADO,
-// sem gerar migration nenhuma.
-//
-// View saiu do corpus: `migrate run` não cria view. O que existe é o REGISTRO —
-// `<pasta de migrate>/views/<nome>/<dialeto>.sql` — e o BANCO é a verdade. Quem cria a
-// view é a pessoa, no banco; o gokit lê e anota. Isso isola a responsabilidade: o
-// migrate cuida do que o gokit declara e aplica, o mapper cuida do que ele só observa.
-//
-// O texto vai para o arquivo do DIALETO DE ORIGEM — `sqlserver.sql`, não
-// `common.sql` — e essa é a decisão central: aquele SQL comprovadamente funciona num
-// banco e é NÃO VERIFICADO nos outros três. Gravar como `common.sql` afirmaria uma
-// portabilidade que ninguém checou, e o `migrate run` nos outros bancos aplicaria
-// SQL que não é do dialeto deles. Com o arquivo por dialeto, os outros três falham
-// com erro claro dizendo que falta a definição — que é a verdade.
-//
-// Converter automaticamente foi considerado e recusado: `TOP` do SQL Server,
-// `ROWNUM` do Oracle e `LIMIT` dos outros dois não têm tradução confiável, e
-// conversão errada viraria mentira gravada em histórico versionado.
-func registrarViewsMapeadas(root, saida, dialect string, views map[string]ViewDoBanco, monitor *Monitor) ([]arquivoPlanejado, error) {
-	nomes := make([]string, 0, len(views))
-	for nome := range views {
-		nomes = append(nomes, nome)
-	}
-	sort.Strings(nomes)
-
-	planejados := make([]arquivoPlanejado, 0, len(nomes))
-	for _, nome := range nomes {
-		view := views[nome]
-		if strings.TrimSpace(view.SQL) == "" {
-			monitor.Registrar(Ocorrencia{
-				Tipo:    OcorrenciaNaoLido,
-				Objeto:  nome,
-				Origem:  "view sem definição legível no catálogo",
-				Decisao: "não declarada",
-			})
-			continue
-		}
-
-		// Sem arquivo .go e sem timestamp: a pasta da view é PLANA, uma por nome, com um
-		// .sql por dialeto. O timestamp existia para casar com a migration, e não há
-		// mais migration para casar.
-		planejados = append(planejados, arquivoPlanejado{
-			Nome:          nome,
-			Tabela:        nome,
-			SQLDaView:     view.SQL,
-			PastaDaView:   filepath.Join(pastaDeMigrations(root, saida), "views", nome),
-			DialetoDaView: dialect,
-		})
-
-		monitor.Registrar(Ocorrencia{
-			Tipo:    OcorrenciaSQLNaoPortavel,
-			Objeto:  nome,
-			Origem:  "definição lida de " + dialect,
-			Decisao: "gravada em " + dialect + ".sql; os outros três dialetos não têm definição e vão falhar até alguém escrevê-la",
-		})
-	}
-	return planejados, nil
 }
 
 // importCoreDaView resolve o import do core para o arquivo de view.

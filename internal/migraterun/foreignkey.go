@@ -93,6 +93,21 @@ func criarForeignKeysDasColunas(ctx context.Context, db *sql.DB, dialect, schema
 		if !tem {
 			continue
 		}
+		// FK tautológica: a coluna referencia ELA MESMA, na própria tabela.
+		//
+		// Não restringe nada — uma coluna sempre é igual a si mesma —, então pular não perde
+		// integridade. O SQL Server aceita e guarda a constraint inútil; o MySQL recusa com
+		// "Missing unique key for constraint", mensagem que manda procurar uma chave única que
+		// existe. Medido no corpus legado: exatamente 1 caso em 754 tabelas,
+		// `CONFIG_PLANO_fk4` (CONFIG_PLANO.CONFIG_PLANO_ID -> CONFIG_PLANO.CONFIG_PLANO_ID),
+		// que existe de verdade na origem.
+		//
+		// Pulada nos QUATRO, não só no MySQL: o objetivo é o mesmo corpus produzir o mesmo
+		// schema, e criar em três uma constraint que não restringe nada só carrega o ruído.
+		if fkTautologica(table, fk) {
+			avisarFKTautologica(table, fk.Column)
+			continue
+		}
 		query := foreignKeySQL(dialect, schema, table, fk)
 		if _, err := db.ExecContext(ctx, query); err != nil {
 			if constraintJaExiste(err) {
@@ -163,6 +178,11 @@ func conciliarForeignKeys(ctx context.Context, db *sql.DB, dialect, schema strin
 			for _, column := range colunas {
 				fk, tem := foreignKeyDaColuna(column)
 				if !tem {
+					continue
+				}
+				// Tautológica: mesma razão da criação normal. Aqui sem avisar de novo — o
+				// aviso já saiu quando a tabela foi criada, e repetir a cada run poluiria.
+				if fkTautologica(operation.Table, fk) {
 					continue
 				}
 				// Conferir ANTES de tentar, em vez de depender do texto do erro.
@@ -348,5 +368,30 @@ var indicesRedundantes []string
 func IndicesRedundantes() []string {
 	saida := indicesRedundantes
 	indicesRedundantes = nil
+	return saida
+}
+
+// fkTautologica diz se a chave estrangeira aponta a coluna para ela mesma.
+//
+// Mesma tabela E mesma coluna. Auto-referência LEGÍTIMA — `pai_id` apontando para `id` na
+// mesma tabela, que é como se modela hierarquia — não entra aqui: ali a restrição existe e
+// vale.
+func fkTautologica(tabela string, fk acao.ForeignKey) bool {
+	return strings.EqualFold(tabela, fk.ReferenceTable) &&
+		strings.EqualFold(fk.Column, fk.ReferenceColumn)
+}
+
+// fksTautologicas acumula as puladas, para o relatório do fim do run.
+var fksTautologicas []string
+
+func avisarFKTautologica(tabela, coluna string) {
+	fksTautologicas = append(fksTautologicas,
+		strings.ToLower(tabela)+"."+strings.ToLower(coluna))
+}
+
+// FKsTautologicas devolve e ZERA a lista acumulada.
+func FKsTautologicas() []string {
+	saida := fksTautologicas
+	fksTautologicas = nil
 	return saida
 }

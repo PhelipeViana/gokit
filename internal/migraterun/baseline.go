@@ -199,7 +199,6 @@ func conferirNoBanco(file migrationFile, tabelas map[string]TabelaDoBanco, views
 				}
 			}
 
-
 		case acao.CreateIndex, acao.AddForeignKey, acao.AddPrimaryKey, acao.AddUnique, acao.AddCheck:
 			// Estes o conferidor sabe que existem no banco pela leitura, mas conferir
 			// nome de constraint e de índice entre quatro catálogos é outro trabalho.

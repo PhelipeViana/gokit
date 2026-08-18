@@ -99,22 +99,28 @@ type ForeignKey struct {
 }
 
 type Operacao struct {
-	Kind         string            `json:"kind"`
-	Table        string            `json:"table"`
-	AliasName    string            `json:"alias,omitempty"`
-	Columns      []ColunaDefinicao `json:"columns,omitempty"`
-	Column       *ColunaDefinicao  `json:"column,omitempty"`
-	ForeignKey   *ForeignKey       `json:"foreign_key,omitempty"`
-	Name         string            `json:"name,omitempty"`
-	NewName      string            `json:"new_name,omitempty"`
-	IndexColumns []string          `json:"index_columns,omitempty"`
-	Unique       bool              `json:"unique,omitempty"`
-	SQL          string            `json:"sql,omitempty"`
-	Dialect      string            `json:"dialect,omitempty"`
-	ViewSQL      map[string]string `json:"view_sql,omitempty"`
-	Rows           []Linha  `json:"rows,omitempty"`
-	KeyColumns     []string `json:"key_columns,omitempty"`
-	IdentityColumn string   `json:"identity_column,omitempty"`
+	Kind           string            `json:"kind"`
+	Table          string            `json:"table"`
+	AliasName      string            `json:"alias,omitempty"`
+	Columns        []ColunaDefinicao `json:"columns,omitempty"`
+	Column         *ColunaDefinicao  `json:"column,omitempty"`
+	ForeignKey     *ForeignKey       `json:"foreign_key,omitempty"`
+	Name           string            `json:"name,omitempty"`
+	NewName        string            `json:"new_name,omitempty"`
+	IndexColumns   []string          `json:"index_columns,omitempty"`
+	Unique         bool              `json:"unique,omitempty"`
+	SQL            string            `json:"sql,omitempty"`
+	Dialect        string            `json:"dialect,omitempty"`
+	ViewSQL        map[string]string `json:"view_sql,omitempty"`
+	Rows           []Linha           `json:"rows,omitempty"`
+	KeyColumns     []string          `json:"key_columns,omitempty"`
+	IdentityColumn string            `json:"identity_column,omitempty"`
+	// Numericas marca as colunas de tipo numérico da tabela do seed.
+	//
+	// Fica FORA do JSON: é conhecimento derivado do CreateTable, não parte da declaração, e o
+	// checksum da migration é calculado sobre a operação serializada — incluí-la dispararia
+	// drift em todo projeto já aplicado.
+	Numericas map[string]bool `json:"-"`
 }
 
 func (o Operacao) Alias(name string) Operacao { o.AliasName = name; return o }

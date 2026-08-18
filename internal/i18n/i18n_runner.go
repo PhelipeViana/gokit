@@ -626,16 +626,6 @@ func init() {
 			ES: "resincronizar la secuencia de %s.%s: %w",
 			EN: "resyncing the sequence of %s.%s: %w",
 		},
-		"run_seed_row_conflict": {
-			PT: "seed de %s: a linha %s já existe no banco com outro conteúdo (%s).",
-			ES: "seed de %s: la fila %s ya existe en la base con otro contenido (%s).",
-			EN: "seed for %s: row %s already exists in the database with different content (%s).",
-		},
-		"run_seed_conflict_advice": {
-			PT: "Esse ID não foi declarado por nenhum seeder anterior — a linha pode ter vindo da aplicação. Sobrescrever apagaria dado real. Só IDs fixos podem ser editados.",
-			ES: "Ese ID no fue declarado por ningún seeder anterior — la fila puede haber venido de la aplicación. Sobrescribir borraría dato real. Solo los IDs fijos pueden editarse.",
-			EN: "This ID was not declared by any earlier seeder — the row may have come from the application. Overwriting would erase real data. Only fixed IDs can be edited.",
-		},
 		"run_seed_summary": {
 			PT: "  %s %s: %d inserida(s), %d editada(s), %d inalterada(s)\n",
 			ES: "  %s %s: %d insertada(s), %d editada(s), %d sin cambios\n",
@@ -742,6 +732,30 @@ func init() {
 			PT: "coluna de tipo grande (LOB/CLOB/BLOB/text/xml) não é indexável neste banco; NENHUM índice foi criado, é desempenho perdido",
 			ES: "columna de tipo grande (LOB/CLOB/BLOB/text/xml) no es indexable en esta base; NINGÚN índice fue creado, es rendimiento perdido",
 			EN: "a large-type column (LOB/CLOB/BLOB/text/xml) cannot be indexed on this database; NO index was created — this is lost performance",
+		},
+	})
+}
+
+// Promoção de VARCHAR/CHAR para TEXT no MySQL. WARNING, não info: a semântica daquela
+// tabela passa a ser diferente dos outros três dialetos, e quem lê o schema pelo banco
+// precisa saber que a diferença veio do gokit e não do corpus.
+func init() {
+	Register(Entradas{
+		"run_mysql_text_promotion": {
+			PT: "%d tabela(s) não caberiam no teto de 65.535 bytes por linha do MySQL: as colunas de texto mais largas foram criadas como TEXT. Nessas tabelas o MySQL DIFERE dos outros três — TEXT não aceita DEFAULT literal nem índice sem prefixo:",
+			ES: "%d tabla(s) no cabrían en el tope de 65.535 bytes por fila de MySQL: las columnas de texto más anchas fueron creadas como TEXT. En esas tablas MySQL DIFIERE de los otros tres — TEXT no acepta DEFAULT literal ni índice sin prefijo:",
+			EN: "%d table(s) would not fit MySQL's 65,535-byte row ceiling: the widest text columns were created as TEXT. In those tables MySQL DIFFERS from the other three — TEXT accepts neither a literal DEFAULT nor an index without a prefix:",
+		},
+	})
+}
+
+// FK que aponta a coluna para ela mesma. Pulada nos quatro: não restringe nada.
+func init() {
+	Register(Entradas{
+		"run_fk_tautologica": {
+			PT: "%d chave(s) estrangeira(s) não criadas: a coluna referencia ELA MESMA na própria tabela, o que não restringe nada. Existem no banco de origem; o SQL Server aceita e o MySQL recusa. Puladas nos quatro para o schema sair igual:",
+			ES: "%d clave(s) foránea(s) no creadas: la columna referencia A SÍ MISMA en su propia tabla, lo que no restringe nada. Existen en la base de origen; SQL Server las acepta y MySQL las rechaza. Omitidas en los cuatro para que el esquema salga igual:",
+			EN: "%d foreign key(s) not created: the column references ITSELF in its own table, which constrains nothing. They exist in the source database; SQL Server accepts them and MySQL refuses. Skipped on all four so the schema comes out the same:",
 		},
 	})
 }

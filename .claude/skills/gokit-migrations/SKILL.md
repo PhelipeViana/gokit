@@ -16,19 +16,52 @@ afirmação sobre um dialeto precisa de evidência de execução.** Nesta base j
 custou caro supor errado — e a suposição sempre parecia razoável.
 
 Se a resposta depende de "como o Oracle trata X", rode contra o container e
-mostre a saída. Os quatro bancos estão de pé no `prevcontas_test`.
+mostre a saída.
 
 ## Ciclo de trabalho
 
+Há **dois** laboratórios, e eles usam contêineres diferentes:
+
+**1. Corpus legado de 754 tabelas** — é onde as divergências entre dialetos aparecem.
+Contêineres no compose do `teste/`; corpus vem do `sisprev_homologacao/`.
+
+```bash
+cd teste && docker compose up -d mysql postgres oracle mssql
+cd ../gokit && GOOS=windows GOARCH=amd64 go build -ldflags "-X main.CommitHash=development" \
+  -o "../sisprev_legado/gokit.exe" .
+cd ../sisprev_legado
+# trocar de dialeto: DB_DIALECT no .env (mysql | sqlserver | oracle | postgres)
+./gokit.exe migrate validate && ./gokit.exe migrate run && ./gokit.exe seed run
+```
+
+**Zerar o banco entre medições, e CONFERIR que zerou.** Migrate não é destrutivo, então
+tabela sobrando da execução anterior faz o `create_table` passar calado (ver invariante 5)
+e o run falha adiante, culpando o objeto errado. Já custou três diagnósticos falsos —
+todos porque a saída do reset foi para `/dev/null` e o "zerado" foi impresso sem medir.
+
+**2. `testlab/lab.ps1`** — corpus pequeno, regressão de contrato de seed.
+
+⚠ **QUEBRADO hoje, por dois motivos anteriores a qualquer mudança de motor:**
+
+- `prevcontas_test/internal/gokit/gokit.json` tem `"migrate": "internal/gokit/migrations"`,
+  pasta que **não existe** — os 271 arquivos do corpus estão em `database/migrations`.
+  O gokit não acha o corpus, então nenhum cenário do contrato chega a executar.
+- Dentro do `lab.ps1` o nome do contêiner chega vazio ao `docker exec` (a mensagem sai como
+  `No such container: mysql`, com o cliente ocupando o lugar do contêiner). `docker exec`
+  chamado à mão com os mesmos contêineres funciona.
+
+Os contêineres dele (`prevcontas_test_*`, portas 1599/5499/3399/1499) sobem com
+`docker compose up -d oracle postgres mysql sqlserver` dentro de `prevcontas_test/`.
+Enquanto os dois pontos acima não forem corrigidos, **medir pelo laboratório 1**.
+
 ```powershell
 .\testlab\lab.ps1 matrix       # build + validate + limpo + idempotência nos 4
-.\testlab\lab.ps1 contract     # regressão do contrato de seed/ID fixo
+.\testlab\lab.ps1 contract     # contrato de seed: soberania, atomicidade, sequência
 .\testlab\lab.ps1 sql all "SELECT ..."
 .\testlab\lab.ps1 reset oracle
 ```
 
-Sem o testlab, o equivalente manual:
-
+O equivalente manual:
 ```bash
 GOOS=windows GOARCH=amd64 go build -ldflags "-X main.CommitHash=development" \
   -o "<projeto-teste>/gokit-windows-amd64.exe" .
@@ -55,6 +88,12 @@ em vez de parar no primeiro.
 | Desligar FK globalmente | não (uma a uma) | `session_replication_role` | `FOREIGN_KEY_CHECKS=0` | `NOCHECK CONSTRAINT ALL` |
 | PK promove coluna a NOT NULL | sim | sim | sim | **não** |
 | Nome de constraint único por | schema | tabela | tabela | schema |
+| Teto de colunas na chave do índice | 32 | 32 | **16** | 32 |
+| Literal booleano (`TRUE`/`FALSE`) | **não** (NUMBER(1)) | sim | sim | **não** (BIT) |
+| `boolean DEFAULT 0` | aceita | **recusa** | aceita | aceita |
+| `DATE DEFAULT CURRENT_TIMESTAMP` | aceita | aceita | **recusa** | aceita |
+| Teto de bytes na definição da linha | — | — | **65.535** | — |
+| FK de coluna para ela mesma | aceita | aceita | **recusa** | aceita |
 
 Outros pontos concretos:
 
@@ -79,6 +118,42 @@ Outros pontos concretos:
   executor emite uma `UNIQUE KEY` própria para ela quando o dialeto é MySQL, que é
   o único que exige a identidade indexada. O mesmo corpus vale nos quatro.
 
+- **Teto de colunas na CHAVE do índice existe nos QUATRO**, com tetos diferentes:
+  MySQL **16**, os outros três 32. Isto já foi escrito como "só o Oracle recusa" —
+  era suposição, e o efeito era o corpus morrer no primeiro índice largo do próprio
+  dialeto de origem. Índice comum acima do teto é tolerado (é desempenho perdido);
+  índice **único** não, porque ali a unicidade é integridade.
+- **`DEFAULT 0` em coluna `boolean` quebra o Postgres** — ele não faz a coerção de
+  integer para boolean. Normalizado pelo TIPO da coluna, nunca pela expressão: em
+  coluna numérica o 0 é um número. E cuidado: **T-SQL não tem literal booleano**,
+  então `BIT DEFAULT FALSE` é "Invalid column name 'FALSE'" — no SQL Server tem de
+  voltar a 0/1, como no Oracle.
+- **`DATE DEFAULT CURRENT_TIMESTAMP` só o MySQL recusa** ("Invalid default value").
+  A intenção é a data de hoje, então a forma só-data é a fiel nos quatro. Mesma
+  regra do booleano: decide pelo tipo da coluna.
+- **MySQL limita a DEFINIÇÃO da linha a 65.535 bytes**, somando todas as colunas —
+  é limite de formato, `ROW_FORMAT` não resolve. Quando não cabe, o executor promove
+  as colunas de texto mais largas para TEXT, da mais larga para a mais estreita, e
+  para quando cabe. Não promove coluna com `DEFAULT` (TEXT não aceita) nem coluna
+  **indexada** (índice em TEXT exige prefixo) — e a lista de indexadas vem do corpus
+  INTEIRO, porque o índice pode estar numa migration posterior ao `create_table`.
+- **FK de uma coluna para ELA MESMA na própria tabela é pulada nos quatro.** Não
+  restringe nada; o SQL Server aceita e guarda a constraint inútil, o MySQL recusa
+  com "Missing unique key for constraint" — mensagem que manda procurar uma chave
+  única que existe. Auto-referência legítima (`pai_id → id`) **não** entra nisso.
+- **Ler o banco só funciona em projeto EM BRANCO.** `migrate import` recusa se o
+  corpus já tem qualquer `.go`: importar por cima mistura duas gerações do leitor no
+  mesmo lugar e depois não há como atribuir uma divergência à origem ou à versão que
+  escreveu. Reimportar = projeto novo + diff entre os dois corpora.
+- **Coluna de `INCLUDE` do SQL Server NÃO é chave de índice.** A consulta precisa de
+  `ic.is_included_column = 0`. Sem o filtro elas entram na lista e, pior, vêm
+  **primeiro** (`key_ordinal = 0`), então a chave real vai para o fim ou desaparece.
+  Custou 375 colunas de chave fantasmas em 29 tabelas do corpus legado.
+- **Método removido do DSL precisa dizer o que fazer.** O reconhecimento do método
+  vem ANTES de resolver a referência de tabela; sem isso, `migrate.CreateView(...)`
+  de um corpus antigo era diagnosticado como "exige core.Table.*" — mandando
+  corrigir o primeiro argumento de um método que não existe mais.
+
 - **`DEFAULT` antes das constraints inline.** `PRIMARY KEY DEFAULT x` dá ORA-03076.
   Ordem que passa nos quatro: tipo → `DEFAULT` → nulidade → constraint.
 - **PK composta** vira constraint de tabela; `PRIMARY KEY` inline em cada coluna
@@ -101,17 +176,38 @@ Quebrar qualquer um destes é regressão, mesmo que o teste passe:
 1. **Sequência nunca anda para trás.** `resyncIdentity` usa
    `max(MAX(id)+1, próximo_atual)`. Se recuar, o banco reemite IDs já entregues e
    FKs passam a apontar para outra linha, sem erro nenhum. Gap é inofensivo;
-   reemissão não.
-2. **Seed nunca sobrescreve linha que não é dele.** Linha idêntica = no-op
-   (reexecução segura); linha divergente = **erro**, porque pode ter vindo da
-   aplicação.
-3. **ID explícito no `Seeder()` é ID fixo** — estável em todos os ambientes e o
-   único alvo válido de edição. ID gerado automaticamente é folha: não se edita
-   nem se referencia, porque muda de ambiente para ambiente.
+   reemissão não. Medido nos quatro: depois de semear IDs 1–10, o próximo é 11.
+2. **O seeder é SOBERANO sobre os dados.** Onde existe seeder, o seeder manda:
+   linha idêntica = no-op; linha divergente = **sobrescrita**, com ou sem chave
+   primária. Tabela **sem chave** tem o conteúdo substituído por inteiro — sem
+   chave não há como casar linha declarada com existente.
+   Isto **substituiu** o invariante anterior ("seed nunca sobrescreve linha que não
+   é dele; divergente é erro"), por decisão do usuário e com o custo à vista:
+   dado da aplicação naquela linha é perdido. Daí a regra que sobra —
+3. **Nenhuma perda em silêncio.** Toda sobrescrita sai com tabela, chave, coluna e
+   os DOIS valores; toda substituição de tabela sem chave sai com quantas linhas
+   foram apagadas e inseridas. As duas listas viram notificação `warning`. Um
+   seeder **vazio** continua sendo recusado: substituir por nada apagaria a tabela,
+   e isso não pode acontecer por omissão.
 4. **Seed é atômico.** Transação única; falha no meio não deixa linha gravada.
-5. **`create_table`/`add_column` não podem mentir.** Se o objeto já existe mas
-   diverge do declarado, é erro — não `return nil`. O no-op silencioso legitima
-   divergência permanente e o checksum passa a bater com o arquivo novo.
+   Medido: seed que insere 6 e falha na 7ª deixa a tabela como estava. Por isso a
+   limpeza da tabela sem chave usa `DELETE` e não `TRUNCATE` — TRUNCATE é DDL em
+   três dos quatro bancos e sairia da transação.
+5. **`create_table`/`add_column` não podem mentir.** Objeto que já existe é CONFERIDO
+   contra a forma declarada, não ignorado. Divergência é erro alto, com as duas
+   formas na mensagem.
+   O que é comparado, e o que NÃO é, tem razão medida:
+   - **presença** da coluna declarada — a checagem com dentes, sem ambiguidade;
+   - **tipo em bucket grosso** (`numerico`/`textual`/`data`/`temporal`/`binario`),
+     porque a ida DSL → tipo físico não é injetiva: `boolean` vira NUMBER no Oracle e
+     `tinyint` no catálogo do MySQL, `text` vira CLOB no Oracle e NVARCHAR(MAX) no SQL
+     Server. Os DOIS lados passam por `columnTypeSQL` + `familiaDoTipo`, senão a
+     comparação acusaria toda tabela que o próprio gokit criou;
+   - **nulidade não é comparada:** o SQL Server não promove coluna de PK a NOT NULL, e
+     o cache de schema não guarda nulidade — errar aqui barraria migration correta;
+   - **tamanho menor no banco é aviso**, porque o leitor promove texto acima de 4000
+     para `Text()` e o tamanho difere legitimamente após uma volta pelo import;
+   - **coluna a mais no banco não é divergência:** a declaração não mentiu sobre ela.
 6. **Rollback falha alto no irreversível.** Nunca apagar histórico sem desfazer.
 
 ## Armadilhas do codebase
@@ -257,23 +353,70 @@ manual continua funcionando; o gerador é que consolida (e apaga os
 | Vocabulário aceito | [internal/factorygo/vocabulario.go](internal/factorygo/vocabulario.go) |
 | Executor de factory | [internal/migraterun/factory.go](internal/migraterun/factory.go) |
 | Gerador de factory | [internal/migraterun/factorycreate.go](internal/migraterun/factorycreate.go) |
+| Leitura do banco (catálogos) | [internal/migraterun/dbscan.go](internal/migraterun/dbscan.go) |
+| Escrita banco → migrations | [internal/migraterun/dbimport.go](internal/migraterun/dbimport.go) |
+| Tipo do banco → método do DSL | [internal/migraterun/dbtipo.go](internal/migraterun/dbtipo.go) |
+| Guarda "só projeto em branco" | [internal/migraterun/corpusvazio.go](internal/migraterun/corpusvazio.go) |
+| Conferência de forma (inv. 5) | [internal/migraterun/conferirforma.go](internal/migraterun/conferirforma.go) |
+| FK e tolerâncias de índice | [internal/migraterun/foreignkey.go](internal/migraterun/foreignkey.go) |
+| Teto de linha do MySQL | [internal/migraterun/mysqllinha.go](internal/migraterun/mysqllinha.go) |
+| Rastro da soberania do seeder | [internal/migraterun/seedsoberano.go](internal/migraterun/seedsoberano.go) |
+| Mapper de view/func/proc | [internal/migraterun/specialmap.go](internal/migraterun/specialmap.go) |
+| Catálogos core.Table/core.Column | [internal/migrationgo/catalog.go](internal/migrationgo/catalog.go) |
+| Ações da área ORM | [internal/migraterun/ormacoes.go](internal/migraterun/ormacoes.go) |
 | Menu TUI | [internal/tui/tui.go](internal/tui/tui.go) |
 | Config e conexões | [internal/config/config.go](internal/config/config.go) |
 | Laboratório de teste | [testlab/lab.ps1](testlab/lab.ps1) |
 
 Adicionar uma operação nova toca, no mínimo: constante em `acao`, caso em
-`Validar`, construtor em `migrate.go`, caso no `switch` do parser, caso em
-`executeOperation`, caso em `rollbackSQL`. Esquecer o `rollbackSQL` faz a
-operação cair no default e virar erro no rollback.
+`Validar`, construtor em `migrate.go`, caso no `switch` do parser, **entrada em
+`metodoDeTabela`** (`internal/migrationgo/parser.go`), caso em `executeOperation`,
+caso em `rollbackSQL`.
+
+- Esquecer o `rollbackSQL` faz a operação cair no default e virar erro no rollback.
+- Esquecer o `metodoDeTabela` faz a operação ser recusada como **inexistente**: esse
+  mapa é conferido ANTES de resolver a referência de tabela, justamente para que
+  método que não existe não seja diagnosticado como "exige core.Table.*".
+
+**View, function e procedure NÃO estão no corpus de migrations.** Saíram do DSL — o
+gokit não as cria, ele as MAPEIA do banco com `gokit special`, e o banco é a verdade.
+Um corpus antigo com `migrate.CreateView(...)` recebe uma mensagem que aponta o
+caminho novo, via `metodoRemovido`.
 
 ## Convenções
 
 - Código, comentários e mensagens de erro em **português**.
 - Mensagem de erro diz o que aconteceu **e** como resolver — o usuário lê no
   meio de uma migration de 267 arquivos.
-- Toda mudança roda `go test ./...` e `.\testlab\lab.ps1 matrix` antes de fechar.
+- Toda mudança roda `go build ./...`, `go vet ./...` e `go test ./...` antes de fechar,
+  mais a medição contra o corpus legado nos quatro dialetos quando toca o executor.
+  O `lab.ps1 matrix` está fora de serviço — ver o Ciclo de trabalho.
+- **Medir, não supor** — vale também para o próprio ferramental. `echo "ok"` encadeado
+  depois de um `head`, ou um reset com a saída em `/dev/null`, imprime sucesso com o
+  comando tendo falhado. Leia o código de saída do comando que importa, e confira o
+  estado do banco em vez de confiar na mensagem que você mesmo imprimiu.
+- **Não deixar máquina morta.** Função que ninguém chama, chave i18n órfã e parâmetro
+  ignorado voltam a ser usados por engano — e `go vet` não pega nenhum dos três.
 
 
-Projeto de teste em implementacao: C:\Users\phelipe.viana\Desktop\prevcontas_test\
-Projeto do plugin gokit: C:\Users\phelipe.viana\Desktop\gokit\
-Referencia do projeto em producao: C:\Users\phelipe.viana\Documents\TCE_MT\back
+## Onde os projetos ficam
+
+Tudo sob `C:\Users\phelipe.viana\Documents\PROJETO_GO_KIT\`:
+
+| pasta | papel |
+|---|---|
+| `gokit/` | o plugin |
+| `sisprev_homologacao/` | **oficial de teste** — 754 tabelas do SISPREV legado, importado do banco |
+| `sisprev_legado/` | laboratório dos 4 dialetos sobre o corpus oficial (não copia o corpus) |
+| `teste/` | projeto pequeno e descartável; **os 4 contêineres vivem no compose dele** |
+| `prevcontas_test/`, `normaliza_lab/`, `aplica_oracle/` | labs antigos, descartáveis |
+
+Referência de produção, **não trabalhar dentro**:
+`C:\Users\phelipe.viana\Documents\TCE_MT\back`
+
+Os quatro bancos sobem com `docker compose up -d mysql postgres oracle mssql` **dentro
+de `teste/`** (mysql 20590, postgres 24443, oracle 22889, mssql 28401). Trocar de dialeto
+é `DB_DIALECT` no `.env` do projeto — variável de ambiente do host não passa.
+
+**Nunca rodar `migrate run` ou `seed run` contra a conexão `proxima`**: é o PROXIMA-BD, um
+servidor de produção com ~300 bancos, e o acesso ali é somente leitura de catálogo.
